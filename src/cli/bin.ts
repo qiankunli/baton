@@ -16,8 +16,10 @@ const HELP = `baton — terminal-native shared workspace for coding agents
   baton sessions        列出会话（可在输入里用 @<id> 引用）
   baton help            本帮助
 
-环境变量:
-  BATON_CLAUDE_BIN      claude 可执行文件路径（如公司包装器 reclaude）
+配置:
+  ~/.baton/settings.json    首次运行自动生成；defaultAgent / claudeExecutable /
+                            codexCommand / mentionBudgetChars
+  BATON_CLAUDE_BIN          环境变量，优先级高于 settings.json 的 claudeExecutable
 `;
 
 const cmd = process.argv[2];

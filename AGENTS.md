@@ -16,6 +16,8 @@ baton/
 │   ├── events/              # 内部事件模型（词汇对齐 ACP v2）
 │   │   ├── ids.ts           # 带前缀 ULID（bs_/ps_/t_/m_/tc_...），稳定可外部引用
 │   │   └── types.ts         # 信封结构 + payload 类型 + 三态 patch 语义
+│   ├── config/
+│   │   └── settings.ts      # ~/.baton/settings.json 加载与默认值（env > 文件 > 默认）
 │   ├── adapters/
 │   │   ├── types.ts         # AgentAdapter 小核心接口 + 审批回调契约
 │   │   ├── claude/

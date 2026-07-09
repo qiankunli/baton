@@ -13,6 +13,7 @@ import { useCallback, useRef, useState, type ReactNode } from "react";
 import { ClaudeAdapter } from "../adapters/claude/adapter.ts";
 import { CodexAdapter } from "../adapters/codex/adapter.ts";
 import type { AgentAdapter, ProviderSessionRef } from "../adapters/types.ts";
+import { ensureSettingsFile, loadSettings } from "../config/settings.ts";
 import { buildCatchUpContext, expandMentions } from "../context/mention.ts";
 import { newId } from "../events/ids.ts";
 import type { PermissionRequest } from "../events/types.ts";
@@ -25,7 +26,10 @@ function argValue(flag: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
-const store = new SessionStore(argValue("--root"));
+const rootArg = argValue("--root");
+ensureSettingsFile(rootArg);
+const settings = loadSettings(rootArg);
+const store = new SessionStore(rootArg);
 const cwd = argValue("--cwd") ?? process.cwd();
 // 打开即建会话——不要让用户先面对空 rail 和弹窗
 const session = store.createSession({ cwd, title: `chat @ ${cwd}` });
@@ -51,7 +55,7 @@ function App(): ReactNode {
   const [, setTick] = useState(0);
   const bump = useCallback(() => setTick((t) => t + 1), []);
 
-  const [agent, setAgent] = useState<AgentName>("codex");
+  const [agent, setAgent] = useState<AgentName>(settings.defaultAgent);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
@@ -68,7 +72,9 @@ function App(): ReactNode {
       let slot = slots.current.get(name);
       if (!slot) {
         const adapter: AgentAdapter =
-          name === "claude" ? new ClaudeAdapter({ approvalHandler }) : new CodexAdapter({ approvalHandler });
+          name === "claude"
+            ? new ClaudeAdapter({ approvalHandler, executablePath: settings.claudeExecutable })
+            : new CodexAdapter({ approvalHandler, command: settings.codexCommand });
         slot = { adapter };
         slots.current.set(name, slot);
         slot.starting = (async () => {
@@ -118,8 +124,8 @@ function App(): ReactNode {
         if (!slot.ref) throw new Error(`${target} 启动失败`);
 
         // 跨会话 @bs_ 引用 + 同会话跨 agent 自动补课，两类上下文都在发送时注入
-        const { prompt } = expandMentions(store, text);
-        const catchUp = buildCatchUpContext(session, slot.adapter.provider);
+        const { prompt } = expandMentions(store, text, settings.mentionBudgetChars);
+        const catchUp = buildCatchUpContext(session, slot.adapter.provider, settings.mentionBudgetChars);
         const finalPrompt = catchUp ? `<baton-sync>\n${catchUp}\n</baton-sync>\n\n${prompt}` : prompt;
 
         const turnId = newId("t");
