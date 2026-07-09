@@ -21,6 +21,7 @@ import { textOf } from "../events/types.ts";
 import { applyEvent, emptySessionState, type SessionState } from "../store/reduce.ts";
 import { SessionStore } from "../store/store.ts";
 import { applyCompletion, buildCandidates, triggerAt } from "./completion.ts";
+import { CTRL_C_CONFIRM_WINDOW_MS, ctrlCAction } from "./keys.ts";
 
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -64,6 +65,7 @@ function App(): ReactNode {
   const [approval, setApproval] = useState<PendingApproval | null>(null);
   const [suggIdx, setSuggIdx] = useState(0);
   const [suggDismissed, setSuggDismissed] = useState(false);
+  const ctrlCArmedAt = useRef(0);
 
   // 候选由输入实时推导（/ 行首=命令，@ =引用），无独立状态需要同步
   const trigger = triggerAt(draft);
@@ -109,11 +111,28 @@ function App(): ReactNode {
     [approvalHandler, bump],
   );
 
+  const cancelCurrentTurn = useCallback(() => {
+    const slot = slots.current.get(agent);
+    if (slot?.ref) void slot.adapter.cancel(slot.ref);
+  }, [agent]);
+
+  /** 优雅退出：先关掉两个 agent 子进程再退（对应 /exit、双击 Ctrl+C、Ctrl+D） */
+  const shutdown = useCallback(async () => {
+    setStatus("正在退出…");
+    for (const slot of slots.current.values()) {
+      if (slot.ref) await slot.adapter.close(slot.ref).catch(() => {});
+    }
+    process.exit(0);
+  }, []);
+
   const send = useCallback(
     async (raw: string) => {
       const trimmed = raw.trim();
       if (!trimmed || busy) return;
-      if (trimmed === "/exit") process.exit(0);
+      if (trimmed === "/exit") {
+        await shutdown();
+        return;
+      }
 
       // @codex 或 /codex 前缀：切换目标 agent（并从消息里剥掉）
       let target = agent;
@@ -169,11 +188,30 @@ function App(): ReactNode {
         bump();
       }
     },
-    [agent, busy, ensureAgent, bump],
+    [agent, busy, ensureAgent, bump, shutdown],
   );
 
   useKeyboard((key) => {
-    if (key.ctrl && key.name === "c") process.exit(0);
+    if (key.ctrl && key.name === "c") {
+      // TUI 惯例：Ctrl+C 是"打断"不是"退出"——跑着中断、有输入清空、空闲二次确认
+      const action = ctrlCAction({ busy, hasDraft: draft !== "", armedAt: ctrlCArmedAt.current, now: Date.now() });
+      if (action === "cancel-turn") cancelCurrentTurn();
+      else if (action === "clear-draft") {
+        setDraft("");
+        setSuggIdx(0);
+      } else if (action === "exit") void shutdown();
+      else {
+        ctrlCArmedAt.current = Date.now();
+        setStatus("再按一次 Ctrl+C 退出");
+        setTimeout(() => setStatus((s) => (s === "再按一次 Ctrl+C 退出" ? null : s)), CTRL_C_CONFIRM_WINDOW_MS + 100);
+      }
+      return;
+    }
+    if (key.ctrl && key.name === "d") {
+      // shell 习惯：空输入时 EOF 即退出
+      if (!draft && !busy) void shutdown();
+      return;
+    }
     if (candidates.length > 0) {
       // 候选浮层：↑/↓ 选择，Tab 补全（Enter 保留"发送"语义），Esc 关闭
       if (key.name === "down") setSuggIdx((i) => (i + 1) % candidates.length);
@@ -187,10 +225,7 @@ function App(): ReactNode {
       } else if (key.name === "escape") setSuggDismissed(true);
       return;
     }
-    if (key.name === "escape" && busy) {
-      const slot = slots.current.get(agent);
-      if (slot?.ref) void slot.adapter.cancel(slot.ref);
-    }
+    if (key.name === "escape" && busy) cancelCurrentTurn();
   });
 
   const v = view.current;
@@ -323,5 +358,6 @@ if (!process.stdout.isTTY) {
   console.error("baton tui 需要在真实终端（TTY）里运行");
   process.exit(1);
 }
-const renderer = await createCliRenderer({ exitOnCtrlC: true, targetFps: 30 });
+// Ctrl+C 自己接管（分层语义，见 keys.ts），不走 renderer 的直接退出
+const renderer = await createCliRenderer({ exitOnCtrlC: false, targetFps: 30 });
 createRoot(renderer).render(<App />);
