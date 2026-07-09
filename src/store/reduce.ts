@@ -20,6 +20,8 @@ export interface MessageState {
   role: MessageRole;
   content: ContentBlock[];
   turnId?: string;
+  /** 产生该消息的 provider（多 agent 同时间线时用于标注说话人） */
+  provider?: string;
 }
 
 export interface ToolCallState {
@@ -89,10 +91,16 @@ function roleOfKind(kind: string): MessageRole {
   return "agent";
 }
 
-function getOrCreateMessage(state: SessionState, id: string, role: MessageRole, turnId?: string): MessageState {
+function getOrCreateMessage(
+  state: SessionState,
+  id: string,
+  role: MessageRole,
+  turnId?: string,
+  provider?: string,
+): MessageState {
   let msg = state.messages.get(id);
   if (!msg) {
-    msg = { messageId: id, role, content: [], turnId };
+    msg = { messageId: id, role, content: [], turnId, provider };
     state.messages.set(id, msg);
     state.timeline.push({ type: "message", id });
   }
@@ -115,7 +123,7 @@ function applyMessageUpsert(
   role: MessageRole,
 ): void {
   const p = ev.payload;
-  const msg = getOrCreateMessage(state, p.messageId, role, ev.turnId);
+  const msg = getOrCreateMessage(state, p.messageId, role, ev.turnId, ev.provider);
   // 三态：省略=不变；null/[]=清空；数组=整体替换
   if (p.content !== undefined) {
     msg.content = p.content === null ? [] : [...p.content];
@@ -128,7 +136,7 @@ function applyMessageChunk(
   role: MessageRole,
 ): void {
   const p = ev.payload;
-  const msg = getOrCreateMessage(state, p.messageId, role, ev.turnId);
+  const msg = getOrCreateMessage(state, p.messageId, role, ev.turnId, ev.provider);
   msg.content.push(p.content);
 }
 

@@ -32,7 +32,7 @@ baton/
 │   │   ├── bin.ts           # 统一命令入口（package.json bin）：baton / baton repl / baton sessions
 │   │   └── main.ts          # headless REPL：bun run repl -- [--agent codex|claude] [--cwd <dir>]
 │   └── tui/
-│       └── main.tsx         # opentui TUI：bun run tui（rail/消息流/composer/审批模态，^N 新会话 ^R 插入@引用）
+│       └── main.tsx         # chat-first TUI：打开即聊天，@codex/@claude 切 agent，跨 agent 自动补课，Esc 中断
 └── tests/                   # bun test 单测
 ```
 
