@@ -109,6 +109,18 @@ interface PermissionModeCapable { setPermissionMode(ref: ProviderSessionRef, mod
 
 内部事件 schema 直接采用 ACP v2 语义——`state_update`（running / idle / requires_action + stopReason）、按 `messageId` 的消息 upsert + chunk 追加、`tool_call_update` upsert（首次即创建）、`plan_update`。这套词汇本来就是为归一化此类流设计的；ACP v2 成熟后加一个通用 AcpAdapter 即近似 1:1 接入长尾 CLI。baton 扩展事件（如 turn-summary）用 `_baton_` 前缀，遵守 ACP 的扩展约定。
 
+**中间过程的最大公约数规范**：agent 的中间过程（思考、工具调用、文件改动、命令输出、计划）由 baton 统一定义，各 provider adapter 负责把原生形态归一进来——渲染层与存储层不允许出现 provider 分支：
+
+| 中间过程 | 统一事件 | codex 原生形态 | claude 原生形态 |
+|---|---|---|---|
+| 思考 | `agent_thought(_chunk)` | `item/reasoning/*`（需 `summary:"auto"` 显式开启，completed 带全文兜底） | `thinking_delta` 流 |
+| 工具调用生命周期 | `tool_call_update`（kind/status/title upsert） | `item/started` / `item/completed` | `tool_use` / `tool_result` |
+| 文件改动 | tool_call content 里的 **diff 内容块**（`changes[]` + 可选 `patch`，形状对齐 ACP v2） | fileChange item 的 `changes[].diff` | Edit/Write/MultiEdit 入参合成 |
+| 命令实时输出 | `tool_call_content_chunk` | `item/commandExecution/outputDelta` | 无此能力（输出随 tool_result 一次性到达） |
+| 计划 | `plan_update` | `turn/plan/updated` | `TodoWrite` 工具调用归一（并抑制其工具卡） |
+
+归一是"最大公约数 + raw 保真"：形状统一，粒度差异（如 claude 是原始思考流、codex 是 reasoning 摘要）不掩盖，细节永远在信封 `raw` 里。
+
 信封结构（session.jsonl 每行一条）：
 
 ```json

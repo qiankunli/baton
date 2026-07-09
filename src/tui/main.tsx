@@ -195,7 +195,30 @@ function App(): ReactNode {
             const tc = v.toolCalls.get(item.id);
             if (!tc) return null;
             const mark = tc.status === "completed" ? "✓" : tc.status === "failed" ? "✗" : "⋯";
-            return <text key={item.id} fg="#e0af68">{`  ${mark} ${tc.title ?? item.id}`}</text>;
+            const lines = [`  ${mark} ${tc.title ?? item.id}`];
+            for (const block of tc.content) {
+              if (block.type === "diff") {
+                for (const ch of (block as { changes: Array<{ operation: string; path: string }> }).changes) {
+                  lines.push(`      ± ${ch.operation} ${ch.path}`);
+                }
+              }
+            }
+            if (tc.status === "in_progress") {
+              // 运行中的命令：展示输出尾巴（最近 3 行），完成后收起保持时间线干净
+              const tail = textOf(tc.content).split("\n").filter(Boolean).slice(-3);
+              for (const l of tail) lines.push(`      │ ${l.slice(0, 120)}`);
+            }
+            return <text key={item.id} fg="#e0af68">{lines.join("\n")}</text>;
+          }
+          if (item.type === "plan") {
+            const plan = v.plans.get(item.id);
+            if (!plan) return null;
+            const markOf = (s: string) => (s === "completed" ? "☑" : s === "in_progress" ? "◐" : "☐");
+            return (
+              <text key={item.id} fg="#7dcfff">
+                {`\n  计划\n${plan.entries.map((e) => `  ${markOf(e.status)} ${e.content}`).join("\n")}`}
+              </text>
+            );
           }
           return null;
         })}

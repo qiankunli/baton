@@ -5,7 +5,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { newId } from "../../events/ids.ts";
-import type { ContentBlock, PermissionOption, StopReason } from "../../events/types.ts";
+import type { ContentBlock, DiffBlock, PermissionOption, StopReason } from "../../events/types.ts";
 import { textOf } from "../../events/types.ts";
 import type {
   AgentAdapter,
@@ -71,6 +71,19 @@ function toolTitleOf(item: Record<string, unknown>): string {
     default:
       return String(item.type ?? "item");
   }
+}
+
+/** fileChange item → 统一 diff 内容块（changes: {path, kind: add|delete|update, diff}[]） */
+function fileChangeDiff(item: Record<string, unknown>): DiffBlock {
+  const changes = (Array.isArray(item.changes) ? item.changes : []) as Array<Record<string, unknown>>;
+  return {
+    type: "diff",
+    changes: changes.map((c) => ({
+      operation: c.kind === "update" ? "modify" : String(c.kind ?? "modify"),
+      path: String(c.path ?? ""),
+    })),
+    patch: changes.map((c) => String(c.diff ?? "")).filter(Boolean).join("\n") || undefined,
+  };
 }
 
 function stopReasonOf(turnStatus: string): StopReason {
@@ -281,6 +294,8 @@ export class CodexAdapter implements AgentAdapter {
                     : String(item.status ?? "") === "failed"
                       ? "failed"
                       : "completed",
+                // 文件改动统一成 diff 内容块（最大公约数规范，见 design §5.2）
+                content: itemType === "fileChange" ? [fileChangeDiff(item)] : undefined,
                 rawInput: method === "item/started" ? item : undefined,
                 rawOutput: method === "item/completed" ? item : undefined,
               },
@@ -290,6 +305,18 @@ export class CodexAdapter implements AgentAdapter {
         }
         break;
       }
+      case "item/commandExecution/outputDelta":
+        // 命令实时输出 → 统一的工具输出流
+        this.emit(
+          rt,
+          {
+            kind: "tool_call_content_chunk",
+            provider: this.provider,
+            payload: { toolCallId: String(p.itemId), content: { type: "text", text: String(p.delta) } },
+          },
+          params,
+        );
+        break;
       case "turn/plan/updated": {
         const entries = (Array.isArray(p.plan) ? p.plan : []).map((e) => {
           const entry = e as Record<string, unknown>;

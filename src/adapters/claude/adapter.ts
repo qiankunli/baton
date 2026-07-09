@@ -5,7 +5,7 @@
 import { query, type Options, type PermissionResult, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 import { newId } from "../../events/ids.ts";
-import type { ContentBlock, PermissionOption } from "../../events/types.ts";
+import type { ContentBlock, DiffBlock, PermissionOption, PlanEntry } from "../../events/types.ts";
 import { textOf } from "../../events/types.ts";
 import type {
   AgentAdapter,
@@ -54,6 +54,41 @@ export function claudeToolTitle(toolName: string, input: Record<string, unknown>
   return detail !== undefined ? `${toolName}: ${String(detail)}` : toolName;
 }
 
+/** TodoWrite 入参 → 统一 plan entries（最大公约数规范：计划一律走 plan_update） */
+export function todoWritePlan(input: Record<string, unknown>): PlanEntry[] {
+  const todos = (Array.isArray(input.todos) ? input.todos : []) as Array<Record<string, unknown>>;
+  return todos.map((t) => ({
+    content: String(t.content ?? ""),
+    priority: "medium",
+    status: t.status === "in_progress" || t.status === "completed" ? (t.status as string) : "pending",
+  }));
+}
+
+/** 编辑类工具入参 → 统一 diff 内容块；非编辑类返回 null */
+export function claudeToolDiff(toolName: string, input: Record<string, unknown>): DiffBlock | null {
+  const path = String(input.file_path ?? input.notebook_path ?? "");
+  if (!path) return null;
+  switch (toolName) {
+    case "Write":
+      return { type: "diff", changes: [{ operation: "add", path }] };
+    case "Edit": {
+      const patch = `--- ${path}\n- ${String(input.old_string ?? "")}\n+ ${String(input.new_string ?? "")}`;
+      return { type: "diff", changes: [{ operation: "modify", path }], patch: patch.slice(0, 4000) };
+    }
+    case "MultiEdit": {
+      const edits = (Array.isArray(input.edits) ? input.edits : []) as Array<Record<string, unknown>>;
+      const patch = edits
+        .map((e) => `- ${String(e.old_string ?? "")}\n+ ${String(e.new_string ?? "")}`)
+        .join("\n");
+      return { type: "diff", changes: [{ operation: "modify", path }], patch: `--- ${path}\n${patch}`.slice(0, 4000) };
+    }
+    case "NotebookEdit":
+      return { type: "diff", changes: [{ operation: "modify", path }] };
+    default:
+      return null;
+  }
+}
+
 interface ClaudeRuntime {
   cwd: string;
   env?: Record<string, string>;
@@ -62,6 +97,8 @@ interface ClaudeRuntime {
   activeQuery?: Query;
   /** 当前正在流式输出的 assistant 消息的内部 messageId（chunk 与最终 upsert 共用） */
   streamMessageId?: string;
+  /** 已归一成 plan_update 的 tool_use id：其 tool_result 也要跳过，避免时间线出现重复工具卡 */
+  suppressedToolIds: Set<string>;
 }
 
 export interface ClaudeAdapterOptions {
@@ -79,7 +116,7 @@ export class ClaudeAdapter implements AgentAdapter {
   /** SDK 无独立"启动"步骤：session 在首个 prompt 时创建，这里只登记运行时 */
   async start(opts: StartOptions): Promise<ProviderSessionRef> {
     const id = newId("ps");
-    this.sessions.set(id, { cwd: opts.cwd, env: opts.env });
+    this.sessions.set(id, { cwd: opts.cwd, env: opts.env, suppressedToolIds: new Set() });
     return { provider: this.provider, providerSessionId: id };
   }
 
@@ -208,15 +245,29 @@ export class ClaudeAdapter implements AgentAdapter {
         }
         for (const b of blocks) {
           if (b.type !== "tool_use") continue;
+          const toolName = String(b.name);
           const input = (b.input ?? {}) as Record<string, unknown>;
+          // TodoWrite 归一成 plan_update（计划不是工具调用，是头等中间过程）
+          if (toolName === "TodoWrite") {
+            rt.suppressedToolIds.add(String(b.id));
+            emit({
+              kind: "plan_update",
+              provider: this.provider,
+              payload: { planId: `pl_${rt.claudeSessionId ?? "claude"}`, entries: todoWritePlan(input) },
+              raw: msg,
+            });
+            continue;
+          }
+          const diff = claudeToolDiff(toolName, input);
           emit({
             kind: "tool_call_update",
             provider: this.provider,
             payload: {
               toolCallId: String(b.id),
-              title: claudeToolTitle(String(b.name), input),
-              kind: claudeToolKind(String(b.name)),
+              title: claudeToolTitle(toolName, input),
+              kind: claudeToolKind(toolName),
               status: "in_progress",
+              content: diff ? [diff] : undefined,
               rawInput: input,
             },
             raw: msg,
@@ -229,6 +280,8 @@ export class ClaudeAdapter implements AgentAdapter {
         if (!Array.isArray(content)) break;
         for (const b of content as unknown as Array<Record<string, unknown>>) {
           if (b.type !== "tool_result") continue;
+          // 已归一成 plan_update 的调用不再出工具卡（首见 upsert 会凭空造出一张）
+          if (rt.suppressedToolIds.has(String(b.tool_use_id))) continue;
           emit({
             kind: "tool_call_update",
             provider: this.provider,
