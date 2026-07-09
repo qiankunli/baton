@@ -162,6 +162,8 @@ export class CodexAdapter implements AgentAdapter {
       .request("turn/start", {
         threadId: rt.threadId,
         input: [{ type: "text", text: textOf(blocks) }],
+        // 不显式开启则 codex 不发 item/reasoning/* 通知，中间过程对用户不可见
+        summary: "auto",
       })
       .then((resp) => {
         const turn = (resp as { turn?: { id?: string; status?: string } }).turn;
@@ -263,8 +265,25 @@ export class CodexAdapter implements AgentAdapter {
               params,
             );
           }
-        } else if (itemType === "reasoning" || itemType === "userMessage" || itemType === "plan") {
-          // reasoning 靠 delta；userMessage 由 prompt() 侧发；plan 走 turn/plan/updated
+        } else if (itemType === "reasoning") {
+          // completed 的 reasoning item 带全文 summary：整消息 upsert 覆盖 delta 累积
+          if (method === "item/completed") {
+            const summaryArr = Array.isArray(item.summary) ? (item.summary as string[]) : [];
+            const full = summaryArr.join("\n").trim();
+            if (full) {
+              this.emit(
+                rt,
+                {
+                  kind: "agent_thought",
+                  provider: this.provider,
+                  payload: { messageId: String(item.id), content: [{ type: "text", text: full }] },
+                },
+                params,
+              );
+            }
+          }
+        } else if (itemType === "userMessage" || itemType === "plan") {
+          // userMessage 由 prompt() 侧发；plan 走 turn/plan/updated
         } else if (itemType) {
           this.emit(
             rt,

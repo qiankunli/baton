@@ -14,12 +14,15 @@ export interface BatonSettings {
   codexCommand: string[];
   /** @ 引用与跨 agent 补课注入的摘要预算（字符） */
   mentionBudgetChars: number;
+  /** 是否在时间线里显示 agent 的思考过程（reasoning 流） */
+  showThoughts: boolean;
 }
 
 export const DEFAULT_SETTINGS: BatonSettings = {
   defaultAgent: "codex",
   codexCommand: ["codex", "app-server"],
   mentionBudgetChars: 4096,
+  showThoughts: true,
 };
 
 export function batonRoot(rootDir?: string): string {
@@ -64,6 +67,9 @@ export function loadSettings(rootDir?: string): BatonSettings {
   }
   if (!Number.isFinite(merged.mentionBudgetChars) || merged.mentionBudgetChars <= 0) {
     merged.mentionBudgetChars = DEFAULT_SETTINGS.mentionBudgetChars;
+  }
+  if (typeof merged.showThoughts !== "boolean") {
+    merged.showThoughts = DEFAULT_SETTINGS.showThoughts;
   }
   // env 覆盖：机器相关路径优先走环境变量（也方便一次性切换测试）
   if (process.env.BATON_CLAUDE_BIN) merged.claudeExecutable = process.env.BATON_CLAUDE_BIN;

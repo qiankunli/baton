@@ -180,7 +180,17 @@ function App(): ReactNode {
           if (item.type === "message") {
             const msg = v.messages.get(item.id);
             if (!msg) return null;
-            if (msg.role === "thought") return null; // 思考流不进主时间线，保持清爽
+            if (msg.role === "thought") {
+              // 思考过程：dim 展示中间推理（settings.showThoughts 可关）
+              if (!settings.showThoughts) return null;
+              const text = textOf(msg.content).trim();
+              if (!text) return null;
+              return (
+                <text key={item.id} fg="#565f89">
+                  {`\n∴ ${text}`}
+                </text>
+              );
+            }
             const label = msg.role === "user" ? "you" : (PROVIDER_LABEL[msg.provider ?? ""] ?? msg.provider ?? "agent");
             const color = msg.role === "user" ? "#7aa2f7" : label === "codex" ? "#9ece6a" : "#bb9af7";
             const body = msg.role === "user" ? textOf(msg.content).replace(/<baton-(context|sync)>[\s\S]*<\/baton-\1>\s*/g, "") : textOf(msg.content);
