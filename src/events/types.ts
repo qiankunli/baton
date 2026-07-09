@@ -22,7 +22,23 @@ export interface ImageBlock {
   path?: string;
 }
 
-export type ContentBlock = TextBlock | ImageBlock | { type: string; [key: string]: unknown };
+export interface DiffChange {
+  operation: "add" | "delete" | "modify" | "move" | (string & {});
+  path: string;
+  oldPath?: string;
+}
+
+/**
+ * 文件改动内容块（tool_call 的 content 里使用），形状对齐 ACP v2 diff content：
+ * changes 供结构化渲染（文件树/统计），patch 是可选的可渲染文本。
+ */
+export interface DiffBlock {
+  type: "diff";
+  changes: DiffChange[];
+  patch?: string;
+}
+
+export type ContentBlock = TextBlock | ImageBlock | DiffBlock | { type: string; [key: string]: unknown };
 
 export type MessageRole = "user" | "agent" | "thought";
 
