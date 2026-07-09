@@ -5,6 +5,9 @@
   "type": "module",
   "license": "Apache-2.0",
   "repository": "github:qiankunli/baton",
+  "bin": {
+    "baton": "src/cli/bin.ts"
+  },
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
