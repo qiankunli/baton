@@ -2,7 +2,7 @@
 // 以"用户提供的材料"身份拼进目标 agent 的 prompt。二期换 mention:// 句柄 + CLI 惰性回查。
 
 import type { TurnSummary } from "../events/types.ts";
-import type { SessionStore } from "../store/store.ts";
+import type { SessionHandle, SessionStore } from "../store/store.ts";
 
 /** @bs_<ULID>：MVP 只支持引用整个 BatonSession */
 const MENTION_PATTERN = /@(bs_[0-9A-HJKMNP-TV-Z]{26})/g;
@@ -73,6 +73,47 @@ export function buildSessionContext(
       dropped = i;
       break;
     }
+  }
+  const parts = [header];
+  if (dropped > 0) parts.push(`(更早的 ${dropped} 个 turn 因篇幅省略)`);
+  parts.push(...picked);
+  return parts.join("\n\n");
+}
+
+/**
+ * 同会话多 agent 的"补课"上下文：目标 provider 上次参与之后、其它 provider 完成的 turn 摘要。
+ * chat-first TUI 里切换 @agent 时自动注入，让新接手的 agent 无需手动 @ 就知道进展。
+ * 无需补课时返回 null。
+ */
+export function buildCatchUpContext(
+  handle: SessionHandle,
+  provider: string,
+  budgetChars: number = DEFAULT_MENTION_BUDGET_CHARS,
+): string | null {
+  const summaries = handle
+    .readEvents()
+    .filter((e) => e.kind === "_baton_turn_summary")
+    .map((e) => ({ provider: e.provider, seq: e.seq, summary: e.payload as TurnSummary }));
+  let lastMine = 0;
+  for (const s of summaries) {
+    if (s.provider === provider) lastMine = s.seq;
+  }
+  const missed = summaries.filter((s) => s.provider !== provider && s.seq > lastMine);
+  if (missed.length === 0) return null;
+
+  const header = `# 同会话中其它 agent 的最新进展（baton 自动同步）`;
+  const picked: string[] = [];
+  let used = header.length;
+  let dropped = 0;
+  for (let i = missed.length - 1; i >= 0; i--) {
+    const m = missed[i] as (typeof missed)[number];
+    const block = `[${m.provider}]\n${turnBlock(m.summary, i)}`;
+    if (used + block.length + 2 > budgetChars && picked.length > 0) {
+      dropped = i + 1;
+      break;
+    }
+    used += block.length + 2;
+    picked.unshift(block);
   }
   const parts = [header];
   if (dropped > 0) parts.push(`(更早的 ${dropped} 个 turn 因篇幅省略)`);

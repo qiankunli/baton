@@ -1,7 +1,10 @@
 #!/usr/bin/env bun
-// M3 TUI（opentui/react）：左侧会话 rail、主区消息流（sticky 滚动）、底部 composer、审批模态。
-// 用法：bun src/tui/main.tsx [--root <batonRoot>] [--cwd <dir>]
-// 快捷键：Tab 切焦点（rail/composer）、Ctrl+N 新建会话、Ctrl+R 插入 @会话引用、Ctrl+C 退出。
+// chat-first TUI：打开即聊天，体验对齐 claude/codex CLI。
+//   - 直接输入 → 发给当前 agent（默认 codex）
+//   - 消息以 @codex / @claude 开头 → 切换 agent 并发送；两个 agent 共用同一条时间线
+//   - 切换 agent 时自动注入对方最新进展（buildCatchUpContext），无需手动搬运上下文
+//   - @bs_xxx 引用其它 baton 会话（baton sessions 可查）；Esc 中断当前 turn；Ctrl+C 退出
+// 用法：baton（或 bun src/tui/main.tsx）[--root <batonRoot>] [--cwd <dir>]
 
 import { createCliRenderer } from "@opentui/core";
 import { createRoot, useKeyboard } from "@opentui/react";
@@ -10,12 +13,12 @@ import { useCallback, useRef, useState, type ReactNode } from "react";
 import { ClaudeAdapter } from "../adapters/claude/adapter.ts";
 import { CodexAdapter } from "../adapters/codex/adapter.ts";
 import type { AgentAdapter, ProviderSessionRef } from "../adapters/types.ts";
-import { expandMentions } from "../context/mention.ts";
+import { buildCatchUpContext, expandMentions } from "../context/mention.ts";
 import { newId } from "../events/ids.ts";
 import type { PermissionRequest } from "../events/types.ts";
 import { textOf } from "../events/types.ts";
 import { applyEvent, emptySessionState, type SessionState } from "../store/reduce.ts";
-import { SessionStore, type SessionHandle } from "../store/store.ts";
+import { SessionStore } from "../store/store.ts";
 
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -23,15 +26,18 @@ function argValue(flag: string): string | undefined {
 }
 
 const store = new SessionStore(argValue("--root"));
-const defaultCwd = argValue("--cwd") ?? process.cwd();
+const cwd = argValue("--cwd") ?? process.cwd();
+// 打开即建会话——不要让用户先面对空 rail 和弹窗
+const session = store.createSession({ cwd, title: `chat @ ${cwd}` });
 
-interface Runtime {
-  agent: string;
-  handle: SessionHandle;
+type AgentName = "codex" | "claude";
+const AGENT_PREFIX = /^@(codex|claude)\b\s*/;
+const PROVIDER_LABEL: Record<string, string> = { codex: "codex", "claude-code": "claude" };
+
+interface AgentSlot {
   adapter: AgentAdapter;
   ref?: ProviderSessionRef;
-  view: SessionState;
-  busy: boolean;
+  starting?: Promise<void>;
 }
 
 interface PendingApproval {
@@ -39,30 +45,17 @@ interface PendingApproval {
   resolve: (d: { optionId: string }) => void;
 }
 
-/** 对齐 @opentui/core 的 SelectOption：description 必填 */
-interface SelOpt {
-  name: string;
-  description: string;
-  value?: unknown;
-}
-
-const AGENT_CHOICES: SelOpt[] = [
-  { name: "codex", description: "OpenAI Codex (app-server)", value: "codex" },
-  { name: "claude", description: "Claude Code (Agent SDK)", value: "claude" },
-];
-
 function App(): ReactNode {
-  const runtimes = useRef(new Map<string, Runtime>());
+  const slots = useRef(new Map<AgentName, AgentSlot>());
+  const view = useRef<SessionState>(emptySessionState());
   const [, setTick] = useState(0);
   const bump = useCallback(() => setTick((t) => t + 1), []);
 
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [focus, setFocus] = useState<"rail" | "composer">("composer");
+  const [agent, setAgent] = useState<AgentName>("codex");
   const [draft, setDraft] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
   const [approval, setApproval] = useState<PendingApproval | null>(null);
-  const [newSessionOpen, setNewSessionOpen] = useState(runtimes.current.size === 0);
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const approvalHandler = useCallback(
     (request: PermissionRequest) =>
@@ -70,212 +63,167 @@ function App(): ReactNode {
     [],
   );
 
-  const createSession = useCallback(
-    async (agent: string) => {
-      const handle = store.createSession({ cwd: defaultCwd, title: `${agent} @ ${defaultCwd}` });
-      const adapter: AgentAdapter =
-        agent === "claude" ? new ClaudeAdapter({ approvalHandler }) : new CodexAdapter({ approvalHandler });
-      const rt: Runtime = { agent, handle, adapter, view: emptySessionState(), busy: false };
-      runtimes.current.set(handle.id, rt);
-      setActiveId(handle.id);
-      setFocus("composer");
-      bump();
-      try {
-        rt.ref = await adapter.start({ cwd: defaultCwd });
-        handle.setProviderSession(adapter.provider, {
-          provider: adapter.provider,
-          providerSessionId: rt.ref.providerSessionId,
-        });
-      } catch (err) {
-        setError(`start ${agent} failed: ${err instanceof Error ? err.message : String(err)}`);
+  const ensureAgent = useCallback(
+    async (name: AgentName): Promise<AgentSlot> => {
+      let slot = slots.current.get(name);
+      if (!slot) {
+        const adapter: AgentAdapter =
+          name === "claude" ? new ClaudeAdapter({ approvalHandler }) : new CodexAdapter({ approvalHandler });
+        slot = { adapter };
+        slots.current.set(name, slot);
+        slot.starting = (async () => {
+          slot.ref = await adapter.start({ cwd });
+          session.setProviderSession(adapter.provider, {
+            provider: adapter.provider,
+            providerSessionId: slot.ref.providerSessionId,
+          });
+        })();
       }
-      bump();
+      if (slot.starting) {
+        setStatus(`starting ${name}…`);
+        bump();
+        await slot.starting;
+        slot.starting = undefined;
+        setStatus(null);
+      }
+      return slot;
     },
     [approvalHandler, bump],
   );
 
   const send = useCallback(
-    async (text: string) => {
-      const trimmed = text.trim();
-      if (!trimmed || !activeId) return;
-      const rt = runtimes.current.get(activeId);
-      if (!rt || !rt.ref || rt.busy) return;
+    async (raw: string) => {
+      const trimmed = raw.trim();
+      if (!trimmed || busy) return;
+
+      // @codex / @claude 前缀：切换目标 agent（并从消息里剥掉）
+      let target = agent;
+      let text = trimmed;
+      const m = AGENT_PREFIX.exec(trimmed);
+      if (m) {
+        target = m[1] as AgentName;
+        text = trimmed.slice(m[0].length).trim();
+        setAgent(target);
+        if (!text) {
+          setDraft("");
+          return; // 只切 agent 不发消息
+        }
+      }
+
       setDraft("");
-      setError(null);
-      rt.busy = true;
-      const { prompt } = expandMentions(store, trimmed);
-      const turnId = newId("t");
+      setBusy(true);
+      setStatus(null);
       try {
-        await rt.adapter.prompt(
-          rt.ref,
-          [{ type: "text", text: prompt }],
+        const slot = await ensureAgent(target);
+        if (!slot.ref) throw new Error(`${target} 启动失败`);
+
+        // 跨会话 @bs_ 引用 + 同会话跨 agent 自动补课，两类上下文都在发送时注入
+        const { prompt } = expandMentions(store, text);
+        const catchUp = buildCatchUpContext(session, slot.adapter.provider);
+        const finalPrompt = catchUp ? `<baton-sync>\n${catchUp}\n</baton-sync>\n\n${prompt}` : prompt;
+
+        const turnId = newId("t");
+        await slot.adapter.prompt(
+          slot.ref,
+          [{ type: "text", text: finalPrompt }],
           (ev) => {
-            const envelope = rt.handle.append(ev);
-            applyEvent(rt.view, envelope as Parameters<typeof applyEvent>[1]);
+            const envelope = session.append(ev);
+            applyEvent(view.current, envelope as Parameters<typeof applyEvent>[1]);
             bump();
           },
           { turnId },
         );
-        rt.handle.summarizeTurn(turnId);
-        if (rt.adapter instanceof ClaudeAdapter) {
-          const nativeId = rt.adapter.nativeSessionId(rt.ref);
+        session.summarizeTurn(turnId);
+        if (slot.adapter instanceof ClaudeAdapter) {
+          const nativeId = slot.adapter.nativeSessionId(slot.ref);
           if (nativeId) {
-            rt.handle.setProviderSession(rt.adapter.provider, {
-              provider: rt.adapter.provider,
+            session.setProviderSession(slot.adapter.provider, {
+              provider: slot.adapter.provider,
               providerSessionId: nativeId,
             });
           }
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setStatus(err instanceof Error ? err.message : String(err));
       } finally {
-        rt.busy = false;
+        setBusy(false);
         bump();
       }
     },
-    [activeId, bump],
+    [agent, busy, ensureAgent, bump],
   );
 
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") process.exit(0);
-    if (approval || newSessionOpen || pickerOpen) {
-      if (key.name === "escape") {
-        setNewSessionOpen(false);
-        setPickerOpen(false);
-      }
-      return;
+    if (key.name === "escape" && busy) {
+      const slot = slots.current.get(agent);
+      if (slot?.ref) void slot.adapter.cancel(slot.ref);
     }
-    if (key.name === "tab") setFocus((f) => (f === "rail" ? "composer" : "rail"));
-    if (key.ctrl && key.name === "n") setNewSessionOpen(true);
-    if (key.ctrl && key.name === "r") setPickerOpen(true);
   });
 
-  const sessionOptions: SelOpt[] = [...runtimes.current.values()].map((rt) => ({
-    name: `${rt.busy ? "● " : ""}${rt.agent}: ${rt.handle.meta.title ?? rt.handle.id}`,
-    description: rt.handle.id,
-    value: rt.handle.id,
-  }));
-  const active = activeId ? runtimes.current.get(activeId) : undefined;
-  const view = active?.view;
+  const v = view.current;
+  const usageLine = `in:${v.usage.inputTokens} out:${v.usage.outputTokens}`;
 
   return (
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
-      <box style={{ flexDirection: "row", flexGrow: 1 }}>
-        <box
-          title="sessions (^N new)"
-          border
-          style={{ flexBasis: 32, flexShrink: 0, flexDirection: "column" }}
-        >
-          <select
-            focused={focus === "rail" && !approval && !newSessionOpen && !pickerOpen}
-            options={sessionOptions}
-            onSelect={(_i: number, opt: SelOpt | null) => {
-              if (opt) {
-                setActiveId(String(opt.value));
-                setFocus("composer");
-              }
-            }}
-          />
-        </box>
-        <box style={{ flexGrow: 1, flexDirection: "column" }}>
-          <scrollbox style={{ flexGrow: 1 }} stickyScroll stickyStart="bottom">
-            {view ? (
-              view.timeline.map((item) => {
-                if (item.type === "message") {
-                  const msg = view.messages.get(item.id);
-                  if (!msg) return null;
-                  const label = msg.role === "user" ? "you" : msg.role === "thought" ? "…" : active?.agent;
-                  const color = msg.role === "user" ? "#7aa2f7" : msg.role === "thought" ? "#565f89" : "#9ece6a";
-                  return (
-                    <text key={item.id}>
-                      <span fg={color}>{`${label}> `}</span>
-                      {textOf(msg.content)}
-                    </text>
-                  );
-                }
-                if (item.type === "tool_call") {
-                  const tc = view.toolCalls.get(item.id);
-                  if (!tc) return null;
-                  const mark = tc.status === "completed" ? "✓" : tc.status === "failed" ? "✗" : "⋯";
-                  return <text key={item.id} fg="#e0af68">{`  ${mark} [${tc.kind ?? "tool"}] ${tc.title ?? item.id}`}</text>;
-                }
-                return null;
-              })
-            ) : (
-              <text fg="#565f89">Ctrl+N 新建会话开始；Ctrl+R 引用其它会话；Tab 切换焦点</text>
-            )}
-          </scrollbox>
-          <box title={active ? `${active.agent}${active.busy ? " (running)" : ""}` : "composer"} border style={{ height: 3 }}>
-            <input
-              focused={focus === "composer" && !approval && !newSessionOpen && !pickerOpen}
-              value={draft}
-              placeholder="输入消息，@bs_xxx 引用其它会话…"
-              onInput={setDraft}
-              onSubmit={(v: string | object) => {
-                if (typeof v === "string") void send(v);
-              }}
-            />
-          </box>
-        </box>
-      </box>
-      <box style={{ height: 1, flexDirection: "row" }}>
-        <text fg={error ? "#f7768e" : "#565f89"}>
-          {error ??
-            (view
-              ? `state:${view.runState}  tokens in:${view.usage.inputTokens} out:${view.usage.outputTokens}  turns:${view.turnSummaries.length}`
-              : "baton")}
+      <scrollbox style={{ flexGrow: 1, paddingLeft: 1, paddingRight: 1 }} stickyScroll stickyStart="bottom" focused={false}>
+        <text fg="#565f89">
+          {`baton · session ${session.id}\n直接输入发给当前 agent；@codex / @claude 切换；@bs_xxx 引用其它会话（baton sessions 查看）\n`}
         </text>
+        {v.timeline.map((item) => {
+          if (item.type === "message") {
+            const msg = v.messages.get(item.id);
+            if (!msg) return null;
+            if (msg.role === "thought") return null; // 思考流不进主时间线，保持清爽
+            const label = msg.role === "user" ? "you" : (PROVIDER_LABEL[msg.provider ?? ""] ?? msg.provider ?? "agent");
+            const color = msg.role === "user" ? "#7aa2f7" : label === "codex" ? "#9ece6a" : "#bb9af7";
+            const body = msg.role === "user" ? textOf(msg.content).replace(/<baton-(context|sync)>[\s\S]*<\/baton-\1>\s*/g, "") : textOf(msg.content);
+            return (
+              <text key={item.id}>
+                <span fg={color}>{`\n${label}> `}</span>
+                {body}
+              </text>
+            );
+          }
+          if (item.type === "tool_call") {
+            const tc = v.toolCalls.get(item.id);
+            if (!tc) return null;
+            const mark = tc.status === "completed" ? "✓" : tc.status === "failed" ? "✗" : "⋯";
+            return <text key={item.id} fg="#e0af68">{`  ${mark} ${tc.title ?? item.id}`}</text>;
+          }
+          return null;
+        })}
+        {busy && <text fg="#565f89">{`\n${agent} 思考中… (Esc 中断)`}</text>}
+      </scrollbox>
+
+      <box title={`@${agent}${busy ? " · running" : ""}`} border borderColor={busy ? "#e0af68" : "#3b4261"} style={{ height: 3 }}>
+        <input
+          focused={!approval}
+          value={draft}
+          placeholder={`发给 ${agent}（@codex/@claude 切换 agent）`}
+          onInput={setDraft}
+          onSubmit={(val: string | object) => {
+            if (typeof val === "string") void send(val);
+          }}
+        />
       </box>
-
-      {newSessionOpen && (
-        <box
-          title="new session"
-          border
-          style={{ position: "absolute", left: 10, top: 4, width: 44, height: 6, zIndex: 100 }}
-        >
-          <select
-            focused
-            options={AGENT_CHOICES}
-            onSelect={(_i: number, opt: SelOpt | null) => {
-              setNewSessionOpen(false);
-              if (opt) void createSession(String(opt.value));
-            }}
-          />
-        </box>
-      )}
-
-      {pickerOpen && (
-        <box
-          title="引用哪个会话？"
-          border
-          style={{ position: "absolute", left: 10, top: 4, width: 60, height: 8, zIndex: 100 }}
-        >
-          <select
-            focused
-            options={sessionOptions}
-            onSelect={(_i: number, opt: SelOpt | null) => {
-              setPickerOpen(false);
-              if (opt) setDraft((d) => `${d}@${String(opt.value)} `);
-              setFocus("composer");
-            }}
-          />
-        </box>
-      )}
+      <box style={{ height: 1 }}>
+        <text fg={status ? "#f7768e" : "#565f89"}>{status ?? `${usageLine}  turns:${v.turnSummaries.length}  cwd:${cwd}`}</text>
+      </box>
 
       {approval && (
         <box
-          title="approval required"
+          title="需要你的批准"
           border
           borderColor="#e0af68"
-          style={{ position: "absolute", left: 6, top: 3, width: 70, height: 9, zIndex: 200 }}
+          style={{ position: "absolute", left: 4, top: 2, width: 72, height: 10, zIndex: 200, flexDirection: "column" }}
         >
           <text>{approval.request.title}</text>
           <select
             focused
-            options={approval.request.options.map(
-              (o): SelOpt => ({ name: o.name, description: o.kind, value: o.optionId }),
-            )}
-            onSelect={(_i: number, opt: SelOpt | null) => {
+            style={{ flexGrow: 1 }}
+            options={approval.request.options.map((o) => ({ name: o.name, description: o.kind, value: o.optionId }))}
+            onSelect={(_i: number, opt: { name: string; description: string; value?: unknown } | null) => {
               if (opt) {
                 approval.resolve({ optionId: String(opt.value) });
                 setApproval(null);
