@@ -20,6 +20,7 @@ import type { PermissionRequest } from "../events/types.ts";
 import { textOf } from "../events/types.ts";
 import { applyEvent, emptySessionState, type SessionState } from "../store/reduce.ts";
 import { SessionStore } from "../store/store.ts";
+import { applyCompletion, buildCandidates, triggerAt } from "./completion.ts";
 
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -35,7 +36,8 @@ const cwd = argValue("--cwd") ?? process.cwd();
 const session = store.createSession({ cwd, title: `chat @ ${cwd}` });
 
 type AgentName = "codex" | "claude";
-const AGENT_PREFIX = /^@(codex|claude)\b\s*/;
+// @codex（引用风格）与 /codex（命令风格）都能切换 agent，按用户习惯二选一
+const AGENT_PREFIX = /^[@/](codex|claude)\b\s*/;
 const PROVIDER_LABEL: Record<string, string> = { codex: "codex", "claude-code": "claude" };
 
 interface AgentSlot {
@@ -60,6 +62,16 @@ function App(): ReactNode {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [approval, setApproval] = useState<PendingApproval | null>(null);
+  const [suggIdx, setSuggIdx] = useState(0);
+  const [suggDismissed, setSuggDismissed] = useState(false);
+
+  // 候选由输入实时推导（/ 行首=命令，@ =引用），无独立状态需要同步
+  const trigger = triggerAt(draft);
+  const candidates =
+    trigger && !suggDismissed && !approval
+      ? buildCandidates(trigger, store.listSessions(), { excludeSessionId: session.id })
+      : [];
+  const sel = candidates.length ? Math.min(suggIdx, candidates.length - 1) : 0;
 
   const approvalHandler = useCallback(
     (request: PermissionRequest) =>
@@ -101,8 +113,9 @@ function App(): ReactNode {
     async (raw: string) => {
       const trimmed = raw.trim();
       if (!trimmed || busy) return;
+      if (trimmed === "/exit") process.exit(0);
 
-      // @codex / @claude 前缀：切换目标 agent（并从消息里剥掉）
+      // @codex 或 /codex 前缀：切换目标 agent（并从消息里剥掉）
       let target = agent;
       let text = trimmed;
       const m = AGENT_PREFIX.exec(trimmed);
@@ -161,6 +174,19 @@ function App(): ReactNode {
 
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") process.exit(0);
+    if (candidates.length > 0) {
+      // 候选浮层：↑/↓ 选择，Tab 补全（Enter 保留"发送"语义），Esc 关闭
+      if (key.name === "down") setSuggIdx((i) => (i + 1) % candidates.length);
+      else if (key.name === "up") setSuggIdx((i) => (i - 1 + candidates.length) % candidates.length);
+      else if (key.name === "tab" && trigger) {
+        const chosen = candidates[sel];
+        if (chosen) {
+          setDraft(applyCompletion(draft, trigger, chosen));
+          setSuggIdx(0);
+        }
+      } else if (key.name === "escape") setSuggDismissed(true);
+      return;
+    }
     if (key.name === "escape" && busy) {
       const slot = slots.current.get(agent);
       if (slot?.ref) void slot.adapter.cancel(slot.ref);
@@ -174,7 +200,7 @@ function App(): ReactNode {
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
       <scrollbox style={{ flexGrow: 1, paddingLeft: 1, paddingRight: 1 }} stickyScroll stickyStart="bottom" focused={false}>
         <text fg="#565f89">
-          {`baton · session ${session.id}\n直接输入发给当前 agent；@codex / @claude 切换；@bs_xxx 引用其它会话（baton sessions 查看）\n`}
+          {`baton · session ${session.id}\n直接输入发给当前 agent；/ 或 @ 弹出候选（Tab 补全）：/claude 切 agent，@bs_xxx 引用其它会话\n`}
         </text>
         {v.timeline.map((item) => {
           if (item.type === "message") {
@@ -239,13 +265,31 @@ function App(): ReactNode {
         <input
           focused={!approval}
           value={draft}
-          placeholder={`发给 ${agent}（@codex/@claude 切换 agent）`}
-          onInput={setDraft}
+          placeholder={`发给 ${agent}（/ 命令，@ 引用）`}
+          onInput={(v: string) => {
+            setDraft(v);
+            setSuggDismissed(false);
+            setSuggIdx(0);
+          }}
           onSubmit={(val: string | object) => {
             if (typeof val === "string") void send(val);
           }}
         />
       </box>
+      {candidates.length > 0 && (
+        <box
+          border
+          borderColor="#3b4261"
+          title="候选 (Tab 补全 · ↑↓ 选择 · Esc 关闭)"
+          style={{ position: "absolute", left: 2, bottom: 4, width: 60, height: candidates.length + 2, zIndex: 150, flexDirection: "column" }}
+        >
+          {candidates.map((c, i) => (
+            <text key={c.insert} fg={i === sel ? "#7aa2f7" : "#a9b1d6"}>
+              {`${i === sel ? "▸ " : "  "}${c.label}  ${c.detail}`}
+            </text>
+          ))}
+        </box>
+      )}
       <box style={{ height: 1 }}>
         <text fg={status ? "#f7768e" : "#565f89"}>{status ?? `${usageLine}  turns:${v.turnSummaries.length}  cwd:${cwd}`}</text>
       </box>
