@@ -29,6 +29,7 @@ baton/
 │   │   ├── reduce.ts        # 事件流 reduce 成会话状态（TUI 渲染与崩溃恢复的来源）
 │   │   └── store.ts         # session.jsonl 追加/读取 + meta.json + turn-summary 生成
 │   ├── cli/
+│   │   ├── bin.ts           # 统一命令入口（package.json bin）：baton / baton repl / baton sessions
 │   │   └── main.ts          # headless REPL：bun run repl -- [--agent codex|claude] [--cwd <dir>]
 │   └── tui/
 │       └── main.tsx         # opentui TUI：bun run tui（rail/消息流/composer/审批模态，^N 新会话 ^R 插入@引用）
@@ -36,6 +37,8 @@ baton/
 ```
 
 运行时 Bun，单包结构（不预造 package 边界）。验证命令：`bun run check`（typecheck + test）。
+
+本地试用：仓库内 `bun install && bun link` 后全局可用 `baton`（Bun 直接跑 TS 源码，无构建步骤；不用 `bun build --compile`，opentui 原生库与 Claude SDK 的动态加载在单文件二进制下有坑）。
 
 ## 关键约定
 
