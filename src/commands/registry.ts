@@ -15,11 +15,6 @@ export interface CommandDefinition {
   runPolicy: "always" | "idle";
 }
 
-export interface CommandInvocation {
-  definition: CommandDefinition;
-  argument: string;
-}
-
 export const COMMANDS: readonly CommandDefinition[] = [
   {
     name: "provider",
@@ -47,18 +42,6 @@ export const COMMANDS: readonly CommandDefinition[] = [
   },
   { name: "exit", description: "Exit baton", scope: "baton", runPolicy: "always" },
 ];
-
-/** 识别完整命令或唯一前缀；未知或有歧义的 `/path` 等输入仍作为普通 prompt。 */
-export function parseCommand(input: string): CommandInvocation | null {
-  const match = /^\/([a-z-]+)(?:\s+(.*))?$/i.exec(input.trim());
-  if (!match) return null;
-  const name = match[1]?.toLowerCase();
-  const exact = COMMANDS.find((command) => command.name === name);
-  const prefixMatches = exact ? [] : COMMANDS.filter((command) => command.name.startsWith(name ?? ""));
-  const definition = exact ?? (prefixMatches.length === 1 ? prefixMatches[0] : undefined);
-  if (!definition) return null;
-  return { definition, argument: match[2]?.trim() ?? "" };
-}
 
 export function parseProvider(value: string): ProviderName | null {
   const normalized = value.trim().toLowerCase();

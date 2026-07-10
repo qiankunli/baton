@@ -1,0 +1,374 @@
+// baton 对 chat-tui 的接入层：实现 ChatProtocol，把 BatonSessionRuntime / SessionStore
+// 的状态投影成视图快照，把 TUI intents 翻译成 runtime 操作。
+// UI 语义（补全、分层 Ctrl+C、浮层交互）都在 chat-tui；这里只有 baton 的业务编排。
+
+import type {
+  ChatProtocol,
+  ChatViewState,
+  Candidate,
+  CommandSpec,
+  StatusMessage,
+  TranscriptItem,
+} from "chat-tui";
+
+import { COMMANDS, parseProvider, PROVIDERS, type CommandName, type ProviderName } from "../commands/registry.ts";
+import type { BatonConfig } from "../config/config.ts";
+import { expandMentions } from "../context/mention.ts";
+import { textOf, type PermissionRequest } from "../events/types.ts";
+import { createProviderAdapter, providerSessionKey } from "../providers/registry.ts";
+import { BatonSessionRuntime } from "../session/runtime.ts";
+import { applyEvent, emptySessionState, type SessionState } from "../store/reduce.ts";
+import type { SessionHandle, SessionStore } from "../store/store.ts";
+import { sessionMentionCandidates } from "./mentions.ts";
+
+const PROVIDER_LABEL: Record<string, string> = { codex: "codex", "claude-code": "claude" };
+
+export const CHAT_COMMANDS: readonly CommandSpec[] = COMMANDS;
+
+export function userVisibleText(text: string): string {
+  return text.replace(/<baton-(context|sync)>[\s\S]*<\/baton-\1>\s*/g, "").trim();
+}
+
+interface PendingApproval {
+  id: string;
+  request: PermissionRequest;
+  resolve: (d: { optionId: string }) => void;
+}
+
+interface PendingPicker {
+  id: string;
+  title: string;
+  options: Array<{ name: string; description: string; value: string }>;
+  onSelect: (value: string) => void | Promise<void>;
+}
+
+export class BatonChatProtocol implements ChatProtocol {
+  private session: SessionHandle;
+  private state: SessionState;
+  private runtime: BatonSessionRuntime;
+  private agent: ProviderName;
+  private status: StatusMessage | null = null;
+  private approvals: PendingApproval[] = [];
+  private picker: PendingPicker | null = null;
+  private nextOverlayId = 1;
+  private listeners = new Set<() => void>();
+  private view: ChatViewState;
+
+  constructor(
+    private readonly store: SessionStore,
+    private readonly config: BatonConfig,
+    opened: { session: SessionHandle; resumed: boolean },
+  ) {
+    this.session = opened.session;
+    this.state = opened.resumed ? opened.session.loadState() : emptySessionState();
+    this.agent = config.defaultAgent;
+    this.runtime = this.createRuntime();
+    this.view = this.buildView();
+  }
+
+  // ===== 输出：baton → TUI =====
+
+  getView(): ChatViewState {
+    return this.view;
+  }
+
+  subscribe(onChange: () => void): () => void {
+    this.listeners.add(onChange);
+    return () => this.listeners.delete(onChange);
+  }
+
+  // ===== 输入：TUI → baton =====
+
+  async submit(text: string): Promise<void> {
+    const target = this.agent;
+    this.status = null;
+    const { prompt } = expandMentions(this.store, text, this.config.mentionBudgetChars);
+    if (this.runtime.isBusy || this.runtime.queueLength > 0) {
+      this.status = { text: `${target} turn queued`, tone: "info" };
+    }
+    this.changed();
+    const outcome = await this.runtime.submit(target, [{ type: "text", text: prompt }], (envelope) => {
+      applyEvent(this.state, envelope);
+      this.changed();
+    });
+    if (outcome === "completed" && this.status?.tone !== "error") {
+      this.status = null;
+      this.changed();
+    }
+  }
+
+  async command(name: string, argument: string): Promise<void> {
+    switch (name as CommandName) {
+      case "exit":
+        return this.exit();
+      case "new": {
+        if (argument) throw new Error("/new takes no arguments");
+        const next = this.store.createSession({
+          cwd: this.session.meta.cwd,
+          title: `chat @ ${this.session.meta.cwd}`,
+        });
+        return this.switchSession(next);
+      }
+      case "sessions": {
+        if (argument) throw new Error("/sessions takes no arguments");
+        this.openPicker({
+          title: "Select BatonSession",
+          options: this.store.listSessions().map((meta) => ({
+            name: `${meta.batonSessionId === this.session.id ? "● " : ""}${meta.title ?? meta.batonSessionId}`,
+            description: `${meta.cwd} · ${meta.updatedAt ?? meta.createdAt}`,
+            value: meta.batonSessionId,
+          })),
+          onSelect: async (value) => {
+            if (value === this.session.id) return;
+            await this.switchSession(this.store.openSession(value));
+          },
+        });
+        return;
+      }
+      case "provider": {
+        if (!argument) {
+          this.openPicker({
+            title: "Select provider",
+            options: PROVIDERS.map((p) => ({ name: p, description: `Switch to ${p}`, value: p })),
+            onSelect: (value) => this.setAgent(value),
+          });
+          return;
+        }
+        const provider = parseProvider(argument);
+        if (!provider) throw new Error(`Unknown provider: ${argument} (available: ${PROVIDERS.join(" / ")})`);
+        this.agent = provider;
+        this.status = null;
+        this.changed();
+        return;
+      }
+      case "model": {
+        const target = this.agent;
+        const models = await this.runtime.listModels(target);
+        if (!argument) {
+          this.openPicker({
+            title: `Select ${target} model`,
+            options: models.map((m) => ({ name: m.label, description: m.description ?? m.id, value: m.id })),
+            onSelect: async (value) => {
+              const model = models.find((candidate) => candidate.id === value);
+              if (model) await this.configureModel(target, model);
+            },
+          });
+          return;
+        }
+        const normalized = argument.toLowerCase();
+        const model = models.find(
+          (candidate) => candidate.id.toLowerCase() === normalized || candidate.label.toLowerCase() === normalized,
+        );
+        if (!model) throw new Error(`Unknown ${target} model: ${argument}`);
+        return this.configureModel(target, model);
+      }
+      default:
+        throw new Error(`Unknown command: /${name}`);
+    }
+  }
+
+  cancel(): void {
+    void this.runtime.cancelActive();
+  }
+
+  /** 优雅退出：先关掉 agent 子进程再退（对应 /exit、双击 Ctrl+C、Ctrl+D） */
+  async exit(): Promise<void> {
+    this.status = { text: "Exiting…", tone: "info" };
+    this.changed();
+    await this.runtime.close();
+    process.exit(0);
+  }
+
+  resolvePicker(id: string, value: string | null): void {
+    const picker = this.picker;
+    if (!picker || picker.id !== id) return;
+    this.picker = null;
+    this.changed();
+    if (value === null) return;
+    void (async () => {
+      try {
+        await picker.onSelect(value);
+      } catch (error) {
+        this.status = { text: error instanceof Error ? error.message : String(error), tone: "error" };
+        this.changed();
+      }
+    })();
+  }
+
+  resolveApproval(id: string, optionId: string): void {
+    const index = this.approvals.findIndex((approval) => approval.id === id);
+    if (index < 0) return;
+    const [approval] = this.approvals.splice(index, 1);
+    approval!.resolve({ optionId });
+    this.changed();
+  }
+
+  recallQueued(): { text: string } | null {
+    const recalled = this.runtime.recallLatestQueued();
+    if (!recalled) return null;
+    const provider = parseProvider(recalled.provider);
+    if (provider) this.agent = provider;
+    this.status = { text: `Recalled queued message for ${recalled.provider}; edit and resend`, tone: "info" };
+    this.changed();
+    return { text: userVisibleText(textOf(recalled.blocks)) };
+  }
+
+  /** @ 候选源，注入给 ChatShell */
+  mentionCandidates = (prefix: string): Candidate[] =>
+    sessionMentionCandidates(this.store.listSessions(), prefix, { excludeSessionId: this.session.id });
+
+  // ===== 内部 =====
+
+  /** adapter 的审批回调：挂进队列，由 TUI 的审批卡片经 resolveApproval 应答 */
+  private approvalHandler = (request: PermissionRequest): Promise<{ optionId: string }> =>
+    new Promise((resolve) => {
+      this.approvals.push({ id: `ap_${this.nextOverlayId++}`, request, resolve });
+      this.changed();
+    });
+
+  private createRuntime(): BatonSessionRuntime {
+    return new BatonSessionRuntime({
+      session: this.session,
+      mentionBudgetChars: this.config.mentionBudgetChars,
+      createAdapter: (name) =>
+        createProviderAdapter(name as ProviderName, { approvalHandler: this.approvalHandler, config: this.config }),
+      providerSessionKey: (name) => providerSessionKey(name as ProviderName),
+      onStateChange: () => this.changed(),
+    });
+  }
+
+  private async switchSession(next: SessionHandle): Promise<void> {
+    if (this.runtime.isBusy || this.runtime.queueLength > 0) {
+      throw new Error("Wait for the current turn to finish before switching BatonSession");
+    }
+    await this.runtime.close();
+    this.session = next;
+    this.state = next.loadState();
+    this.runtime = this.createRuntime();
+    this.status = { text: `Opened session ${next.id}`, tone: "info" };
+    this.changed();
+  }
+
+  private setAgent(value: string): void {
+    const provider = parseProvider(value);
+    if (provider) {
+      this.agent = provider;
+      this.changed();
+    }
+  }
+
+  private async configureModel(target: ProviderName, model: { id: string; label: string }): Promise<void> {
+    await this.runtime.setModel(target, model.id);
+    this.status = { text: `${target} model: ${model.label} (takes effect next turn)`, tone: "info" };
+    this.changed();
+  }
+
+  private openPicker(picker: Omit<PendingPicker, "id">): void {
+    this.picker = { ...picker, id: `pk_${this.nextOverlayId++}` };
+    this.changed();
+  }
+
+  /** 快照式更新：每次变更整体替换 view 再通知（getView 引用稳定性要求） */
+  private changed(): void {
+    this.view = this.buildView();
+    for (const listener of this.listeners) listener();
+  }
+
+  private buildView(): ChatViewState {
+    const v = this.state;
+    const active = this.runtime.activeProvider;
+    const approval = this.approvals[0];
+    const selectedModel = this.runtime.currentModel(this.agent) ?? "default";
+    const selectedBusy = active === this.agent;
+    return {
+      transcript: buildTranscript(v),
+      busy: active !== undefined,
+      runningNotices: active ? [`${active} thinking… (Esc to interrupt)`] : [],
+      queued: this.runtime.queuedTurns.map((turn) => ({
+        id: String(turn.id),
+        text: userVisibleText(textOf(turn.blocks)),
+        tag: turn.provider,
+      })),
+      queuedHint: "↑ edit last queued message",
+      picker: this.picker
+        ? { id: this.picker.id, title: this.picker.title, options: this.picker.options }
+        : null,
+      approval: approval
+        ? { id: approval.id, title: approval.request.title, options: approval.request.options }
+        : null,
+      status: this.status,
+      footer: `in:${v.usage.inputTokens} out:${v.usage.outputTokens}  turns:${v.turnSummaries.length}  queue:${this.runtime.queueLength}  cwd:${this.session.meta.cwd}`,
+      composerTitle: `provider:${this.agent} · model:${selectedModel}${selectedBusy ? " · running" : ""}`,
+      composerPlaceholder: `Message ${this.agent} (/ commands, @ mentions, Ctrl+J newline)`,
+      header: `baton · session ${this.session.id}\ntype to chat · /provider switch · /sessions open · @bs_xxx reference another session\n`,
+      showThoughts: this.config.showThoughts,
+    };
+  }
+}
+
+// baton 的状态类型是开放联合（容忍未知 wire 值），chat-tui 是闭集；
+// 未知值回落到与旧 TUI 相同的展示形态（工具 ⋯ / 计划 ☐）。
+const TOOL_STATUSES = new Set(["pending", "in_progress", "completed", "failed"]);
+const PLAN_STATUSES = new Set(["pending", "in_progress", "completed"]);
+
+function normalizeToolStatus(status: string): "pending" | "in_progress" | "completed" | "failed" {
+  return (TOOL_STATUSES.has(status) ? status : "in_progress") as ReturnType<typeof normalizeToolStatus>;
+}
+
+function normalizePlanStatus(status: string): "pending" | "in_progress" | "completed" {
+  return (PLAN_STATUSES.has(status) ? status : "pending") as ReturnType<typeof normalizePlanStatus>;
+}
+
+/** SessionState → chat-tui 展示形状。diff/输出块在这里压成行，块语义不出 baton。 */
+function buildTranscript(state: SessionState): TranscriptItem[] {
+  const items: TranscriptItem[] = [];
+  for (const entry of state.timeline) {
+    if (entry.type === "message") {
+      const msg = state.messages.get(entry.id);
+      if (!msg) continue;
+      if (msg.role === "thought") {
+        items.push({ type: "message", id: entry.id, role: "thought", text: textOf(msg.content).trim() });
+        continue;
+      }
+      const author =
+        msg.role === "user" ? "you" : (PROVIDER_LABEL[msg.provider ?? ""] ?? msg.provider ?? "agent");
+      items.push({
+        type: "message",
+        id: entry.id,
+        role: msg.role === "user" ? "user" : "agent",
+        author,
+        text: msg.role === "user" ? userVisibleText(textOf(msg.content)) : textOf(msg.content),
+      });
+      continue;
+    }
+    if (entry.type === "tool_call") {
+      const tc = state.toolCalls.get(entry.id);
+      if (!tc) continue;
+      const detailLines: string[] = [];
+      for (const block of tc.content) {
+        if (block.type === "diff") {
+          for (const change of (block as { changes: Array<{ operation: string; path: string }> }).changes) {
+            detailLines.push(`± ${change.operation} ${change.path}`);
+          }
+        }
+      }
+      items.push({
+        type: "tool_call",
+        id: entry.id,
+        title: tc.title ?? entry.id,
+        status: normalizeToolStatus(tc.status),
+        detailLines,
+        tailLines: tc.status === "in_progress" ? textOf(tc.content).split("\n").filter(Boolean).slice(-3) : [],
+      });
+      continue;
+    }
+    const plan = state.plans.get(entry.id);
+    if (!plan) continue;
+    items.push({
+      type: "plan",
+      id: entry.id,
+      entries: plan.entries.map((e) => ({ content: e.content, status: normalizePlanStatus(e.status) })),
+    });
+  }
+  return items;
+}

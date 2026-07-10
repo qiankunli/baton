@@ -1,46 +1,27 @@
 import { describe, expect, test } from "bun:test";
+import { parseSlashCommand } from "chat-tui";
 
-import { parseCommand, parseProvider } from "../src/commands/registry.ts";
+import { COMMANDS, parseProvider } from "../src/commands/registry.ts";
 
+// slash 解析实现在 chat-tui；这里锁的是"chat-tui 解析器 × baton 命令表"的组合行为。
 describe("baton command registry", () => {
   test("parses provider and model commands with arguments", () => {
-    expect(parseCommand("/provider claude")).toMatchObject({
-      definition: { name: "provider", scope: "baton", runPolicy: "always" },
-      argument: "claude",
-    });
-    expect(parseCommand("/model sonnet")).toMatchObject({
-      definition: { name: "model", scope: "provider", runPolicy: "always" },
-      argument: "sonnet",
-    });
-    expect(parseCommand("/sessions")).toMatchObject({
-      definition: { name: "sessions", scope: "baton", runPolicy: "idle" },
-      argument: "",
-    });
-    expect(parseCommand("/new")).toMatchObject({
-      definition: { name: "new", scope: "baton", runPolicy: "idle" },
-      argument: "",
-    });
+    expect(parseSlashCommand("/provider claude", COMMANDS)).toEqual({ name: "provider", argument: "claude" });
+    expect(parseSlashCommand("/model sonnet", COMMANDS)).toEqual({ name: "model", argument: "sonnet" });
+    expect(parseSlashCommand("/sessions", COMMANDS)).toEqual({ name: "sessions", argument: "" });
+    expect(parseSlashCommand("/new", COMMANDS)).toEqual({ name: "new", argument: "" });
   });
 
   test("accepts unique command prefixes", () => {
-    expect(parseCommand("/pro claude")).toMatchObject({
-      definition: { name: "provider" },
-      argument: "claude",
-    });
-    expect(parseCommand("/m sonnet")).toMatchObject({
-      definition: { name: "model" },
-      argument: "sonnet",
-    });
-    expect(parseCommand("/s")).toMatchObject({
-      definition: { name: "sessions" },
-      argument: "",
-    });
+    expect(parseSlashCommand("/pro claude", COMMANDS)).toEqual({ name: "provider", argument: "claude" });
+    expect(parseSlashCommand("/m sonnet", COMMANDS)).toEqual({ name: "model", argument: "sonnet" });
+    expect(parseSlashCommand("/s", COMMANDS)).toEqual({ name: "sessions", argument: "" });
   });
 
   test("does not retain old provider aliases or consume unknown slash prompts", () => {
-    expect(parseCommand("/claude")).toBeNull();
-    expect(parseCommand("/codex hello")).toBeNull();
-    expect(parseCommand("/tmp/project")).toBeNull();
+    expect(parseSlashCommand("/claude", COMMANDS)).toBeNull();
+    expect(parseSlashCommand("/codex hello", COMMANDS)).toBeNull();
+    expect(parseSlashCommand("/tmp/project", COMMANDS)).toBeNull();
   });
 
   test("currently bundled provider values are explicit", () => {
