@@ -48,12 +48,14 @@ export const COMMANDS: readonly CommandDefinition[] = [
   { name: "exit", description: "退出 baton", scope: "baton", runPolicy: "always" },
 ];
 
-/** 只识别 registry 中的命令；未知的 `/path` 等输入仍作为普通 prompt。 */
+/** 识别完整命令或唯一前缀；未知或有歧义的 `/path` 等输入仍作为普通 prompt。 */
 export function parseCommand(input: string): CommandInvocation | null {
   const match = /^\/([a-z-]+)(?:\s+(.*))?$/i.exec(input.trim());
   if (!match) return null;
   const name = match[1]?.toLowerCase();
-  const definition = COMMANDS.find((command) => command.name === name);
+  const exact = COMMANDS.find((command) => command.name === name);
+  const prefixMatches = exact ? [] : COMMANDS.filter((command) => command.name.startsWith(name ?? ""));
+  const definition = exact ?? (prefixMatches.length === 1 ? prefixMatches[0] : undefined);
   if (!definition) return null;
   return { definition, argument: match[2]?.trim() ?? "" };
 }

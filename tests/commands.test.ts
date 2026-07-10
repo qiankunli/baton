@@ -22,6 +22,21 @@ describe("baton command registry", () => {
     });
   });
 
+  test("accepts unique command prefixes", () => {
+    expect(parseCommand("/pro claude")).toMatchObject({
+      definition: { name: "provider" },
+      argument: "claude",
+    });
+    expect(parseCommand("/m sonnet")).toMatchObject({
+      definition: { name: "model" },
+      argument: "sonnet",
+    });
+    expect(parseCommand("/s")).toMatchObject({
+      definition: { name: "sessions" },
+      argument: "",
+    });
+  });
+
   test("does not retain old provider aliases or consume unknown slash prompts", () => {
     expect(parseCommand("/claude")).toBeNull();
     expect(parseCommand("/codex hello")).toBeNull();
