@@ -41,12 +41,12 @@ export function createProviderAdapter(
   options: ProviderAdapterOptions,
 ): AgentAdapter {
   const definition = PROVIDER_REGISTRY.find((candidate) => candidate.id === provider);
-  if (!definition) throw new Error(`provider 未注册: ${provider}`);
+  if (!definition) throw new Error(`Provider not registered: ${provider}`);
   return definition.create(options);
 }
 
 export function providerSessionKey(provider: ProviderName): string {
   const definition = PROVIDER_REGISTRY.find((candidate) => candidate.id === provider);
-  if (!definition) throw new Error(`provider 未注册: ${provider}`);
+  if (!definition) throw new Error(`Provider not registered: ${provider}`);
   return definition.sessionKey;
 }

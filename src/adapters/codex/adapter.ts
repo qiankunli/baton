@@ -34,7 +34,7 @@ interface ThreadRuntime {
 
 function codexModels(result: unknown): ModelOption[] {
   const data = (result as { data?: unknown[] })?.data;
-  const models: ModelOption[] = [{ id: "default", label: "Default", description: "使用 Codex 默认模型" }];
+  const models: ModelOption[] = [{ id: "default", label: "Default", description: "Use the Codex default model" }];
   if (!Array.isArray(data)) return models;
   for (const raw of data) {
     const model = raw as Record<string, unknown>;

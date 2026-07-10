@@ -13,19 +13,20 @@ import { SessionStore } from "../store/store.ts";
 
 const HELP = `baton — one durable terminal session across coding-agent providers
 
-用法:
+Usage:
   baton [--cwd <dir>] [-c|--continue] [-s|--session <id>]
-                        启动聊天 TUI；默认新建 BatonSession，-c 继续当前目录
-                        最近会话，-s 打开指定会话；/provider 切换 provider
+                        start the chat TUI; creates a new BatonSession by default,
+                        -c continues the latest session in the cwd, -s opens a
+                        specific session; /provider switches provider
   baton repl [--agent codex|claude] [--cwd <dir>]   headless REPL
-  baton sessions        列出会话（可在输入里用 @<id> 引用）
-  baton version         显示版本（也支持 --version / -V）
-  baton help            本帮助
+  baton sessions        list sessions (reference with @<id> in the input)
+  baton version         show version (also --version / -V)
+  baton help            this help
 
-配置:
-  ~/.baton/config.yaml      首次运行自动生成；defaultAgent / claudeExecutable /
+Config:
+  ~/.baton/config.yaml      generated on first run; defaultAgent / claudeExecutable /
                             codexCommand / mentionBudgetChars / showThoughts
-  BATON_CLAUDE_BIN          环境变量，优先级高于 config.yaml 的 claudeExecutable
+  BATON_CLAUDE_BIN          env var, takes precedence over claudeExecutable in config.yaml
 `;
 
 const cmd = process.argv[2];
@@ -60,7 +61,7 @@ async function run(command: string): Promise<void> {
       const store = new SessionStore();
       const sessions = store.listSessions();
       if (sessions.length === 0) {
-        console.log("(还没有会话，先跑 baton 或 baton repl)");
+        console.log("(no sessions yet — run baton or baton repl first)");
         break;
       }
       for (const m of sessions) {
@@ -70,7 +71,7 @@ async function run(command: string): Promise<void> {
       break;
     }
     default:
-      console.error(`未知命令: ${command}\n`);
+      console.error(`Unknown command: ${command}\n`);
       console.log(HELP);
       process.exit(1);
   }

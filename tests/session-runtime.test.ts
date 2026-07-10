@@ -215,7 +215,7 @@ describe("BatonSessionRuntime", () => {
     await runtime.submit("claude", [{ type: "text", text: "continue" }]);
 
     expect(claude.synced).toHaveLength(1);
-    expect(claude.synced[0]).toContain("BatonSession 历史");
+    expect(claude.synced[0]).toContain("BatonSession history");
     expect(claude.synced[0]).toContain("existing work");
     expect(claude.prompts).toEqual(["continue"]);
     expect(session.meta.providerSessions["claude-code"]?.syncedSeq).toBeGreaterThan(0);

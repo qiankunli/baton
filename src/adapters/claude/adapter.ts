@@ -106,7 +106,7 @@ interface ClaudeRuntime {
 }
 
 const CLAUDE_FALLBACK_MODELS: ModelOption[] = [
-  { id: "default", label: "Default", description: "使用 Claude Code 默认模型" },
+  { id: "default", label: "Default", description: "Use the Claude Code default model" },
   { id: "sonnet", label: "Sonnet" },
   { id: "opus", label: "Opus" },
   { id: "haiku", label: "Haiku" },
