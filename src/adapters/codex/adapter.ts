@@ -11,6 +11,7 @@ import type {
   AgentAdapter,
   ApprovalHandler,
   EventSink,
+  ModelOption,
   PromptOptions,
   ProviderSessionRef,
   StartOptions,
@@ -24,9 +25,28 @@ interface ThreadRuntime {
   sink?: EventSink;
   turnId?: string;
   codexTurnId?: string;
+  /** 用户在 baton 中选择的模型；作为下一次 turn/start override。 */
+  model?: string;
   turnDone?: { resolve: () => void; reject: (e: Error) => void };
   /** 上次 tokenUsage.total 快照，差分成 usage_update 增量 */
   prevUsage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningOutputTokens: number };
+}
+
+function codexModels(result: unknown): ModelOption[] {
+  const data = (result as { data?: unknown[] })?.data;
+  const models: ModelOption[] = [{ id: "default", label: "Default", description: "使用 Codex 默认模型" }];
+  if (!Array.isArray(data)) return models;
+  for (const raw of data) {
+    const model = raw as Record<string, unknown>;
+    const id = String(model.id ?? model.model ?? "").trim();
+    if (!id) continue;
+    models.push({
+      id,
+      label: String(model.displayName ?? model.display_name ?? id),
+      description: typeof model.description === "string" ? model.description : undefined,
+    });
+  }
+  return models;
 }
 
 const APPROVAL_OPTIONS: PermissionOption[] = [
@@ -141,6 +161,20 @@ export class CodexAdapter implements AgentAdapter {
     return { provider: this.provider, providerSessionId: threadId };
   }
 
+  async listModels(ref: ProviderSessionRef): Promise<ModelOption[]> {
+    const rt = this.mustThread(ref);
+    return codexModels(await rt.peer.request("model/list", { limit: 200 }));
+  }
+
+  async setModel(ref: ProviderSessionRef, modelId: string | null): Promise<void> {
+    const rt = this.mustThread(ref);
+    rt.model = !modelId || modelId === "default" ? undefined : modelId;
+  }
+
+  currentModel(ref: ProviderSessionRef): string | null {
+    return this.mustThread(ref).model ?? null;
+  }
+
   async prompt(
     ref: ProviderSessionRef,
     blocks: ContentBlock[],
@@ -175,6 +209,7 @@ export class CodexAdapter implements AgentAdapter {
       .request("turn/start", {
         threadId: rt.threadId,
         input: [{ type: "text", text: textOf(blocks) }],
+        ...(rt.model ? { model: rt.model } : {}),
         // 不显式开启则 codex 不发 item/reasoning/* 通知，中间过程对用户不可见
         summary: "auto",
       })

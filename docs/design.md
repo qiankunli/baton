@@ -100,6 +100,10 @@ interface AgentAdapter {
 interface Resumable { resume(ref: ProviderSessionRef): Promise<void> }
 interface Approvable { submitApproval(ref: ProviderSessionRef, requestId: string, outcome: ApprovalOutcome): Promise<void> }
 interface PermissionModeCapable { setPermissionMode(ref: ProviderSessionRef, mode: string): Promise<void> }
+interface ModelConfigurable {
+  listModels(ref: ProviderSessionRef): Promise<ModelOption[]>;
+  setModel(ref: ProviderSessionRef, modelId: string | null): Promise<void>;
+}
 ```
 
 - **ClaudeAdapter**：SDK `query()` 流直接转内部事件；`canUseTool` 回调转 ApprovalRequest；SDK 返回的 `session_id` 存为 providerSessionId，resume 走 SDK resume 参数。流顺序、取消、resume cursor 的处理细节参考 tutti `claude-sdk-sidecar/src/main.ts`。
@@ -173,7 +177,9 @@ composer 里 `@` 触发补全，可引用对象：BatonSession / 单个 turn / t
 
 ### 5.9 TUI
 
-opentui（OpenCode 生产在用，组件化 + flex 布局，含 React/Solid reconciler）。布局：左侧 session rail（多会话状态一览）、中间 transcript（reduce 后的 upsert 状态渲染，流式追加）、底部 composer（@ 补全）、审批以模态卡片插入。运行时随 opentui 选 Bun。
+opentui（OpenCode 生产在用，组件化 + flex 布局，含 React/Solid reconciler）。布局：左侧 session rail（多会话状态一览）、中间 transcript（reduce 后的 upsert 状态渲染，流式追加）、底部 composer（slash command 与 @ 补全）、审批以模态卡片插入。运行时随 opentui 选 Bun。
+
+输入语义刻意分开：`/provider` 选择当前输入目标，`/model` 配置该 ProviderSession 后续 turn 使用的模型，`@` 只引用 baton session / turn / 产物。baton 不透传 Claude Code / Codex TUI 的私有 slash command。provider 运行状态按 slot 独立维护，因此切换输入目标不受另一个 provider 的运行中 turn 阻塞，也不会改变已经发出的 turn。
 
 ## 6. 里程碑
 

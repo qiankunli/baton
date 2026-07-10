@@ -26,15 +26,14 @@ describe("triggerAt", () => {
 describe("buildCandidates", () => {
   test("slash lists commands filtered by prefix", () => {
     const all = buildCandidates({ kind: "slash", start: 0, prefix: "" }, sessions);
-    expect(all.map((c) => c.insert)).toEqual(["/codex", "/claude", "/exit"]);
-    const cl = buildCandidates({ kind: "slash", start: 0, prefix: "cl" }, sessions);
-    expect(cl.map((c) => c.insert)).toEqual(["/claude"]);
+    expect(all.map((c) => c.insert)).toEqual(["/provider", "/model", "/exit"]);
+    const pr = buildCandidates({ kind: "slash", start: 0, prefix: "pr" }, sessions);
+    expect(pr.map((c) => c.insert)).toEqual(["/provider"]);
   });
 
-  test("at lists providers then sessions", () => {
+  test("at lists baton sessions, not providers", () => {
     const all = buildCandidates({ kind: "at", start: 0, prefix: "" }, sessions);
-    expect(all[0]!.insert).toBe("@codex");
-    expect(all[1]!.insert).toBe("@claude");
+    expect(all.some((c) => c.insert === "@codex" || c.insert === "@claude")).toBe(false);
     expect(all.some((c) => c.insert === "@bs_01AAAAAAAAAAAAAAAAAAAAAAAA")).toBe(true);
   });
 
@@ -65,7 +64,7 @@ describe("applyCompletion", () => {
   });
 
   test("slash completion replaces whole line head", () => {
-    const trigger = triggerAt("/cl");
-    expect(applyCompletion("/cl", trigger!, { insert: "/claude", label: "", detail: "" })).toBe("/claude ");
+    const trigger = triggerAt("/pr");
+    expect(applyCompletion("/pr", trigger!, { insert: "/provider", label: "", detail: "" })).toBe("/provider ");
   });
 });

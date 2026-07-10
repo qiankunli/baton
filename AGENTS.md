@@ -27,6 +27,8 @@ baton/
 │   │       └── adapter.ts   # codex app-server 接入：事件翻译、审批、usage 差分（fast-submit 语义）
 │   ├── context/
 │   │   └── mention.ts       # @ 引用急切解析：turn-summary → 紧凑摘要 → 注入 prompt（预算截断）
+│   ├── commands/
+│   │   └── registry.ts      # baton slash command 真相源：/provider、/model、/exit
 │   ├── store/               # 会话存储
 │   │   ├── reduce.ts        # 事件流 reduce 成会话状态（TUI 渲染与崩溃恢复的来源）
 │   │   └── store.ts         # session.jsonl 追加/读取 + meta.json + turn-summary 生成
@@ -34,7 +36,7 @@ baton/
 │   │   ├── bin.ts           # 统一命令入口（package.json bin）：baton / baton repl / baton sessions
 │   │   └── main.ts          # headless REPL：bun run repl -- [--agent codex|claude] [--cwd <dir>]
 │   └── tui/
-│       └── main.tsx         # chat-first TUI：打开即聊天，@codex/@claude 切 agent，跨 agent 自动补课，Esc 中断
+│       └── main.tsx         # chat-first TUI：/provider 切目标，/model 选模型，@ 引用上下文，Esc 中断
 └── tests/                   # bun test 单测
 ```
 
@@ -48,6 +50,7 @@ baton/
 - 内部事件模型对齐 ACP v2 词汇表；wire 协议用各家原生协议，不强求 ACP。
 - baton 自己的 session.jsonl 是投影，resume 依赖各家原生会话。
 - session / turn / message 的 ID 必须稳定可外部引用。
+- `/` 只控制 baton/provider，`@` 只引用 baton 对象；不透传各家 TUI 的私有 slash command。
 
 ## References
 

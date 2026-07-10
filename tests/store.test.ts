@@ -36,10 +36,16 @@ describe("session lifecycle", () => {
 
   test("provider session meta persists (resume 依赖它)", () => {
     const h = store.createSession({ cwd: "/tmp/proj" });
-    h.setProviderSession("codex", { provider: "codex", providerSessionId: "thread_123", resumeCursor: "42" });
+    h.setProviderSession("codex", {
+      provider: "codex",
+      providerSessionId: "thread_123",
+      resumeCursor: "42",
+      model: "gpt-5",
+    });
     const reopened = store.openSession(h.id);
     expect(reopened.meta.providerSessions["codex"]!.providerSessionId).toBe("thread_123");
     expect(reopened.meta.providerSessions["codex"]!.resumeCursor).toBe("42");
+    expect(reopened.meta.providerSessions["codex"]!.model).toBe("gpt-5");
   });
 });
 

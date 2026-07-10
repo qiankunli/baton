@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 // chat-first TUI：打开即聊天，体验对齐 claude/codex CLI。
 //   - 直接输入 → 发给当前 agent（默认 codex）
-//   - 消息以 @codex / @claude 开头 → 切换 agent 并发送；两个 agent 共用同一条时间线
+//   - /provider 选择输入目标；/model 配置当前 provider 后续 turn 的模型
 //   - 切换 agent 时自动注入对方最新进展（buildCatchUpContext），无需手动搬运上下文
-//   - @bs_xxx 引用其它 baton 会话（baton sessions 可查）；Esc 中断当前 turn；Ctrl+C 退出
+//   - @bs_xxx 引用其它 baton 会话；@ 不承担 provider 路由
 // 用法：baton（或 bun src/tui/main.tsx）[--root <batonRoot>] [--cwd <dir>]
 
 import { createCliRenderer } from "@opentui/core";
@@ -12,7 +12,8 @@ import { useCallback, useRef, useState, type ReactNode } from "react";
 
 import { ClaudeAdapter } from "../adapters/claude/adapter.ts";
 import { CodexAdapter } from "../adapters/codex/adapter.ts";
-import type { AgentAdapter, ProviderSessionRef } from "../adapters/types.ts";
+import { isModelConfigurable, type AgentAdapter, type ModelOption, type ProviderSessionRef } from "../adapters/types.ts";
+import { parseCommand, parseProvider, PROVIDERS, type ProviderName } from "../commands/registry.ts";
 import { ensureSettingsFile, loadSettings } from "../config/settings.ts";
 import { buildCatchUpContext, expandMentions } from "../context/mention.ts";
 import { newId } from "../events/ids.ts";
@@ -36,15 +37,13 @@ const cwd = argValue("--cwd") ?? process.cwd();
 // 打开即建会话——不要让用户先面对空 rail 和弹窗
 const session = store.createSession({ cwd, title: `chat @ ${cwd}` });
 
-type AgentName = "codex" | "claude";
-// @codex（引用风格）与 /codex（命令风格）都能切换 agent，按用户习惯二选一
-const AGENT_PREFIX = /^[@/](codex|claude)\b\s*/;
 const PROVIDER_LABEL: Record<string, string> = { codex: "codex", "claude-code": "claude" };
 
 interface AgentSlot {
   adapter: AgentAdapter;
   ref?: ProviderSessionRef;
   starting?: Promise<void>;
+  busy: boolean;
 }
 
 interface PendingApproval {
@@ -52,44 +51,66 @@ interface PendingApproval {
   resolve: (d: { optionId: string }) => void;
 }
 
+interface CommandPicker {
+  title: string;
+  options: Array<{ name: string; description: string; value: string }>;
+  onSelect: (value: string) => void | Promise<void>;
+}
+
+interface StatusMessage {
+  text: string;
+  tone: "info" | "error";
+}
+
 function App(): ReactNode {
-  const slots = useRef(new Map<AgentName, AgentSlot>());
+  const slots = useRef(new Map<ProviderName, AgentSlot>());
   const view = useRef<SessionState>(emptySessionState());
   const [, setTick] = useState(0);
   const bump = useCallback(() => setTick((t) => t + 1), []);
 
-  const [agent, setAgent] = useState<AgentName>(settings.defaultAgent);
+  const [agent, setAgent] = useState<ProviderName>(settings.defaultAgent);
   const [draft, setDraft] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
-  const [approval, setApproval] = useState<PendingApproval | null>(null);
+  const [composerVersion, setComposerVersion] = useState(0);
+  const [status, setStatus] = useState<StatusMessage | null>(null);
+  const [approvals, setApprovals] = useState<PendingApproval[]>([]);
+  const [picker, setPicker] = useState<CommandPicker | null>(null);
   const [suggIdx, setSuggIdx] = useState(0);
   const [suggDismissed, setSuggDismissed] = useState(false);
   const ctrlCArmedAt = useRef(0);
 
+  const resetComposer = useCallback(() => {
+    setDraft("");
+    // OpenTUI InputRenderable owns an internal buffer; focus moving to a picker can
+    // otherwise preserve the submitted command even after React state is cleared.
+    setComposerVersion((version) => version + 1);
+  }, []);
+
   // 候选由输入实时推导（/ 行首=命令，@ =引用），无独立状态需要同步
   const trigger = triggerAt(draft);
+  const approval = approvals[0] ?? null;
   const candidates =
-    trigger && !suggDismissed && !approval
+    trigger && !suggDismissed && !approval && !picker
       ? buildCandidates(trigger, store.listSessions(), { excludeSessionId: session.id })
       : [];
   const sel = candidates.length ? Math.min(suggIdx, candidates.length - 1) : 0;
 
   const approvalHandler = useCallback(
     (request: PermissionRequest) =>
-      new Promise<{ optionId: string }>((resolve) => setApproval({ request, resolve })),
+      new Promise<{ optionId: string }>((resolve) =>
+        setApprovals((pending) => [...pending, { request, resolve }]),
+      ),
     [],
   );
 
   const ensureAgent = useCallback(
-    async (name: AgentName): Promise<AgentSlot> => {
+    async (name: ProviderName): Promise<AgentSlot> => {
       let slot = slots.current.get(name);
       if (!slot) {
         const adapter: AgentAdapter =
           name === "claude"
             ? new ClaudeAdapter({ approvalHandler, executablePath: settings.claudeExecutable })
             : new CodexAdapter({ approvalHandler, command: settings.codexCommand });
-        slot = { adapter };
+        slot = { adapter, busy: false };
         slots.current.set(name, slot);
         slot.starting = (async () => {
           slot.ref = await adapter.start({ cwd });
@@ -100,63 +121,147 @@ function App(): ReactNode {
         })();
       }
       if (slot.starting) {
-        setStatus(`starting ${name}…`);
+        setStatus({ text: `starting ${name}…`, tone: "info" });
         bump();
-        await slot.starting;
-        slot.starting = undefined;
-        setStatus(null);
+        try {
+          await slot.starting;
+          setStatus(null);
+        } catch (error) {
+          slots.current.delete(name);
+          throw error;
+        } finally {
+          slot.starting = undefined;
+        }
       }
       return slot;
     },
     [approvalHandler, bump],
   );
 
-  const cancelCurrentTurn = useCallback(() => {
-    const slot = slots.current.get(agent);
+  const cancelRunningTurn = useCallback(() => {
+    const selected = slots.current.get(agent);
+    const slot = selected?.busy ? selected : [...slots.current.values()].find((candidate) => candidate.busy);
     if (slot?.ref) void slot.adapter.cancel(slot.ref);
   }, [agent]);
 
   /** 优雅退出：先关掉两个 agent 子进程再退（对应 /exit、双击 Ctrl+C、Ctrl+D） */
   const shutdown = useCallback(async () => {
-    setStatus("正在退出…");
+    setStatus({ text: "正在退出…", tone: "info" });
     for (const slot of slots.current.values()) {
       if (slot.ref) await slot.adapter.close(slot.ref).catch(() => {});
     }
     process.exit(0);
   }, []);
 
-  const send = useCallback(
-    async (raw: string) => {
-      const trimmed = raw.trim();
-      if (!trimmed || busy) return;
-      if (trimmed === "/exit") {
+  const configureModel = useCallback(
+    async (target: ProviderName, slot: AgentSlot, model: ModelOption) => {
+      if (!slot.ref || !isModelConfigurable(slot.adapter)) {
+        throw new Error(`${target} 不支持 /model`);
+      }
+      await slot.adapter.setModel(slot.ref, model.id);
+      const key = slot.adapter.provider;
+      const existing = session.meta.providerSessions[key] ?? { provider: key };
+      session.setProviderSession(key, {
+        ...existing,
+        provider: key,
+        providerSessionId: existing.providerSessionId ?? slot.ref.providerSessionId,
+        model: model.id === "default" ? undefined : model.id,
+      });
+      setStatus({ text: `${target} model: ${model.label}（从下一 turn 生效）`, tone: "info" });
+      bump();
+    },
+    [bump],
+  );
+
+  const executeCommand = useCallback(
+    async (name: "provider" | "model" | "exit", argument: string) => {
+      if (name === "exit") {
         await shutdown();
         return;
       }
-
-      // @codex 或 /codex 前缀：切换目标 agent（并从消息里剥掉）
-      let target = agent;
-      let text = trimmed;
-      const m = AGENT_PREFIX.exec(trimmed);
-      if (m) {
-        target = m[1] as AgentName;
-        text = trimmed.slice(m[0].length).trim();
-        setAgent(target);
-        if (!text) {
-          setDraft("");
-          return; // 只切 agent 不发消息
+      if (name === "provider") {
+        if (!argument) {
+          setPicker({
+            title: "选择 provider",
+            options: PROVIDERS.map((provider) => ({ name: provider, description: `切换到 ${provider}`, value: provider })),
+            onSelect: (value) => {
+              const provider = parseProvider(value);
+              if (provider) setAgent(provider);
+            },
+          });
+          return;
         }
+        const provider = parseProvider(argument);
+        if (!provider) throw new Error(`未知 provider: ${argument}（可选 codex / claude）`);
+        setAgent(provider);
+        setStatus(null);
+        return;
       }
 
-      setDraft("");
-      setBusy(true);
+      const target = agent;
+      const slot = await ensureAgent(target);
+      if (!slot.ref || !isModelConfigurable(slot.adapter)) throw new Error(`${target} 不支持 /model`);
+      const models = await slot.adapter.listModels(slot.ref);
+      if (!argument) {
+        setPicker({
+          title: `选择 ${target} model`,
+          options: models.map((model) => ({
+            name: model.label,
+            description: model.description ?? model.id,
+            value: model.id,
+          })),
+          onSelect: async (value) => {
+            const model = models.find((candidate) => candidate.id === value);
+            if (!model) return;
+            try {
+              await configureModel(target, slot, model);
+            } catch (error) {
+              setStatus({ text: error instanceof Error ? error.message : String(error), tone: "error" });
+            }
+          },
+        });
+        return;
+      }
+      const normalized = argument.toLowerCase();
+      const model = models.find(
+        (candidate) => candidate.id.toLowerCase() === normalized || candidate.label.toLowerCase() === normalized,
+      );
+      if (!model) throw new Error(`${target} 未知 model: ${argument}`);
+      await configureModel(target, slot, model);
+    },
+    [agent, configureModel, ensureAgent, shutdown],
+  );
+
+  const send = useCallback(
+    async (raw: string) => {
+      const trimmed = raw.trim();
+      if (!trimmed) return;
+      const command = parseCommand(trimmed);
+      if (command) {
+        resetComposer();
+        try {
+          await executeCommand(command.definition.name, command.argument);
+        } catch (error) {
+          setStatus({ text: error instanceof Error ? error.message : String(error), tone: "error" });
+        }
+        return;
+      }
+
+      const target = agent;
+      resetComposer();
       setStatus(null);
+      let slot: AgentSlot | undefined;
+      let startedTurn = false;
       try {
-        const slot = await ensureAgent(target);
+        slot = await ensureAgent(target);
         if (!slot.ref) throw new Error(`${target} 启动失败`);
+        if (slot.busy) throw new Error(`${target} 仍在运行，请切换 provider 或等待当前 turn 结束`);
+        slot.busy = true;
+        startedTurn = true;
+        bump();
 
         // 跨会话 @bs_ 引用 + 同会话跨 agent 自动补课，两类上下文都在发送时注入
-        const { prompt } = expandMentions(store, text, settings.mentionBudgetChars);
+        const { prompt } = expandMentions(store, trimmed, settings.mentionBudgetChars);
         const catchUp = buildCatchUpContext(session, slot.adapter.provider, settings.mentionBudgetChars);
         const finalPrompt = catchUp ? `<baton-sync>\n${catchUp}\n</baton-sync>\n\n${prompt}` : prompt;
 
@@ -176,40 +281,54 @@ function App(): ReactNode {
           const nativeId = slot.adapter.nativeSessionId(slot.ref);
           if (nativeId) {
             session.setProviderSession(slot.adapter.provider, {
+              ...session.meta.providerSessions[slot.adapter.provider],
               provider: slot.adapter.provider,
               providerSessionId: nativeId,
             });
           }
         }
       } catch (err) {
-        setStatus(err instanceof Error ? err.message : String(err));
+        setStatus({ text: err instanceof Error ? err.message : String(err), tone: "error" });
       } finally {
-        setBusy(false);
+        if (slot && startedTurn) slot.busy = false;
         bump();
       }
     },
-    [agent, busy, ensureAgent, bump, shutdown],
+    [agent, ensureAgent, bump, executeCommand, resetComposer],
   );
+
+  const runningProviders = [...slots.current.entries()]
+    .filter(([, slot]) => slot.busy)
+    .map(([provider]) => provider);
+  const selectedSlot = slots.current.get(agent);
+  const selectedBusy = selectedSlot?.busy ?? false;
+  const selectedModel =
+    selectedSlot?.ref && isModelConfigurable(selectedSlot.adapter)
+      ? (selectedSlot.adapter.currentModel(selectedSlot.ref) ?? "default")
+      : "default";
 
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") {
       // TUI 惯例：Ctrl+C 是"打断"不是"退出"——跑着中断、有输入清空、空闲二次确认
-      const action = ctrlCAction({ busy, hasDraft: draft !== "", armedAt: ctrlCArmedAt.current, now: Date.now() });
-      if (action === "cancel-turn") cancelCurrentTurn();
+      const action = ctrlCAction({ busy: runningProviders.length > 0, hasDraft: draft !== "", armedAt: ctrlCArmedAt.current, now: Date.now() });
+      if (action === "cancel-turn") cancelRunningTurn();
       else if (action === "clear-draft") {
         setDraft("");
         setSuggIdx(0);
       } else if (action === "exit") void shutdown();
       else {
         ctrlCArmedAt.current = Date.now();
-        setStatus("再按一次 Ctrl+C 退出");
-        setTimeout(() => setStatus((s) => (s === "再按一次 Ctrl+C 退出" ? null : s)), CTRL_C_CONFIRM_WINDOW_MS + 100);
+        setStatus({ text: "再按一次 Ctrl+C 退出", tone: "info" });
+        setTimeout(
+          () => setStatus((current) => (current?.text === "再按一次 Ctrl+C 退出" ? null : current)),
+          CTRL_C_CONFIRM_WINDOW_MS + 100,
+        );
       }
       return;
     }
     if (key.ctrl && key.name === "d") {
       // shell 习惯：空输入时 EOF 即退出
-      if (!draft && !busy) void shutdown();
+      if (!draft && runningProviders.length === 0) void shutdown();
       return;
     }
     if (candidates.length > 0) {
@@ -225,7 +344,7 @@ function App(): ReactNode {
       } else if (key.name === "escape") setSuggDismissed(true);
       return;
     }
-    if (key.name === "escape" && busy) cancelCurrentTurn();
+    if (key.name === "escape" && runningProviders.length > 0) cancelRunningTurn();
   });
 
   const v = view.current;
@@ -235,7 +354,7 @@ function App(): ReactNode {
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
       <scrollbox style={{ flexGrow: 1, paddingLeft: 1, paddingRight: 1 }} stickyScroll stickyStart="bottom" focused={false}>
         <text fg="#565f89">
-          {`baton · session ${session.id}\n直接输入发给当前 agent；/ 或 @ 弹出候选（Tab 补全）：/claude 切 agent，@bs_xxx 引用其它会话\n`}
+          {`baton · session ${session.id}\n直接输入发给当前 provider；/provider 切换，/model 选模型，@bs_xxx 引用其它会话\n`}
         </text>
         {v.timeline.map((item) => {
           if (item.type === "message") {
@@ -293,12 +412,20 @@ function App(): ReactNode {
           }
           return null;
         })}
-        {busy && <text fg="#565f89">{`\n${agent} 思考中… (Esc 中断)`}</text>}
+        {runningProviders.map((provider) => (
+          <text key={provider} fg="#565f89">{`\n${provider} 思考中… (Esc 中断)`}</text>
+        ))}
       </scrollbox>
 
-      <box title={`@${agent}${busy ? " · running" : ""}`} border borderColor={busy ? "#e0af68" : "#3b4261"} style={{ height: 3 }}>
+      <box
+        title={`provider:${agent} · model:${selectedModel}${selectedBusy ? " · running" : ""}`}
+        border
+        borderColor={selectedBusy ? "#e0af68" : "#3b4261"}
+        style={{ height: 3 }}
+      >
         <input
-          focused={!approval}
+          key={composerVersion}
+          focused={!approval && !picker}
           value={draft}
           placeholder={`发给 ${agent}（/ 命令，@ 引用）`}
           onInput={(v: string) => {
@@ -326,8 +453,30 @@ function App(): ReactNode {
         </box>
       )}
       <box style={{ height: 1 }}>
-        <text fg={status ? "#f7768e" : "#565f89"}>{status ?? `${usageLine}  turns:${v.turnSummaries.length}  cwd:${cwd}`}</text>
+        <text fg={status?.tone === "error" ? "#f7768e" : status ? "#7aa2f7" : "#565f89"}>
+          {status?.text ?? `${usageLine}  turns:${v.turnSummaries.length}  cwd:${cwd}`}
+        </text>
       </box>
+
+      {picker && !approval && (
+        <box
+          title={picker.title}
+          border
+          borderColor="#7aa2f7"
+          style={{ position: "absolute", left: 4, top: 2, width: 72, height: Math.min(18, picker.options.length * 2 + 2), zIndex: 190, flexDirection: "column" }}
+        >
+          <select
+            focused
+            style={{ flexGrow: 1 }}
+            options={picker.options}
+            onSelect={(_i: number, opt: { name: string; description: string; value?: unknown } | null) => {
+              if (!opt) return;
+              setPicker(null);
+              void picker.onSelect(String(opt.value));
+            }}
+          />
+        </box>
+      )}
 
       {approval && (
         <box
@@ -344,7 +493,7 @@ function App(): ReactNode {
             onSelect={(_i: number, opt: { name: string; description: string; value?: unknown } | null) => {
               if (opt) {
                 approval.resolve({ optionId: String(opt.value) });
-                setApproval(null);
+                setApprovals((pending) => pending.slice(1));
               }
             }}
           />
