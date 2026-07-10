@@ -4,14 +4,16 @@
 
 > Pass context between coding agents like a baton.
 
-baton is a terminal-native shared workspace for multiple coding agents. It runs Claude Code and Codex in the same TUI and lets one agent reference another agent's session context with `@`, eliminating the need to copy conversations, write handoff documents, or repeatedly explain background information.
+baton is a terminal-native coding-agent session. A BatonSession remains the same durable conversation while you switch providers with `/provider`, including after closing and reopening baton. Claude Code and Codex are the first bundled providers, not a closed support list.
 
-baton is not about opening more agents at once. It is about helping them truly share context.
+Provider-native sessions are resume optimizations; BatonSession history remains available even when a native session cannot be resumed.
 
 ## Features
 
 - Use Claude Code and Codex from the same terminal interface
 - Switch between Claude Code and Codex with `/provider`, and configure the active provider with `/model`
+- Open a previous BatonSession with `/sessions`, or start a clean one with `/new`
+- Continue the latest session in a project with `baton -c`, or open one by ID with `baton -s <id>`
 - Reference previous sessions with `@<session-id>` and inject a compact summary automatically
 - Record messages, thoughts, tool calls, file changes, plans, and token usage in a unified format
 - Append events to a local `session.jsonl` for state reconstruction and future references
@@ -56,6 +58,8 @@ Start the TUI and type a prompt to send it.
 /provider codex      Switch to Codex
 /model               Open the model picker for the active provider
 /model <id>          Select the model used by subsequent turns
+/sessions            Open the BatonSession picker
+/new                 Start a new BatonSession in the current project
 @bs_...               Reference another baton session
 Tab                   Complete a command or reference
 Esc                   Interrupt the current turn
@@ -67,6 +71,8 @@ Common CLI commands:
 ```bash
 baton                              # Start the TUI
 baton --cwd /path/to/project       # Start in a specific project directory
+baton -c                           # Continue the latest session in this directory
+baton -s bs_01...                  # Open a specific BatonSession
 baton repl --agent codex           # Start the headless REPL with Codex
 baton repl --agent claude          # Start the headless REPL with Claude
 baton sessions                     # List sessions available for reference
@@ -83,15 +89,15 @@ baton reads the referenced session's compact summary and passes it to the active
 
 ## Configuration
 
-On first run, baton creates `~/.baton/settings.json`:
+On first run, baton creates `~/.baton/config.yaml`:
 
-```json
-{
-  "defaultAgent": "codex",
-  "codexCommand": ["codex", "app-server"],
-  "mentionBudgetChars": 4096,
-  "showThoughts": true
-}
+```yaml
+defaultAgent: codex
+codexCommand:
+  - codex
+  - app-server
+mentionBudgetChars: 4096
+showThoughts: true
 ```
 
 If Claude Code uses a custom executable, set `claudeExecutable` in the configuration or override it temporarily with an environment variable:
@@ -100,7 +106,7 @@ If Claude Code uses a custom executable, set `claudeExecutable` in the configura
 BATON_CLAUDE_BIN=/path/to/claude baton
 ```
 
-Configuration precedence: environment variables > `settings.json` > defaults.
+Configuration precedence: environment variables > `config.yaml` > defaults.
 
 ## Data storage
 
@@ -108,13 +114,13 @@ baton stores its data in `~/.baton/` by default:
 
 ```text
 ~/.baton/
-├── settings.json
+├── config.yaml
 └── sessions/<session-id>/
     ├── meta.json
     └── session.jsonl
 ```
 
-`session.jsonl` is the event projection used for rendering, recovery, and cross-agent references. Claude Code and Codex continue to manage their native sessions, and baton never modifies the providers' native session files.
+`session.jsonl` is the durable logical history used for rendering, recovery, provider handoff, and cross-session references. Claude Code and Codex still manage their private native sessions; baton stores their IDs only to accelerate resume and never modifies their native session files.
 
 ## Development
 

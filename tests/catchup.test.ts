@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildCatchUpContext } from "../src/context/mention.ts";
+import { buildCatchUpContext, buildProviderCatchUpContext } from "../src/context/mention.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 let root: string;
@@ -54,5 +54,35 @@ describe("buildCatchUpContext", () => {
     turn("codex", 1, "x");
     turn("claude-code", 1, "y");
     expect(buildCatchUpContext(h, "claude-code")).toBeNull();
+  });
+});
+
+describe("buildProviderCatchUpContext", () => {
+  test("fresh native session receives the complete BatonSession history", () => {
+    turn("codex", 1, "codex history");
+    turn("claude-code", 2, "claude history");
+    const result = buildProviderCatchUpContext(h, {
+      provider: "codex",
+      sinceSeq: 0,
+      includeProviderTurns: true,
+    });
+    expect(result?.text).toContain("codex history");
+    expect(result?.text).toContain("claude history");
+    expect(result?.throughSeq).toBe(h.readEvents().at(-1)?.seq);
+  });
+
+  test("resumed native session only receives other providers after its watermark", () => {
+    turn("codex", 1, "already native");
+    const watermark = h.readEvents().at(-1)!.seq;
+    turn("codex", 2, "also native");
+    turn("claude-code", 3, "missing context");
+    const result = buildProviderCatchUpContext(h, {
+      provider: "codex",
+      sinceSeq: watermark,
+      includeProviderTurns: false,
+    });
+    expect(result?.text).toContain("missing context");
+    expect(result?.text).not.toContain("already native");
+    expect(result?.text).not.toContain("also native");
   });
 });

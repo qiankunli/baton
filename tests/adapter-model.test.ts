@@ -17,6 +17,13 @@ describe("Claude model capability", () => {
     await adapter.setModel(ref, "default");
     expect(adapter.currentModel(ref)).toBeNull();
   });
+
+  test("records a native session id for resume", async () => {
+    const adapter = new ClaudeAdapter({ approvalHandler });
+    const ref = await adapter.start({ cwd: "/tmp", resumeSessionId: "claude-session-1" });
+    expect(ref.resumed).toBe(true);
+    expect(adapter.nativeSessionId(ref)).toBe("claude-session-1");
+  });
 });
 
 describe("Codex model capability", () => {
@@ -46,5 +53,39 @@ describe("Codex model capability", () => {
     await adapter.prompt(ref, [{ type: "text", text: "hello" }], (_event: AnyNewEvent) => {}, { turnId: "t_1" });
 
     expect(turnParams?.model).toBe("gpt-5");
+  });
+
+  test("injects BatonSession context into model-visible thread history", async () => {
+    const adapter = new CodexAdapter({ approvalHandler });
+    let request: { method: string; params: unknown } | undefined;
+    const peer = {
+      request: async (method: string, params: unknown) => {
+        request = { method, params };
+        return {};
+      },
+    };
+    const runtime = { threadId: "thread-1", peer };
+    (
+      adapter as unknown as { threads: Map<string, typeof runtime> }
+    ).threads.set("thread-1", runtime);
+
+    await adapter.syncContext(
+      { provider: "codex", providerSessionId: "thread-1" },
+      [{ type: "text", text: "handoff" }],
+    );
+
+    expect(request).toEqual({
+      method: "thread/inject_items",
+      params: {
+        threadId: "thread-1",
+        items: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "handoff" }],
+          },
+        ],
+      },
+    });
   });
 });

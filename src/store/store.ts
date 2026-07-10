@@ -1,6 +1,6 @@
 // 会话存储：~/.baton/sessions/<id>/session.jsonl + meta.json。
-// jsonl 是投影不是真相源——resume 依赖各家原生会话（providerSessionId + resumeCursor 在 meta 里）。
-// 见 docs/design.md §5.3。
+// session.jsonl 承载 BatonSession 的统一逻辑历史；ProviderSession 元数据只用于
+// 优先恢复 provider 私有状态，缺失时仍可从 BatonSession 重建上下文。
 
 import {
   appendFileSync,
@@ -36,6 +36,8 @@ export interface ProviderSessionMeta {
   model?: string;
   /** provider 侧恢复所需的游标（如 Claude SDK resume cursor），语义归 adapter */
   resumeCursor?: string;
+  /** 该原生会话已同步到的 BatonSession 事件序号。 */
+  syncedSeq?: number;
   parentSessionId?: string;
 }
 
@@ -44,6 +46,7 @@ export interface SessionMeta {
   title?: string;
   cwd: string;
   createdAt: string;
+  updatedAt?: string;
   providerSessions: Record<string, ProviderSessionMeta>;
 }
 
@@ -67,6 +70,7 @@ export class SessionStore {
       title: opts.title,
       cwd: opts.cwd,
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
       providerSessions: {},
     };
     writeMetaAtomic(dir, meta);
@@ -83,7 +87,7 @@ export class SessionStore {
     return new SessionHandle(id, dir, meta);
   }
 
-  listSessions(): SessionMeta[] {
+  listSessions(opts: { cwd?: string } = {}): SessionMeta[] {
     const dir = this.sessionsDir();
     if (!existsSync(dir)) return [];
     const out: SessionMeta[] = [];
@@ -91,12 +95,14 @@ export class SessionStore {
       const metaPath = join(dir, name, "meta.json");
       if (!existsSync(metaPath)) continue;
       try {
-        out.push(JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta);
+        const meta = JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta;
+        if (opts.cwd !== undefined && meta.cwd !== opts.cwd) continue;
+        out.push(meta);
       } catch {
         // 损坏的 meta 不阻塞列表
       }
     }
-    out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    out.sort((a, b) => (b.updatedAt ?? b.createdAt).localeCompare(a.updatedAt ?? a.createdAt));
     return out;
   }
 }
@@ -196,7 +202,8 @@ export class SessionHandle {
     }
     const state = reduceEvents(turnEvents);
 
-    const userText = joinMessages(state, "user");
+    // 自动注入块保留在原始事件里供审计，但不能进入摘要后再次被下一棒递归放大。
+    const userText = stripBatonInjectedContext(joinMessages(state, "user"));
     const agentText = joinMessages(state, "agent");
     const toolCalls: TurnSummaryToolCall[] = [...state.toolCalls.values()].map((tc) => ({
       toolCallId: tc.toolCallId,
@@ -228,6 +235,7 @@ export class SessionHandle {
     };
     const provider = turnEvents[0]?.provider ?? "baton";
     this.append({ kind: "_baton_turn_summary", payload: summary, provider, turnId });
+    this.updateMeta({ updatedAt: summary.endedAt ?? new Date().toISOString() });
     return summary;
   }
 }
@@ -243,4 +251,8 @@ function joinMessages(state: SessionState, role: "user" | "agent"): string {
     }
   }
   return parts.join("\n");
+}
+
+function stripBatonInjectedContext(text: string): string {
+  return text.replace(/<baton-(context|sync)>[\s\S]*?<\/baton-\1>\s*/g, "").trim();
 }

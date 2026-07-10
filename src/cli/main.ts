@@ -9,7 +9,7 @@ import { stdin, stdout } from "node:process";
 import { ClaudeAdapter } from "../adapters/claude/adapter.ts";
 import { CodexAdapter } from "../adapters/codex/adapter.ts";
 import type { AgentAdapter } from "../adapters/types.ts";
-import { ensureSettingsFile, loadSettings } from "../config/settings.ts";
+import { ensureConfigFile, loadConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
 import { newId } from "../events/ids.ts";
 import type { PermissionRequest } from "../events/types.ts";
@@ -37,9 +37,9 @@ async function askApproval(req: PermissionRequest): Promise<{ optionId: string }
 
 async function main(): Promise<void> {
   const rootArg = argValue("--root");
-  ensureSettingsFile(rootArg);
-  const settings = loadSettings(rootArg);
-  const agentName = argValue("--agent") ?? settings.defaultAgent;
+  ensureConfigFile(rootArg);
+  const config = loadConfig(rootArg);
+  const agentName = argValue("--agent") ?? config.defaultAgent;
   const cwd = argValue("--cwd") ?? process.cwd();
   const store = new SessionStore(rootArg);
   const session = store.createSession({ cwd, title: `${agentName} @ ${cwd}` });
@@ -47,8 +47,8 @@ async function main(): Promise<void> {
 
   const adapter: AgentAdapter =
     agentName === "claude"
-      ? new ClaudeAdapter({ approvalHandler: askApproval, executablePath: settings.claudeExecutable })
-      : new CodexAdapter({ approvalHandler: askApproval, command: settings.codexCommand });
+      ? new ClaudeAdapter({ approvalHandler: askApproval, executablePath: config.claudeExecutable })
+      : new CodexAdapter({ approvalHandler: askApproval, command: config.codexCommand });
   const ref = await adapter.start({ cwd });
   session.setProviderSession(adapter.provider, { provider: adapter.provider, providerSessionId: ref.providerSessionId });
   stdout.write(`${adapter.provider} session: ${ref.providerSessionId}\n输入内容开始对话，/exit 退出\n\n`);
@@ -65,7 +65,7 @@ async function main(): Promise<void> {
     }
 
     // @bs_xxx 急切展开：把被引用会话的紧凑摘要拼进 prompt（design §5.6）
-    const { prompt, mentions } = expandMentions(store, line, settings.mentionBudgetChars);
+    const { prompt, mentions } = expandMentions(store, line, config.mentionBudgetChars);
     if (mentions.length) stdout.write(`(已注入 ${mentions.length} 个会话的上下文摘要)\n`);
 
     const turnId = newId("t");

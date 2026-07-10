@@ -1,17 +1,18 @@
 // Baton 只实现自己承诺的命令，不透传各 provider TUI 的私有 slash command。
 // `/` 控制 baton/provider；`@` 只引用 baton session/turn/产物。
 
-export const PROVIDERS = ["codex", "claude"] as const;
-export type ProviderName = (typeof PROVIDERS)[number];
+import { PROVIDERS, type ProviderName } from "../providers/registry.ts";
 
-export type CommandName = "provider" | "model" | "exit";
+export { PROVIDERS, type ProviderName };
+
+export type CommandName = "provider" | "model" | "sessions" | "new" | "exit";
 
 export interface CommandDefinition {
   name: CommandName;
   description: string;
   scope: "baton" | "provider";
-  /** 当前命令都必须绕过 prompt 的 busy gate；未来需要串行的命令可扩展此字段。 */
-  runPolicy: "always";
+  /** 切换 BatonSession 会替换 runtime，只允许 idle；其它控制命令可随时执行。 */
+  runPolicy: "always" | "idle";
 }
 
 export interface CommandInvocation {
@@ -31,6 +32,18 @@ export const COMMANDS: readonly CommandDefinition[] = [
     description: "设置当前 provider 后续 turn 使用的模型",
     scope: "provider",
     runPolicy: "always",
+  },
+  {
+    name: "sessions",
+    description: "打开 BatonSession 选择器",
+    scope: "baton",
+    runPolicy: "idle",
+  },
+  {
+    name: "new",
+    description: "在当前工作目录新建 BatonSession",
+    scope: "baton",
+    runPolicy: "idle",
   },
   { name: "exit", description: "退出 baton", scope: "baton", runPolicy: "always" },
 ];

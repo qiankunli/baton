@@ -6,6 +6,8 @@ import type { AnyNewEvent, ContentBlock, PermissionRequest } from "../events/typ
 export interface ProviderSessionRef {
   provider: string;
   providerSessionId: string;
+  /** 是否成功恢复了既有原生会话；false 表示新建，宿主需要从 BatonSession 补历史。 */
+  resumed?: boolean;
 }
 
 /** adapter 产出的事件由宿主决定去向（append 到 Store、推给 TUI…） */
@@ -14,6 +16,8 @@ export type EventSink = (ev: AnyNewEvent) => void;
 export interface StartOptions {
   cwd: string;
   env?: Record<string, string>;
+  /** 已记录的原生 ProviderSession ID；adapter 应优先恢复，缺失时新建。 */
+  resumeSessionId?: string;
 }
 
 export interface PromptOptions {
@@ -58,6 +62,28 @@ export function isModelConfigurable(adapter: AgentAdapter): adapter is AgentAdap
     typeof candidate.setModel === "function" &&
     typeof candidate.currentModel === "function"
   );
+}
+
+/** 可把 BatonSession 的缺失历史追加到 provider 自己的 model-visible history。 */
+export interface ContextSynchronizable {
+  syncContext(ref: ProviderSessionRef, blocks: ContentBlock[]): Promise<void>;
+}
+
+export function isContextSynchronizable(
+  adapter: AgentAdapter,
+): adapter is AgentAdapter & ContextSynchronizable {
+  return typeof (adapter as Partial<ContextSynchronizable>).syncContext === "function";
+}
+
+/** adapter 的运行时句柄与可持久化的原生 session ID 不同时，由此能力显式暴露。 */
+export interface NativeSessionIdentifiable {
+  nativeSessionId(ref: ProviderSessionRef): string | undefined;
+}
+
+export function isNativeSessionIdentifiable(
+  adapter: AgentAdapter,
+): adapter is AgentAdapter & NativeSessionIdentifiable {
+  return typeof (adapter as Partial<NativeSessionIdentifiable>).nativeSessionId === "function";
 }
 
 /** 审批决策：optionId 取自 PermissionRequest.options */
