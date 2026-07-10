@@ -45,8 +45,10 @@ baton/
 │   ├── cli/
 │   │   ├── bin.ts           # 统一命令入口（package.json bin）：baton / baton repl / baton sessions
 │   │   └── main.ts          # headless REPL：bun run repl -- [--agent codex|claude] [--cwd <dir>]
-│   └── tui/
-│       └── main.tsx         # chat-first TUI：provider/session 选择、模型配置、@ 引用、Esc 中断
+│   └── tui/                 # UI 组件层来自 chat-tui（github.com/qiankunli/chat-tui，git 依赖）
+│       ├── main.tsx         # 入口：参数解析 + ChatShell 装配
+│       ├── protocol.ts      # ChatProtocol 实现：runtime/store → 视图投影，intents → runtime 操作
+│       └── mentions.ts      # @ 候选源（BatonSession 匹配）
 └── tests/                   # bun test 单测
 ```
 
