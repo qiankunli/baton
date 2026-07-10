@@ -1,6 +1,7 @@
-// 会话存储：~/.baton/sessions/<id>/session.jsonl + meta.json。
-// session.jsonl 承载 BatonSession 的统一逻辑历史；ProviderSession 元数据只用于
-// 优先恢复 provider 私有状态，缺失时仍可从 BatonSession 重建上下文。
+// 会话存储：~/.baton/projects/<cwd 转义>/<id>/session.jsonl + meta.json。
+// 与 Claude Code 一样按项目目录分组，方便按项目浏览与清理；项目目录名不可逆，
+// 真相源仍是 meta.json 里的 cwd。session.jsonl 承载 BatonSession 的统一逻辑历史；
+// ProviderSession 元数据只用于优先恢复 provider 私有状态，缺失时仍可从 BatonSession 重建上下文。
 
 import {
   appendFileSync,
@@ -9,6 +10,7 @@ import {
   readFileSync,
   readdirSync,
   renameSync,
+  rmdirSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -50,20 +52,55 @@ export interface SessionMeta {
   providerSessions: Record<string, ProviderSessionMeta>;
 }
 
+/** 与 Claude Code 同规则：cwd 中非字母数字字符全部替换为 "-"，作为项目目录名。 */
+export function projectDirName(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
 export class SessionStore {
   readonly rootDir: string;
+  private legacyMigrated = false;
 
   constructor(rootDir?: string) {
     this.rootDir = rootDir ?? join(homedir(), ".baton");
   }
 
-  private sessionsDir(): string {
-    return join(this.rootDir, "sessions");
+  private projectsDir(): string {
+    return join(this.rootDir, "projects");
+  }
+
+  /**
+   * 旧布局（~/.baton/sessions/<id>）一次性迁移到按项目分组的新布局。
+   * meta 缺失或损坏的目录原地保留，不阻塞正常使用。
+   */
+  private migrateLegacySessions(): void {
+    if (this.legacyMigrated) return;
+    this.legacyMigrated = true;
+    const legacyDir = join(this.rootDir, "sessions");
+    if (!existsSync(legacyDir)) return;
+    for (const name of readdirSync(legacyDir)) {
+      const metaPath = join(legacyDir, name, "meta.json");
+      if (!existsSync(metaPath)) continue;
+      try {
+        const meta = JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta;
+        const projectDir = join(this.projectsDir(), projectDirName(meta.cwd));
+        mkdirSync(projectDir, { recursive: true });
+        renameSync(join(legacyDir, name), join(projectDir, name));
+      } catch {
+        // 留在原目录，避免把无法解析的会话搬到错误的项目下
+      }
+    }
+    try {
+      rmdirSync(legacyDir); // 仅当已清空时成功
+    } catch {
+      // 还有残留（损坏会话），保留旧目录
+    }
   }
 
   createSession(opts: { cwd: string; title?: string }): SessionHandle {
+    this.migrateLegacySessions();
     const id = newId("bs");
-    const dir = join(this.sessionsDir(), id);
+    const dir = join(this.projectsDir(), projectDirName(opts.cwd), id);
     mkdirSync(dir, { recursive: true });
     const meta: SessionMeta = {
       batonSessionId: id,
@@ -77,33 +114,49 @@ export class SessionStore {
     return new SessionHandle(id, dir, meta);
   }
 
+  /** 会话 ID 全局唯一，打开时不要求提供 cwd，跨项目扫描定位（@ 引用可指向任意项目的会话）。 */
   openSession(id: string): SessionHandle {
-    const dir = join(this.sessionsDir(), id);
-    const metaPath = join(dir, "meta.json");
-    if (!existsSync(metaPath)) {
-      throw new Error(`baton session not found: ${id}`);
+    this.migrateLegacySessions();
+    for (const projectDir of this.listProjectDirs()) {
+      const dir = join(projectDir, id);
+      const metaPath = join(dir, "meta.json");
+      if (!existsSync(metaPath)) continue;
+      const meta = JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta;
+      return new SessionHandle(id, dir, meta);
     }
-    const meta = JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta;
-    return new SessionHandle(id, dir, meta);
+    throw new Error(`baton session not found: ${id}`);
   }
 
   listSessions(opts: { cwd?: string } = {}): SessionMeta[] {
-    const dir = this.sessionsDir();
-    if (!existsSync(dir)) return [];
+    this.migrateLegacySessions();
+    // 指定 cwd 时只扫对应项目目录；但目录名转义不可逆（可能撞名），仍以 meta.cwd 精确过滤。
+    const projectDirs =
+      opts.cwd !== undefined
+        ? [join(this.projectsDir(), projectDirName(opts.cwd))]
+        : this.listProjectDirs();
     const out: SessionMeta[] = [];
-    for (const name of readdirSync(dir)) {
-      const metaPath = join(dir, name, "meta.json");
-      if (!existsSync(metaPath)) continue;
-      try {
-        const meta = JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta;
-        if (opts.cwd !== undefined && meta.cwd !== opts.cwd) continue;
-        out.push(meta);
-      } catch {
-        // 损坏的 meta 不阻塞列表
+    for (const projectDir of projectDirs) {
+      if (!existsSync(projectDir)) continue;
+      for (const name of readdirSync(projectDir)) {
+        const metaPath = join(projectDir, name, "meta.json");
+        if (!existsSync(metaPath)) continue;
+        try {
+          const meta = JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta;
+          if (opts.cwd !== undefined && meta.cwd !== opts.cwd) continue;
+          out.push(meta);
+        } catch {
+          // 损坏的 meta 不阻塞列表
+        }
       }
     }
     out.sort((a, b) => (b.updatedAt ?? b.createdAt).localeCompare(a.updatedAt ?? a.createdAt));
     return out;
+  }
+
+  private listProjectDirs(): string[] {
+    const dir = this.projectsDir();
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir).map((name) => join(dir, name));
   }
 }
 
