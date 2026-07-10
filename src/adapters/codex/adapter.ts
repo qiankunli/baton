@@ -329,17 +329,22 @@ export class CodexAdapter implements AgentAdapter {
         );
         break;
       case "item/reasoning/textDelta":
-      case "item/reasoning/summaryTextDelta":
+      case "item/reasoning/summaryTextDelta": {
+        const messageId =
+          method === "item/reasoning/summaryTextDelta" && p.summaryIndex !== undefined
+            ? `${String(p.itemId)}:summary:${String(p.summaryIndex)}`
+            : String(p.itemId);
         this.emit(
           rt,
           {
             kind: "agent_thought_chunk",
             provider: this.provider,
-            payload: { messageId: String(p.itemId), content: { type: "text", text: String(p.delta) } },
+            payload: { messageId, content: { type: "text", text: String(p.delta) } },
           },
           params,
         );
         break;
+      }
       case "item/started":
       case "item/completed": {
         const item = (p.item ?? {}) as Record<string, unknown>;
@@ -358,17 +363,21 @@ export class CodexAdapter implements AgentAdapter {
             );
           }
         } else if (itemType === "reasoning") {
-          // completed 的 reasoning item 带全文 summary：整消息 upsert 覆盖 delta 累积
+          // summary part 是 Codex TUI 的展示边界；保留它，避免多个中间状态挤进同一块。
           if (method === "item/completed") {
             const summaryArr = Array.isArray(item.summary) ? (item.summary as string[]) : [];
-            const full = summaryArr.join("\n").trim();
-            if (full) {
+            for (const [index, summary] of summaryArr.entries()) {
+              const full = String(summary).trim();
+              if (!full) continue;
               this.emit(
                 rt,
                 {
                   kind: "agent_thought",
                   provider: this.provider,
-                  payload: { messageId: String(item.id), content: [{ type: "text", text: full }] },
+                  payload: {
+                    messageId: `${String(item.id)}:summary:${index}`,
+                    content: [{ type: "text", text: full }],
+                  },
                 },
                 params,
               );
