@@ -6,9 +6,9 @@
 //   - @bs_xxx 引用其它 baton 会话；@ 不承担 provider 路由
 // 用法：baton（或 bun src/tui/main.tsx）[--root <batonRoot>] [--cwd <dir>]
 
-import { createCliRenderer } from "@opentui/core";
+import { createCliRenderer, type TextareaOptions, type TextareaRenderable } from "@opentui/core";
 import { createRoot, useKeyboard } from "@opentui/react";
-import { useCallback, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { ClaudeAdapter } from "../adapters/claude/adapter.ts";
 import { CodexAdapter } from "../adapters/codex/adapter.ts";
@@ -38,6 +38,18 @@ const cwd = argValue("--cwd") ?? process.cwd();
 const session = store.createSession({ cwd, title: `chat @ ${cwd}` });
 
 const PROVIDER_LABEL: Record<string, string> = { codex: "codex", "claude-code": "claude" };
+
+// 对齐 chat CLI 习惯：Enter 发送；Shift+Enter / Option+Enter 换行。
+// Shift+Enter 需要终端支持 kitty keyboard 协议才能与 Enter 区分；
+// Ctrl+J 是任何终端都可用的换行兜底（走 textarea 默认的 linefeed→newline 绑定）。
+const COMPOSER_KEY_BINDINGS: NonNullable<TextareaOptions["keyBindings"]> = [
+  { name: "return", action: "submit" },
+  { name: "kpenter", action: "submit" },
+  { name: "return", shift: true, action: "newline" },
+  { name: "kpenter", shift: true, action: "newline" },
+  { name: "return", meta: true, action: "newline" },
+  { name: "kpenter", meta: true, action: "newline" },
+];
 
 interface AgentSlot {
   adapter: AgentAdapter;
@@ -70,7 +82,7 @@ function App(): ReactNode {
 
   const [agent, setAgent] = useState<ProviderName>(settings.defaultAgent);
   const [draft, setDraft] = useState("");
-  const [composerVersion, setComposerVersion] = useState(0);
+  const composer = useRef<TextareaRenderable | null>(null);
   const [status, setStatus] = useState<StatusMessage | null>(null);
   const [approvals, setApprovals] = useState<PendingApproval[]>([]);
   const [picker, setPicker] = useState<CommandPicker | null>(null);
@@ -79,10 +91,9 @@ function App(): ReactNode {
   const ctrlCArmedAt = useRef(0);
 
   const resetComposer = useCallback(() => {
+    // textarea 自持内部 buffer，React 的 draft 只是镜像（供候选推导/按键分层用），两边都要清
     setDraft("");
-    // OpenTUI InputRenderable owns an internal buffer; focus moving to a picker can
-    // otherwise preserve the submitted command even after React state is cleared.
-    setComposerVersion((version) => version + 1);
+    composer.current?.setText("");
   }, []);
 
   // 候选由输入实时推导（/ 行首=命令，@ =引用），无独立状态需要同步
@@ -93,6 +104,12 @@ function App(): ReactNode {
       ? buildCandidates(trigger, store.listSessions(), { excludeSessionId: session.id })
       : [];
   const sel = candidates.length ? Math.min(suggIdx, candidates.length - 1) : 0;
+
+  // 焦点安全网：浮层都关闭时确保焦点回到输入框。focused prop 只在值变化时生效，
+  // 覆盖不到"焦点被别处拿走但 prop 没变"的场景；focus() 对已聚焦者是 no-op，代价可忽略。
+  useEffect(() => {
+    if (!approval && !picker) composer.current?.focus();
+  });
 
   const approvalHandler = useCallback(
     (request: PermissionRequest) =>
@@ -313,7 +330,7 @@ function App(): ReactNode {
       const action = ctrlCAction({ busy: runningProviders.length > 0, hasDraft: draft !== "", armedAt: ctrlCArmedAt.current, now: Date.now() });
       if (action === "cancel-turn") cancelRunningTurn();
       else if (action === "clear-draft") {
-        setDraft("");
+        resetComposer();
         setSuggIdx(0);
       } else if (action === "exit") void shutdown();
       else {
@@ -331,14 +348,19 @@ function App(): ReactNode {
       if (!draft && runningProviders.length === 0) void shutdown();
       return;
     }
-    if (candidates.length > 0) {
+    if (candidates.length > 0 && ["down", "up", "tab", "escape"].includes(key.name)) {
       // 候选浮层：↑/↓ 选择，Tab 补全（Enter 保留"发送"语义），Esc 关闭
+      // 全局 handler 先于聚焦 renderable 执行；preventDefault 阻止 textarea 把 ↑/↓/Tab 当编辑键
+      key.preventDefault();
       if (key.name === "down") setSuggIdx((i) => (i + 1) % candidates.length);
       else if (key.name === "up") setSuggIdx((i) => (i - 1 + candidates.length) % candidates.length);
       else if (key.name === "tab" && trigger) {
         const chosen = candidates[sel];
         if (chosen) {
-          setDraft(applyCompletion(draft, trigger, chosen));
+          const next = applyCompletion(draft, trigger, chosen);
+          setDraft(next);
+          composer.current?.setText(next);
+          composer.current?.gotoBufferEnd();
           setSuggIdx(0);
         }
       } else if (key.name === "escape") setSuggDismissed(true);
@@ -349,6 +371,9 @@ function App(): ReactNode {
 
   const v = view.current;
   const usageLine = `in:${v.usage.inputTokens} out:${v.usage.outputTokens}`;
+  // 输入区随内容长高（上限 6 行）；浮层锚点跟着输入框顶部走（+1 是底部状态行）
+  const composerHeight = Math.min(6, draft.split("\n").length) + 2;
+  const overlayBottom = composerHeight + 1;
 
   return (
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
@@ -421,20 +446,22 @@ function App(): ReactNode {
         title={`provider:${agent} · model:${selectedModel}${selectedBusy ? " · running" : ""}`}
         border
         borderColor={selectedBusy ? "#e0af68" : "#3b4261"}
-        style={{ height: 3 }}
+        style={{ height: composerHeight }}
       >
-        <input
-          key={composerVersion}
+        <textarea
+          ref={composer}
           focused={!approval && !picker}
-          value={draft}
-          placeholder={`发给 ${agent}（/ 命令，@ 引用）`}
-          onInput={(v: string) => {
-            setDraft(v);
+          placeholder={`发给 ${agent}（/ 命令，@ 引用，Ctrl+J 换行）`}
+          keyBindings={COMPOSER_KEY_BINDINGS}
+          style={{ flexGrow: 1 }}
+          onContentChange={() => {
+            setDraft(composer.current?.plainText ?? "");
             setSuggDismissed(false);
             setSuggIdx(0);
           }}
-          onSubmit={(val: string | object) => {
-            if (typeof val === "string") void send(val);
+          onSubmit={() => {
+            // textarea 的 submit 事件不带值，从内部 buffer 读
+            void send(composer.current?.plainText ?? "");
           }}
         />
       </box>
@@ -443,7 +470,7 @@ function App(): ReactNode {
           border
           borderColor="#3b4261"
           title="候选 (Tab 补全 · ↑↓ 选择 · Esc 关闭)"
-          style={{ position: "absolute", left: 2, bottom: 4, width: 60, height: candidates.length + 2, zIndex: 150, flexDirection: "column" }}
+          style={{ position: "absolute", left: 2, bottom: overlayBottom, width: 60, height: candidates.length + 2, zIndex: 150, flexDirection: "column" }}
         >
           {candidates.map((c, i) => (
             <text key={c.insert} fg={i === sel ? "#7aa2f7" : "#a9b1d6"}>
@@ -463,7 +490,8 @@ function App(): ReactNode {
           title={picker.title}
           border
           borderColor="#7aa2f7"
-          style={{ position: "absolute", left: 4, top: 2, width: 72, height: Math.min(18, picker.options.length * 2 + 2), zIndex: 190, flexDirection: "column" }}
+          // 对齐 claude code 习惯：命令弹窗紧贴输入框上方（同 @ 候选框的锚定方式），不悬在屏幕顶部
+          style={{ position: "absolute", left: 2, bottom: overlayBottom, width: 72, height: Math.min(18, picker.options.length * 2 + 2), zIndex: 190, flexDirection: "column" }}
         >
           <select
             focused
@@ -483,7 +511,8 @@ function App(): ReactNode {
           title="需要你的批准"
           border
           borderColor="#e0af68"
-          style={{ position: "absolute", left: 4, top: 2, width: 72, height: 10, zIndex: 200, flexDirection: "column" }}
+          // 同 picker：紧贴输入框上方，视线不用离开输入区
+          style={{ position: "absolute", left: 2, bottom: overlayBottom, width: 72, height: 10, zIndex: 200, flexDirection: "column" }}
         >
           <text>{approval.request.title}</text>
           <select
@@ -507,6 +536,8 @@ if (!process.stdout.isTTY) {
   console.error("baton tui 需要在真实终端（TTY）里运行");
   process.exit(1);
 }
-// Ctrl+C 自己接管（分层语义，见 keys.ts），不走 renderer 的直接退出
-const renderer = await createCliRenderer({ exitOnCtrlC: false, targetFps: 30 });
+// Ctrl+C 自己接管（分层语义，见 keys.ts），不走 renderer 的直接退出。
+// autoFocus=false：禁止鼠标点击把焦点从输入框抢走——点击 scrollbox 夺焦不触发 React
+// 重渲染，focused prop 拉不回来，这是"操作久了输入框失焦"的主因。
+const renderer = await createCliRenderer({ exitOnCtrlC: false, targetFps: 30, autoFocus: false });
 createRoot(renderer).render(<App />);
