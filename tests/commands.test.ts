@@ -12,6 +12,14 @@ describe("baton command registry", () => {
       definition: { name: "model", scope: "provider", runPolicy: "always" },
       argument: "sonnet",
     });
+    expect(parseCommand("/sessions")).toMatchObject({
+      definition: { name: "sessions", scope: "baton", runPolicy: "idle" },
+      argument: "",
+    });
+    expect(parseCommand("/new")).toMatchObject({
+      definition: { name: "new", scope: "baton", runPolicy: "idle" },
+      argument: "",
+    });
   });
 
   test("does not retain old provider aliases or consume unknown slash prompts", () => {
@@ -20,7 +28,7 @@ describe("baton command registry", () => {
     expect(parseCommand("/tmp/project")).toBeNull();
   });
 
-  test("provider values are explicit and closed", () => {
+  test("currently bundled provider values are explicit", () => {
     expect(parseProvider("Claude")).toBe("claude");
     expect(parseProvider("codex")).toBe("codex");
     expect(parseProvider("other")).toBeNull();

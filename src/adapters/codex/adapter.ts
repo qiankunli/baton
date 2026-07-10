@@ -123,6 +123,39 @@ export interface CodexAdapterOptions {
   command?: string[];
 }
 
+interface CodexThreadPeer {
+  request(method: string, params?: unknown): Promise<unknown>;
+}
+
+function threadIdFrom(response: unknown, method: string): string {
+  const threadId = (response as { thread?: { id?: string } })?.thread?.id;
+  if (!threadId) throw new Error(`codex ${method} returned no thread id`);
+  return threadId;
+}
+
+function missingThread(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /thread.*not found|no rollout found|session.*not found/i.test(message);
+}
+
+/** 恢复优先；原生 thread 已丢失时新建，BatonSession 会在宿主层补齐历史。 */
+export async function openCodexThread(
+  peer: CodexThreadPeer,
+  opts: { cwd: string; resumeSessionId?: string },
+): Promise<{ threadId: string; resumed: boolean }> {
+  if (opts.resumeSessionId) {
+    try {
+      const response = await peer.request("thread/resume", { threadId: opts.resumeSessionId });
+      return { threadId: threadIdFrom(response, "thread/resume"), resumed: true };
+    } catch (error) {
+      if (!missingThread(error)) throw error;
+    }
+  }
+
+  const response = await peer.request("thread/start", { cwd: opts.cwd });
+  return { threadId: threadIdFrom(response, "thread/start"), resumed: false };
+}
+
 export class CodexAdapter implements AgentAdapter {
   readonly provider = "codex";
   private threads = new Map<string, ThreadRuntime>();
@@ -151,14 +184,25 @@ export class CodexAdapter implements AgentAdapter {
     });
     peer.notify("initialized", {});
 
-    const startResp = (await peer.request("thread/start", { cwd: opts.cwd })) as {
-      thread?: { id?: string };
-    };
-    const threadId = startResp.thread?.id;
-    if (!threadId) throw new Error("codex thread/start returned no thread id");
+    const opened = await openCodexThread(peer, opts);
+    const threadId = opened.threadId;
     rt.threadId = threadId;
     this.threads.set(threadId, rt);
-    return { provider: this.provider, providerSessionId: threadId };
+    return { provider: this.provider, providerSessionId: threadId, resumed: opened.resumed };
+  }
+
+  async syncContext(ref: ProviderSessionRef, blocks: ContentBlock[]): Promise<void> {
+    const rt = this.mustThread(ref);
+    await rt.peer.request("thread/inject_items", {
+      threadId: rt.threadId,
+      items: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: textOf(blocks) }],
+        },
+      ],
+    });
   }
 
   async listModels(ref: ProviderSessionRef): Promise<ModelOption[]> {

@@ -11,21 +11,21 @@ import packageJson from "../../package.json" with { type: "json" };
 
 import { SessionStore } from "../store/store.ts";
 
-const HELP = `baton — terminal-native shared workspace for coding agents
+const HELP = `baton — one durable terminal session across coding-agent providers
 
 用法:
-  baton [--cwd <dir>]   启动聊天 TUI：直接输入即发送；/provider 切换 provider，
-                        /model 选择模型，@ 弹引用候选（其它会话）；Tab 补全，
-                        Esc 中断当前 turn
+  baton [--cwd <dir>] [-c|--continue] [-s|--session <id>]
+                        启动聊天 TUI；默认新建 BatonSession，-c 继续当前目录
+                        最近会话，-s 打开指定会话；/provider 切换 provider
   baton repl [--agent codex|claude] [--cwd <dir>]   headless REPL
   baton sessions        列出会话（可在输入里用 @<id> 引用）
   baton version         显示版本（也支持 --version / -V）
   baton help            本帮助
 
 配置:
-  ~/.baton/settings.json    首次运行自动生成；defaultAgent / claudeExecutable /
+  ~/.baton/config.yaml      首次运行自动生成；defaultAgent / claudeExecutable /
                             codexCommand / mentionBudgetChars / showThoughts
-  BATON_CLAUDE_BIN          环境变量，优先级高于 settings.json 的 claudeExecutable
+  BATON_CLAUDE_BIN          环境变量，优先级高于 config.yaml 的 claudeExecutable
 `;
 
 const cmd = process.argv[2];

@@ -34,7 +34,7 @@ describe("session lifecycle", () => {
     expect(() => store.openSession("bs_NOPE")).toThrow(/not found/);
   });
 
-  test("provider session meta persists (resume 依赖它)", () => {
+  test("provider session meta persists as a native resume optimization", () => {
     const h = store.createSession({ cwd: "/tmp/proj" });
     h.setProviderSession("codex", {
       provider: "codex",
@@ -152,6 +152,29 @@ describe("turn summary", () => {
     expect(s.stopReason).toBe("end_turn");
     // summary 事件落盘且可从状态读回
     expect(h.loadState().turnSummaries).toHaveLength(1);
+  });
+
+  test("summary excludes baton-injected context while raw events retain it", () => {
+    const h = store.createSession({ cwd: "/tmp/proj" });
+    const turnId = "t_sync";
+    h.append({
+      kind: "user_message",
+      provider: "claude-code",
+      turnId,
+      payload: {
+        messageId: "sync-user",
+        content: [{ type: "text", text: "<baton-sync>old history</baton-sync>\n\ncontinue" }],
+      },
+    });
+    h.append({
+      kind: "state_update",
+      provider: "claude-code",
+      turnId,
+      payload: { state: "idle", stopReason: "end_turn" },
+    });
+
+    expect(h.summarizeTurn(turnId).userText).toBe("continue");
+    expect(textOf(h.loadState().messages.get("sync-user")!.content)).toContain("old history");
   });
 
   test("summarizeTurn is idempotent", () => {

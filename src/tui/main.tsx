@@ -4,22 +4,21 @@
 //   - /provider 选择输入目标；/model 配置当前 provider 后续 turn 的模型
 //   - 切换 agent 时自动注入对方最新进展（buildCatchUpContext），无需手动搬运上下文
 //   - @bs_xxx 引用其它 baton 会话；@ 不承担 provider 路由
-// 用法：baton（或 bun src/tui/main.tsx）[--root <batonRoot>] [--cwd <dir>]
+// 用法：baton [--root <batonRoot>] [--cwd <dir>] [-c|--continue] [-s|--session <id>]
 
 import { createCliRenderer, type TextareaOptions, type TextareaRenderable } from "@opentui/core";
 import { createRoot, useKeyboard } from "@opentui/react";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
-import { ClaudeAdapter } from "../adapters/claude/adapter.ts";
-import { CodexAdapter } from "../adapters/codex/adapter.ts";
-import { isModelConfigurable, type AgentAdapter, type ModelOption, type ProviderSessionRef } from "../adapters/types.ts";
 import { parseCommand, parseProvider, PROVIDERS, type ProviderName } from "../commands/registry.ts";
-import { ensureSettingsFile, loadSettings } from "../config/settings.ts";
-import { buildCatchUpContext, expandMentions } from "../context/mention.ts";
-import { newId } from "../events/ids.ts";
+import { ensureConfigFile, loadConfig } from "../config/config.ts";
+import { expandMentions } from "../context/mention.ts";
 import type { PermissionRequest } from "../events/types.ts";
 import { textOf } from "../events/types.ts";
 import { applyEvent, emptySessionState, type SessionState } from "../store/reduce.ts";
+import { openBatonSession } from "../session/open.ts";
+import { BatonSessionRuntime } from "../session/runtime.ts";
+import { createProviderAdapter, providerSessionKey } from "../providers/registry.ts";
 import { SessionStore } from "../store/store.ts";
 import { applyCompletion, buildCandidates, triggerAt } from "./completion.ts";
 import { CTRL_C_CONFIRM_WINDOW_MS, ctrlCAction } from "./keys.ts";
@@ -29,14 +28,29 @@ function argValue(flag: string): string | undefined {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
-const rootArg = argValue("--root");
-ensureSettingsFile(rootArg);
-const settings = loadSettings(rootArg);
-const store = new SessionStore(rootArg);
-const cwd = argValue("--cwd") ?? process.cwd();
-// 打开即建会话——不要让用户先面对空 rail 和弹窗
-const session = store.createSession({ cwd, title: `chat @ ${cwd}` });
+function argValueAny(...flags: string[]): string | undefined {
+  for (const flag of flags) {
+    const value = argValue(flag);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
 
+function hasArg(...flags: string[]): boolean {
+  return flags.some((flag) => process.argv.includes(flag));
+}
+
+const rootArg = argValue("--root");
+ensureConfigFile(rootArg);
+const config = loadConfig(rootArg);
+const store = new SessionStore(rootArg);
+const requestedCwd = argValue("--cwd") ?? process.cwd();
+const opened = openBatonSession(store, {
+  cwd: requestedCwd,
+  sessionId: argValueAny("--session", "-s"),
+  continueLast: hasArg("--continue", "-c"),
+  title: `chat @ ${requestedCwd}`,
+});
 const PROVIDER_LABEL: Record<string, string> = { codex: "codex", "claude-code": "claude" };
 
 // 对齐 chat CLI 习惯：Enter 发送；Shift+Enter / Option+Enter 换行。
@@ -50,13 +64,6 @@ const COMPOSER_KEY_BINDINGS: NonNullable<TextareaOptions["keyBindings"]> = [
   { name: "return", meta: true, action: "newline" },
   { name: "kpenter", meta: true, action: "newline" },
 ];
-
-interface AgentSlot {
-  adapter: AgentAdapter;
-  ref?: ProviderSessionRef;
-  starting?: Promise<void>;
-  busy: boolean;
-}
 
 interface PendingApproval {
   request: PermissionRequest;
@@ -75,12 +82,12 @@ interface StatusMessage {
 }
 
 function App(): ReactNode {
-  const slots = useRef(new Map<ProviderName, AgentSlot>());
-  const view = useRef<SessionState>(emptySessionState());
+  const [session, setSession] = useState(opened.session);
+  const view = useRef<SessionState>(opened.resumed ? opened.session.loadState() : emptySessionState());
   const [, setTick] = useState(0);
   const bump = useCallback(() => setTick((t) => t + 1), []);
 
-  const [agent, setAgent] = useState<ProviderName>(settings.defaultAgent);
+  const [agent, setAgent] = useState<ProviderName>(config.defaultAgent);
   const [draft, setDraft] = useState("");
   const composer = useRef<TextareaRenderable | null>(null);
   const [status, setStatus] = useState<StatusMessage | null>(null);
@@ -119,81 +126,82 @@ function App(): ReactNode {
     [],
   );
 
-  const ensureAgent = useCallback(
-    async (name: ProviderName): Promise<AgentSlot> => {
-      let slot = slots.current.get(name);
-      if (!slot) {
-        const adapter: AgentAdapter =
-          name === "claude"
-            ? new ClaudeAdapter({ approvalHandler, executablePath: settings.claudeExecutable })
-            : new CodexAdapter({ approvalHandler, command: settings.codexCommand });
-        slot = { adapter, busy: false };
-        slots.current.set(name, slot);
-        slot.starting = (async () => {
-          slot.ref = await adapter.start({ cwd });
-          session.setProviderSession(adapter.provider, {
-            provider: adapter.provider,
-            providerSessionId: slot.ref.providerSessionId,
-          });
-        })();
-      }
-      if (slot.starting) {
-        setStatus({ text: `starting ${name}…`, tone: "info" });
-        bump();
-        try {
-          await slot.starting;
-          setStatus(null);
-        } catch (error) {
-          slots.current.delete(name);
-          throw error;
-        } finally {
-          slot.starting = undefined;
-        }
-      }
-      return slot;
-    },
-    [approvalHandler, bump],
-  );
+  const runtimeRef = useRef<{ sessionId: string; value: BatonSessionRuntime } | null>(null);
+  if (runtimeRef.current?.sessionId !== session.id) {
+    runtimeRef.current = { sessionId: session.id, value: new BatonSessionRuntime({
+      session,
+      mentionBudgetChars: config.mentionBudgetChars,
+      createAdapter: (name) =>
+        createProviderAdapter(name as ProviderName, { approvalHandler, config }),
+      providerSessionKey: (name) => providerSessionKey(name as ProviderName),
+      onStateChange: bump,
+    }) };
+  }
+  const runtime = runtimeRef.current.value;
 
   const cancelRunningTurn = useCallback(() => {
-    const selected = slots.current.get(agent);
-    const slot = selected?.busy ? selected : [...slots.current.values()].find((candidate) => candidate.busy);
-    if (slot?.ref) void slot.adapter.cancel(slot.ref);
-  }, [agent]);
+    void runtime.cancelActive();
+  }, [runtime]);
 
   /** 优雅退出：先关掉两个 agent 子进程再退（对应 /exit、双击 Ctrl+C、Ctrl+D） */
   const shutdown = useCallback(async () => {
     setStatus({ text: "正在退出…", tone: "info" });
-    for (const slot of slots.current.values()) {
-      if (slot.ref) await slot.adapter.close(slot.ref).catch(() => {});
-    }
+    await runtime.close();
     process.exit(0);
-  }, []);
+  }, [runtime]);
 
   const configureModel = useCallback(
-    async (target: ProviderName, slot: AgentSlot, model: ModelOption) => {
-      if (!slot.ref || !isModelConfigurable(slot.adapter)) {
-        throw new Error(`${target} 不支持 /model`);
-      }
-      await slot.adapter.setModel(slot.ref, model.id);
-      const key = slot.adapter.provider;
-      const existing = session.meta.providerSessions[key] ?? { provider: key };
-      session.setProviderSession(key, {
-        ...existing,
-        provider: key,
-        providerSessionId: existing.providerSessionId ?? slot.ref.providerSessionId,
-        model: model.id === "default" ? undefined : model.id,
-      });
+    async (target: ProviderName, model: { id: string; label: string }) => {
+      await runtime.setModel(target, model.id);
       setStatus({ text: `${target} model: ${model.label}（从下一 turn 生效）`, tone: "info" });
-      bump();
     },
-    [bump],
+    [runtime],
+  );
+
+  const switchSession = useCallback(
+    async (next: typeof session) => {
+      if (runtime.isBusy || runtime.queueLength > 0) {
+        throw new Error("当前 turn 结束后才能切换 BatonSession");
+      }
+      await runtime.close();
+      view.current = next.loadState();
+      setSession(next);
+      setStatus({ text: `已打开 session ${next.id}`, tone: "info" });
+    },
+    [runtime],
   );
 
   const executeCommand = useCallback(
-    async (name: "provider" | "model" | "exit", argument: string) => {
+    async (name: "provider" | "model" | "sessions" | "new" | "exit", argument: string) => {
       if (name === "exit") {
         await shutdown();
+        return;
+      }
+      if (name === "new") {
+        if (argument) throw new Error("/new 不接受参数");
+        const next = store.createSession({ cwd: session.meta.cwd, title: `chat @ ${session.meta.cwd}` });
+        await switchSession(next);
+        return;
+      }
+      if (name === "sessions") {
+        if (argument) throw new Error("/sessions 不接受参数");
+        const sessions = store.listSessions();
+        setPicker({
+          title: "选择 BatonSession",
+          options: sessions.map((meta) => ({
+            name: `${meta.batonSessionId === session.id ? "● " : ""}${meta.title ?? meta.batonSessionId}`,
+            description: `${meta.cwd} · ${meta.updatedAt ?? meta.createdAt}`,
+            value: meta.batonSessionId,
+          })),
+          onSelect: async (value) => {
+            if (value === session.id) return;
+            try {
+              await switchSession(store.openSession(value));
+            } catch (error) {
+              setStatus({ text: error instanceof Error ? error.message : String(error), tone: "error" });
+            }
+          },
+        });
         return;
       }
       if (name === "provider") {
@@ -216,9 +224,7 @@ function App(): ReactNode {
       }
 
       const target = agent;
-      const slot = await ensureAgent(target);
-      if (!slot.ref || !isModelConfigurable(slot.adapter)) throw new Error(`${target} 不支持 /model`);
-      const models = await slot.adapter.listModels(slot.ref);
+      const models = await runtime.listModels(target);
       if (!argument) {
         setPicker({
           title: `选择 ${target} model`,
@@ -231,7 +237,7 @@ function App(): ReactNode {
             const model = models.find((candidate) => candidate.id === value);
             if (!model) return;
             try {
-              await configureModel(target, slot, model);
+              await configureModel(target, model);
             } catch (error) {
               setStatus({ text: error instanceof Error ? error.message : String(error), tone: "error" });
             }
@@ -244,9 +250,9 @@ function App(): ReactNode {
         (candidate) => candidate.id.toLowerCase() === normalized || candidate.label.toLowerCase() === normalized,
       );
       if (!model) throw new Error(`${target} 未知 model: ${argument}`);
-      await configureModel(target, slot, model);
+      await configureModel(target, model);
     },
-    [agent, configureModel, ensureAgent, shutdown],
+    [agent, configureModel, runtime, session, shutdown, switchSession],
   );
 
   const send = useCallback(
@@ -267,62 +273,25 @@ function App(): ReactNode {
       const target = agent;
       resetComposer();
       setStatus(null);
-      let slot: AgentSlot | undefined;
-      let startedTurn = false;
       try {
-        slot = await ensureAgent(target);
-        if (!slot.ref) throw new Error(`${target} 启动失败`);
-        if (slot.busy) throw new Error(`${target} 仍在运行，请切换 provider 或等待当前 turn 结束`);
-        slot.busy = true;
-        startedTurn = true;
-        bump();
-
-        // 跨会话 @bs_ 引用 + 同会话跨 agent 自动补课，两类上下文都在发送时注入
-        const { prompt } = expandMentions(store, trimmed, settings.mentionBudgetChars);
-        const catchUp = buildCatchUpContext(session, slot.adapter.provider, settings.mentionBudgetChars);
-        const finalPrompt = catchUp ? `<baton-sync>\n${catchUp}\n</baton-sync>\n\n${prompt}` : prompt;
-
-        const turnId = newId("t");
-        await slot.adapter.prompt(
-          slot.ref,
-          [{ type: "text", text: finalPrompt }],
-          (ev) => {
-            const envelope = session.append(ev);
-            applyEvent(view.current, envelope as Parameters<typeof applyEvent>[1]);
-            bump();
-          },
-          { turnId },
-        );
-        session.summarizeTurn(turnId);
-        if (slot.adapter instanceof ClaudeAdapter) {
-          const nativeId = slot.adapter.nativeSessionId(slot.ref);
-          if (nativeId) {
-            session.setProviderSession(slot.adapter.provider, {
-              ...session.meta.providerSessions[slot.adapter.provider],
-              provider: slot.adapter.provider,
-              providerSessionId: nativeId,
-            });
-          }
-        }
+        const { prompt } = expandMentions(store, trimmed, config.mentionBudgetChars);
+        const wasBusy = runtime.isBusy || runtime.queueLength > 0;
+        if (wasBusy) setStatus({ text: `${target} turn 已排队`, tone: "info" });
+        await runtime.submit(target, [{ type: "text", text: prompt }], (envelope) => {
+          applyEvent(view.current, envelope);
+          bump();
+        });
+        setStatus((current) => (current?.tone === "error" ? current : null));
       } catch (err) {
         setStatus({ text: err instanceof Error ? err.message : String(err), tone: "error" });
-      } finally {
-        if (slot && startedTurn) slot.busy = false;
-        bump();
       }
     },
-    [agent, ensureAgent, bump, executeCommand, resetComposer],
+    [agent, bump, executeCommand, resetComposer, runtime],
   );
 
-  const runningProviders = [...slots.current.entries()]
-    .filter(([, slot]) => slot.busy)
-    .map(([provider]) => provider);
-  const selectedSlot = slots.current.get(agent);
-  const selectedBusy = selectedSlot?.busy ?? false;
-  const selectedModel =
-    selectedSlot?.ref && isModelConfigurable(selectedSlot.adapter)
-      ? (selectedSlot.adapter.currentModel(selectedSlot.ref) ?? "default")
-      : "default";
+  const runningProviders = runtime.activeProvider ? [runtime.activeProvider] : [];
+  const selectedBusy = runtime.activeProvider === agent;
+  const selectedModel = runtime.currentModel(agent) ?? "default";
 
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") {
@@ -370,6 +339,7 @@ function App(): ReactNode {
   });
 
   const v = view.current;
+  const cwd = session.meta.cwd;
   const usageLine = `in:${v.usage.inputTokens} out:${v.usage.outputTokens}`;
   // 输入区随内容长高（上限 6 行）；浮层锚点跟着输入框顶部走（+1 是底部状态行）
   const composerHeight = Math.min(6, draft.split("\n").length) + 2;
@@ -379,15 +349,15 @@ function App(): ReactNode {
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
       <scrollbox style={{ flexGrow: 1, paddingLeft: 1, paddingRight: 1 }} stickyScroll stickyStart="bottom" focused={false}>
         <text fg="#565f89">
-          {`baton · session ${session.id}\n直接输入发给当前 provider；/provider 切换，/model 选模型，@bs_xxx 引用其它会话\n`}
+          {`baton · session ${session.id}\n直接输入发给当前 provider；/provider 切换，/sessions 打开会话，@bs_xxx 引用其它会话\n`}
         </text>
         {v.timeline.map((item) => {
           if (item.type === "message") {
             const msg = v.messages.get(item.id);
             if (!msg) return null;
             if (msg.role === "thought") {
-              // 思考过程：dim 展示中间推理（settings.showThoughts 可关）
-              if (!settings.showThoughts) return null;
+              // 思考过程：dim 展示中间推理（config.showThoughts 可关）
+              if (!config.showThoughts) return null;
               const text = textOf(msg.content).trim();
               if (!text) return null;
               return (
@@ -481,7 +451,7 @@ function App(): ReactNode {
       )}
       <box style={{ height: 1 }}>
         <text fg={status?.tone === "error" ? "#f7768e" : status ? "#7aa2f7" : "#565f89"}>
-          {status?.text ?? `${usageLine}  turns:${v.turnSummaries.length}  cwd:${cwd}`}
+          {status?.text ?? `${usageLine}  turns:${v.turnSummaries.length}  queue:${runtime.queueLength}  cwd:${cwd}`}
         </text>
       </box>
 

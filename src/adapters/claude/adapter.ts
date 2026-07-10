@@ -138,8 +138,13 @@ export class ClaudeAdapter implements AgentAdapter {
   /** SDK 无独立"启动"步骤：session 在首个 prompt 时创建，这里只登记运行时 */
   async start(opts: StartOptions): Promise<ProviderSessionRef> {
     const id = newId("ps");
-    this.sessions.set(id, { cwd: opts.cwd, env: opts.env, suppressedToolIds: new Set() });
-    return { provider: this.provider, providerSessionId: id };
+    this.sessions.set(id, {
+      cwd: opts.cwd,
+      env: opts.env,
+      claudeSessionId: opts.resumeSessionId,
+      suppressedToolIds: new Set(),
+    });
+    return { provider: this.provider, providerSessionId: id, resumed: Boolean(opts.resumeSessionId) };
   }
 
   /** 拿 Claude 原生 session id（宿主存入 meta 以支持将来 resume） */

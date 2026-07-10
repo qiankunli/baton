@@ -14,6 +14,17 @@ export interface ParsedMention {
   batonSessionId: string;
 }
 
+interface ProviderSummary {
+  provider: string;
+  seq: number;
+  summary: TurnSummary;
+}
+
+export interface ProviderCatchUpContext {
+  text: string;
+  throughSeq: number;
+}
+
 export function parseMentions(text: string): ParsedMention[] {
   const seen = new Set<string>();
   const out: ParsedMention[] = [];
@@ -90,18 +101,49 @@ export function buildCatchUpContext(
   provider: string,
   budgetChars: number = DEFAULT_MENTION_BUDGET_CHARS,
 ): string | null {
-  const summaries = handle
-    .readEvents()
-    .filter((e) => e.kind === "_baton_turn_summary")
-    .map((e) => ({ provider: e.provider, seq: e.seq, summary: e.payload as TurnSummary }));
+  const summaries = providerSummaries(handle);
   let lastMine = 0;
   for (const s of summaries) {
     if (s.provider === provider) lastMine = s.seq;
   }
-  const missed = summaries.filter((s) => s.provider !== provider && s.seq > lastMine);
+  return buildProviderCatchUpContext(handle, {
+    provider,
+    sinceSeq: lastMine,
+    includeProviderTurns: false,
+    budgetChars,
+  })?.text ?? null;
+}
+
+function providerSummaries(handle: SessionHandle): ProviderSummary[] {
+  return handle
+    .readEvents()
+    .filter((e) => e.kind === "_baton_turn_summary")
+    .map((e) => ({ provider: e.provider, seq: e.seq, summary: e.payload as TurnSummary }));
+}
+
+/**
+ * 生成 provider 尚未同步的 BatonSession 历史，并返回本批覆盖到的事件水位。
+ * 新建原生会话时 includeProviderTurns=true，从零恢复完整逻辑历史；resume 时只补其它 provider 的增量。
+ */
+export function buildProviderCatchUpContext(
+  handle: SessionHandle,
+  opts: {
+    provider: string;
+    sinceSeq: number;
+    includeProviderTurns: boolean;
+    budgetChars?: number;
+  },
+): ProviderCatchUpContext | null {
+  const summaries = providerSummaries(handle);
+  const missed = summaries.filter(
+    (item) => item.seq > opts.sinceSeq && (opts.includeProviderTurns || item.provider !== opts.provider),
+  );
   if (missed.length === 0) return null;
 
-  const header = `# 同会话中其它 agent 的最新进展（baton 自动同步）`;
+  const header = opts.includeProviderTurns
+    ? "# BatonSession 历史（baton 自动恢复）"
+    : "# 同会话中其它 agent 的最新进展（baton 自动同步）";
+  const budgetChars = opts.budgetChars ?? DEFAULT_MENTION_BUDGET_CHARS;
   const picked: string[] = [];
   let used = header.length;
   let dropped = 0;
@@ -118,7 +160,10 @@ export function buildCatchUpContext(
   const parts = [header];
   if (dropped > 0) parts.push(`(更早的 ${dropped} 个 turn 因篇幅省略)`);
   parts.push(...picked);
-  return parts.join("\n\n");
+  return {
+    text: parts.join("\n\n"),
+    throughSeq: summaries.at(-1)?.seq ?? opts.sinceSeq,
+  };
 }
 
 /**

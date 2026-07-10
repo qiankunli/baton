@@ -26,7 +26,7 @@ describe("triggerAt", () => {
 describe("buildCandidates", () => {
   test("slash lists commands filtered by prefix", () => {
     const all = buildCandidates({ kind: "slash", start: 0, prefix: "" }, sessions);
-    expect(all.map((c) => c.insert)).toEqual(["/provider", "/model", "/exit"]);
+    expect(all.map((c) => c.insert)).toEqual(["/provider", "/model", "/sessions", "/new", "/exit"]);
     const pr = buildCandidates({ kind: "slash", start: 0, prefix: "pr" }, sessions);
     expect(pr.map((c) => c.insert)).toEqual(["/provider"]);
   });
