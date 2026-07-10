@@ -1,9 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { SessionStore } from "../src/store/store.ts";
+import { SessionStore, projectDirName, type SessionMeta } from "../src/store/store.ts";
 import { textOf, type TurnSummary } from "../src/events/types.ts";
 
 let root: string;
@@ -32,6 +40,53 @@ describe("session lifecycle", () => {
 
   test("open unknown session throws", () => {
     expect(() => store.openSession("bs_NOPE")).toThrow(/not found/);
+  });
+
+  test("sessions are grouped by project directory (claude-style)", () => {
+    const h = store.createSession({ cwd: "/tmp/proj" });
+    expect(h.dir).toBe(join(root, "projects", "-tmp-proj", h.id));
+
+    const other = store.createSession({ cwd: "/tmp/other" });
+    expect(store.listSessions({ cwd: "/tmp/proj" }).map((m) => m.batonSessionId)).toEqual([h.id]);
+    // 不带 cwd 时跨项目全量列出
+    const all = store.listSessions().map((m) => m.batonSessionId);
+    expect(all).toContain(h.id);
+    expect(all).toContain(other.id);
+  });
+
+  test("munged project names may collide; listSessions still filters by exact cwd", () => {
+    const a = store.createSession({ cwd: "/tmp/proj" });
+    const b = store.createSession({ cwd: "/tmp-proj" });
+    expect(projectDirName("/tmp/proj")).toBe(projectDirName("/tmp-proj"));
+    expect(store.listSessions({ cwd: "/tmp/proj" }).map((m) => m.batonSessionId)).toEqual([a.id]);
+    expect(store.listSessions({ cwd: "/tmp-proj" }).map((m) => m.batonSessionId)).toEqual([b.id]);
+  });
+
+  test("legacy flat sessions/ layout migrates into projects/ on first access", () => {
+    const legacy = join(root, "sessions", "bs_LEGACY1");
+    mkdirSync(legacy, { recursive: true });
+    const meta: SessionMeta = {
+      batonSessionId: "bs_LEGACY1",
+      cwd: "/tmp/proj",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      providerSessions: {},
+    };
+    writeFileSync(join(legacy, "meta.json"), JSON.stringify(meta));
+    writeFileSync(join(legacy, "session.jsonl"), "");
+
+    const h = store.openSession("bs_LEGACY1");
+    expect(h.dir).toBe(join(root, "projects", "-tmp-proj", "bs_LEGACY1"));
+    // 旧目录清空后移除
+    expect(existsSync(join(root, "sessions"))).toBe(false);
+  });
+
+  test("legacy session with corrupt meta stays in place and does not block", () => {
+    const legacy = join(root, "sessions", "bs_BROKEN");
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(join(legacy, "meta.json"), "not json");
+
+    expect(store.listSessions()).toEqual([]);
+    expect(existsSync(join(root, "sessions", "bs_BROKEN"))).toBe(true);
   });
 
   test("provider session meta persists as a native resume optimization", () => {
