@@ -317,6 +317,11 @@ function App(): ReactNode {
       if (!draft && runningProviders.length === 0) void shutdown();
       return;
     }
+    if (key.name === "escape" && picker && !approval) {
+      key.preventDefault();
+      setPicker(null);
+      return;
+    }
     if (candidates.length > 0 && ["down", "up", "tab", "escape"].includes(key.name)) {
       // 候选浮层：↑/↓ 选择，Tab 补全（Enter 保留"发送"语义），Esc 关闭
       // 全局 handler 先于聚焦 renderable 执行；preventDefault 阻止 textarea 把 ↑/↓/Tab 当编辑键
