@@ -4,7 +4,10 @@
 //   baton tui        同上
 //   baton repl       headless REPL（--agent codex|claude）
 //   baton sessions   列出本机 baton 会话
+//   baton version    显示版本
 //   baton help       帮助
+
+import packageJson from "../../package.json" with { type: "json" };
 
 import { SessionStore } from "../store/store.ts";
 
@@ -16,6 +19,7 @@ const HELP = `baton — terminal-native shared workspace for coding agents
                         Esc 中断当前 turn
   baton repl [--agent codex|claude] [--cwd <dir>]   headless REPL
   baton sessions        列出会话（可在输入里用 @<id> 引用）
+  baton version         显示版本（也支持 --version / -V）
   baton help            本帮助
 
 配置:
@@ -27,6 +31,11 @@ const HELP = `baton — terminal-native shared workspace for coding agents
 const cmd = process.argv[2];
 
 switch (cmd) {
+  case "version":
+  case "--version":
+  case "-V":
+    console.log(`baton ${packageJson.version}`);
+    process.exit(0);
   case "help":
   case "--help":
   case "-h":
