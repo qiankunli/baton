@@ -81,6 +81,17 @@ interface StatusMessage {
   tone: "info" | "error";
 }
 
+function userVisibleText(text: string): string {
+  return text.replace(/<baton-(context|sync)>[\s\S]*<\/baton-\1>\s*/g, "").trim();
+}
+
+function queuedPreviewText(text: string): string {
+  const lines = userVisibleText(text).split("\n");
+  const visible = lines.slice(0, 3).map((line, index) => `${index === 0 ? "  ↳ " : "    "}${line}`);
+  if (lines.length > 3) visible.push("    …");
+  return visible.join("\n");
+}
+
 function App(): ReactNode {
   const [session, setSession] = useState(opened.session);
   const view = useRef<SessionState>(opened.resumed ? opened.session.loadState() : emptySessionState());
@@ -277,11 +288,13 @@ function App(): ReactNode {
         const { prompt } = expandMentions(store, trimmed, config.mentionBudgetChars);
         const wasBusy = runtime.isBusy || runtime.queueLength > 0;
         if (wasBusy) setStatus({ text: `${target} turn 已排队`, tone: "info" });
-        await runtime.submit(target, [{ type: "text", text: prompt }], (envelope) => {
+        const outcome = await runtime.submit(target, [{ type: "text", text: prompt }], (envelope) => {
           applyEvent(view.current, envelope);
           bump();
         });
-        setStatus((current) => (current?.tone === "error" ? current : null));
+        if (outcome === "completed") {
+          setStatus((current) => (current?.tone === "error" ? current : null));
+        }
       } catch (err) {
         setStatus({ text: err instanceof Error ? err.message : String(err), tone: "error" });
       }
@@ -290,6 +303,7 @@ function App(): ReactNode {
   );
 
   const runningProviders = runtime.activeProvider ? [runtime.activeProvider] : [];
+  const queuedTurns = runtime.queuedTurns;
   const selectedBusy = runtime.activeProvider === agent;
   const selectedModel = runtime.currentModel(agent) ?? "default";
 
@@ -340,6 +354,20 @@ function App(): ReactNode {
       } else if (key.name === "escape") setSuggDismissed(true);
       return;
     }
+    if (key.name === "up" && !draft && !approval && !picker) {
+      const recalled = runtime.recallLatestQueued();
+      if (recalled) {
+        key.preventDefault();
+        const text = userVisibleText(textOf(recalled.blocks));
+        setDraft(text);
+        composer.current?.setText(text);
+        composer.current?.gotoBufferEnd();
+        const provider = parseProvider(recalled.provider);
+        if (provider) setAgent(provider);
+        setStatus({ text: `已撤回 ${recalled.provider} 的排队消息，可继续编辑`, tone: "info" });
+        return;
+      }
+    }
     if (key.name === "escape" && runningProviders.length > 0) cancelRunningTurn();
   });
 
@@ -373,7 +401,7 @@ function App(): ReactNode {
             }
             const label = msg.role === "user" ? "you" : (PROVIDER_LABEL[msg.provider ?? ""] ?? msg.provider ?? "agent");
             const color = msg.role === "user" ? "#7aa2f7" : label === "codex" ? "#9ece6a" : "#bb9af7";
-            const body = msg.role === "user" ? textOf(msg.content).replace(/<baton-(context|sync)>[\s\S]*<\/baton-\1>\s*/g, "") : textOf(msg.content);
+            const body = msg.role === "user" ? userVisibleText(textOf(msg.content)) : textOf(msg.content);
             return (
               <text key={item.id}>
                 <span fg={color}>{`\n${label}> `}</span>
@@ -417,6 +445,18 @@ function App(): ReactNode {
         ))}
       </scrollbox>
 
+      {queuedTurns.length > 0 && (
+        <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
+          <text>• 排队的后续消息</text>
+          {queuedTurns.map((turn) => (
+            <text key={turn.id} fg="#565f89">
+              {`${queuedPreviewText(textOf(turn.blocks))}  [${turn.provider}]`}
+            </text>
+          ))}
+          <text fg="#565f89">↑ 编辑最后一条排队消息</text>
+        </box>
+      )}
+
       <box
         title={`provider:${agent} · model:${selectedModel}${selectedBusy ? " · running" : ""}`}
         border
@@ -427,6 +467,7 @@ function App(): ReactNode {
           ref={composer}
           focused={!approval && !picker}
           placeholder={`发给 ${agent}（/ 命令，@ 引用，Ctrl+J 换行）`}
+          cursorStyle={{ style: "line", blinking: true }}
           keyBindings={COMPOSER_KEY_BINDINGS}
           style={{ flexGrow: 1 }}
           onContentChange={() => {

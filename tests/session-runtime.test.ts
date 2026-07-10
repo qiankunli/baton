@@ -181,6 +181,28 @@ describe("BatonSessionRuntime", () => {
     expect(adapters.get("codex")?.prompts).toEqual(["one"]);
   });
 
+  test("exposes queued turns and recalls the latest one before it starts", async () => {
+    const adapter = new FakeAdapter("codex", { delayMs: 20 });
+    const runtime = new BatonSessionRuntime({
+      session,
+      mentionBudgetChars: 4096,
+      createAdapter: () => adapter,
+    });
+
+    const active = runtime.submit("codex", [{ type: "text", text: "one" }]);
+    const queued = runtime.submit("codex", [{ type: "text", text: "two" }]);
+    const latest = runtime.submit("claude", [{ type: "text", text: "three" }]);
+
+    expect(runtime.queuedTurns.map((turn) => textOf(turn.blocks))).toEqual(["two", "three"]);
+    const recalled = runtime.recallLatestQueued();
+    expect(recalled && textOf(recalled.blocks)).toBe("three");
+    expect(runtime.queueLength).toBe(1);
+    expect(await latest).toBe("recalled");
+    expect(await active).toBe("completed");
+    expect(await queued).toBe("completed");
+    expect(adapter.prompts).toEqual(["one", "two"]);
+  });
+
   test("rebuilds full BatonSession history for a fresh provider before prompting", async () => {
     completedTurn(session, "codex", "t_old", "existing work");
     const claude = new FakeAdapter("claude-code");

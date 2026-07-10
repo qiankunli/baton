@@ -183,6 +183,8 @@ TUI 使用 opentui React reconciler。当前布局为 transcript、可增长 com
 
 输入语义刻意分开：`/provider` 选择当前输入目标，`/model` 配置该 ProviderSession 后续 turn 使用的模型，`@` 只引用 baton session / turn / 产物。所有普通输入先进入 BatonSessionRuntime 的全局串行队列，因此切换 provider 不会分裂出两条并发逻辑历史。
 
+排队中的 turn 由 BatonSessionRuntime 单点持有，TUI 只在 composer 上方读取快照展示，避免界面状态与真实执行队列分叉。尚未开始的消息立即可见，并可在空 composer 时用 ↑ 按 LIFO 撤回编辑；正常执行仍按 FIFO，turn 被 runtime 取走开始执行后才进入持久事件流，不再允许撤回。
+
 ## 6. 里程碑
 
 | 阶段 | 内容 | 验收 |
