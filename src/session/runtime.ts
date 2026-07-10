@@ -19,12 +19,21 @@ interface ProviderSlot {
 }
 
 interface QueuedTurn {
+  id: number;
   provider: string;
   blocks: ContentBlock[];
   onEvent?: (event: AnyEventEnvelope) => void;
-  resolve: () => void;
+  resolve: (outcome: SubmitOutcome) => void;
   reject: (error: unknown) => void;
 }
+
+export interface QueuedTurnSnapshot {
+  id: number;
+  provider: string;
+  blocks: ContentBlock[];
+}
+
+export type SubmitOutcome = "completed" | "recalled";
 
 export interface BatonSessionRuntimeOptions {
   session: SessionHandle;
@@ -41,6 +50,7 @@ export interface BatonSessionRuntimeOptions {
 export class BatonSessionRuntime {
   private readonly slots = new Map<string, ProviderSlot>();
   private readonly queue: QueuedTurn[] = [];
+  private nextQueueId = 1;
   private draining = false;
   private processingProvider?: string;
   private active?: { provider: string; slot: ProviderSlot };
@@ -55,6 +65,10 @@ export class BatonSessionRuntime {
     return this.queue.length;
   }
 
+  get queuedTurns(): QueuedTurnSnapshot[] {
+    return this.queue.map((turn) => this.snapshot(turn));
+  }
+
   get isBusy(): boolean {
     return this.draining;
   }
@@ -63,12 +77,21 @@ export class BatonSessionRuntime {
     provider: string,
     blocks: ContentBlock[],
     onEvent?: (event: AnyEventEnvelope) => void,
-  ): Promise<void> {
+  ): Promise<SubmitOutcome> {
     return new Promise((resolve, reject) => {
-      this.queue.push({ provider, blocks, onEvent, resolve, reject });
+      this.queue.push({ id: this.nextQueueId++, provider, blocks, onEvent, resolve, reject });
       this.changed();
       void this.drain();
     });
+  }
+
+  /** 只允许撤回尚未开始执行的最新 turn；已被 drain 取走的 active turn 不在此列。 */
+  recallLatestQueued(): QueuedTurnSnapshot | undefined {
+    const turn = this.queue.pop();
+    if (!turn) return undefined;
+    turn.resolve("recalled");
+    this.changed();
+    return this.snapshot(turn);
   }
 
   async listModels(provider: string): Promise<ModelOption[]> {
@@ -123,7 +146,7 @@ export class BatonSessionRuntime {
         this.changed();
         try {
           await this.runTurn(turn);
-          turn.resolve();
+          turn.resolve("completed");
         } catch (error) {
           turn.reject(error);
         }
@@ -254,6 +277,10 @@ export class BatonSessionRuntime {
     return isNativeSessionIdentifiable(slot.adapter)
       ? slot.adapter.nativeSessionId(slot.ref)
       : slot.ref.providerSessionId;
+  }
+
+  private snapshot(turn: QueuedTurn): QueuedTurnSnapshot {
+    return { id: turn.id, provider: turn.provider, blocks: [...turn.blocks] };
   }
 
   private changed(): void {
