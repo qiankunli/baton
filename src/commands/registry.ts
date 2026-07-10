@@ -23,29 +23,29 @@ export interface CommandInvocation {
 export const COMMANDS: readonly CommandDefinition[] = [
   {
     name: "provider",
-    description: "选择输入目标（codex / claude）",
+    description: "Select the input target (codex / claude)",
     scope: "baton",
     runPolicy: "always",
   },
   {
     name: "model",
-    description: "设置当前 provider 后续 turn 使用的模型",
+    description: "Set the model for the current provider's next turns",
     scope: "provider",
     runPolicy: "always",
   },
   {
     name: "sessions",
-    description: "打开 BatonSession 选择器",
+    description: "Open the BatonSession picker",
     scope: "baton",
     runPolicy: "idle",
   },
   {
     name: "new",
-    description: "在当前工作目录新建 BatonSession",
+    description: "Create a new BatonSession in the current directory",
     scope: "baton",
     runPolicy: "idle",
   },
-  { name: "exit", description: "退出 baton", scope: "baton", runPolicy: "always" },
+  { name: "exit", description: "Exit baton", scope: "baton", runPolicy: "always" },
 ];
 
 /** 识别完整命令或唯一前缀；未知或有歧义的 `/path` 等输入仍作为普通 prompt。 */

@@ -156,7 +156,7 @@ function App(): ReactNode {
 
   /** 优雅退出：先关掉两个 agent 子进程再退（对应 /exit、双击 Ctrl+C、Ctrl+D） */
   const shutdown = useCallback(async () => {
-    setStatus({ text: "正在退出…", tone: "info" });
+    setStatus({ text: "Exiting…", tone: "info" });
     await runtime.close();
     process.exit(0);
   }, [runtime]);
@@ -164,7 +164,7 @@ function App(): ReactNode {
   const configureModel = useCallback(
     async (target: ProviderName, model: { id: string; label: string }) => {
       await runtime.setModel(target, model.id);
-      setStatus({ text: `${target} model: ${model.label}（从下一 turn 生效）`, tone: "info" });
+      setStatus({ text: `${target} model: ${model.label} (takes effect next turn)`, tone: "info" });
     },
     [runtime],
   );
@@ -172,12 +172,12 @@ function App(): ReactNode {
   const switchSession = useCallback(
     async (next: typeof session) => {
       if (runtime.isBusy || runtime.queueLength > 0) {
-        throw new Error("当前 turn 结束后才能切换 BatonSession");
+        throw new Error("Wait for the current turn to finish before switching BatonSession");
       }
       await runtime.close();
       view.current = next.loadState();
       setSession(next);
-      setStatus({ text: `已打开 session ${next.id}`, tone: "info" });
+      setStatus({ text: `Opened session ${next.id}`, tone: "info" });
     },
     [runtime],
   );
@@ -189,16 +189,16 @@ function App(): ReactNode {
         return;
       }
       if (name === "new") {
-        if (argument) throw new Error("/new 不接受参数");
+        if (argument) throw new Error("/new takes no arguments");
         const next = store.createSession({ cwd: session.meta.cwd, title: `chat @ ${session.meta.cwd}` });
         await switchSession(next);
         return;
       }
       if (name === "sessions") {
-        if (argument) throw new Error("/sessions 不接受参数");
+        if (argument) throw new Error("/sessions takes no arguments");
         const sessions = store.listSessions();
         setPicker({
-          title: "选择 BatonSession",
+          title: "Select BatonSession",
           options: sessions.map((meta) => ({
             name: `${meta.batonSessionId === session.id ? "● " : ""}${meta.title ?? meta.batonSessionId}`,
             description: `${meta.cwd} · ${meta.updatedAt ?? meta.createdAt}`,
@@ -218,8 +218,8 @@ function App(): ReactNode {
       if (name === "provider") {
         if (!argument) {
           setPicker({
-            title: "选择 provider",
-            options: PROVIDERS.map((provider) => ({ name: provider, description: `切换到 ${provider}`, value: provider })),
+            title: "Select provider",
+            options: PROVIDERS.map((provider) => ({ name: provider, description: `Switch to ${provider}`, value: provider })),
             onSelect: (value) => {
               const provider = parseProvider(value);
               if (provider) setAgent(provider);
@@ -228,7 +228,7 @@ function App(): ReactNode {
           return;
         }
         const provider = parseProvider(argument);
-        if (!provider) throw new Error(`未知 provider: ${argument}（可选 codex / claude）`);
+        if (!provider) throw new Error(`Unknown provider: ${argument} (available: codex / claude)`);
         setAgent(provider);
         setStatus(null);
         return;
@@ -238,7 +238,7 @@ function App(): ReactNode {
       const models = await runtime.listModels(target);
       if (!argument) {
         setPicker({
-          title: `选择 ${target} model`,
+          title: `Select ${target} model`,
           options: models.map((model) => ({
             name: model.label,
             description: model.description ?? model.id,
@@ -260,7 +260,7 @@ function App(): ReactNode {
       const model = models.find(
         (candidate) => candidate.id.toLowerCase() === normalized || candidate.label.toLowerCase() === normalized,
       );
-      if (!model) throw new Error(`${target} 未知 model: ${argument}`);
+      if (!model) throw new Error(`Unknown ${target} model: ${argument}`);
       await configureModel(target, model);
     },
     [agent, configureModel, runtime, session, shutdown, switchSession],
@@ -287,7 +287,7 @@ function App(): ReactNode {
       try {
         const { prompt } = expandMentions(store, trimmed, config.mentionBudgetChars);
         const wasBusy = runtime.isBusy || runtime.queueLength > 0;
-        if (wasBusy) setStatus({ text: `${target} turn 已排队`, tone: "info" });
+        if (wasBusy) setStatus({ text: `${target} turn queued`, tone: "info" });
         const outcome = await runtime.submit(target, [{ type: "text", text: prompt }], (envelope) => {
           applyEvent(view.current, envelope);
           bump();
@@ -318,9 +318,9 @@ function App(): ReactNode {
       } else if (action === "exit") void shutdown();
       else {
         ctrlCArmedAt.current = Date.now();
-        setStatus({ text: "再按一次 Ctrl+C 退出", tone: "info" });
+        setStatus({ text: "Press Ctrl+C again to exit", tone: "info" });
         setTimeout(
-          () => setStatus((current) => (current?.text === "再按一次 Ctrl+C 退出" ? null : current)),
+          () => setStatus((current) => (current?.text === "Press Ctrl+C again to exit" ? null : current)),
           CTRL_C_CONFIRM_WINDOW_MS + 100,
         );
       }
@@ -364,7 +364,7 @@ function App(): ReactNode {
         composer.current?.gotoBufferEnd();
         const provider = parseProvider(recalled.provider);
         if (provider) setAgent(provider);
-        setStatus({ text: `已撤回 ${recalled.provider} 的排队消息，可继续编辑`, tone: "info" });
+        setStatus({ text: `Recalled queued message for ${recalled.provider}; edit and resend`, tone: "info" });
         return;
       }
     }
@@ -382,7 +382,7 @@ function App(): ReactNode {
     <box style={{ flexDirection: "column", flexGrow: 1 }}>
       <scrollbox style={{ flexGrow: 1, paddingLeft: 1, paddingRight: 1 }} stickyScroll stickyStart="bottom" focused={false}>
         <text fg="#565f89">
-          {`baton · session ${session.id}\n直接输入发给当前 provider；/provider 切换，/sessions 打开会话，@bs_xxx 引用其它会话\n`}
+          {`baton · session ${session.id}\ntype to chat · /provider switch · /sessions open · @bs_xxx reference another session\n`}
         </text>
         {v.timeline.map((item) => {
           if (item.type === "message") {
@@ -434,26 +434,26 @@ function App(): ReactNode {
             const markOf = (s: string) => (s === "completed" ? "☑" : s === "in_progress" ? "◐" : "☐");
             return (
               <text key={item.id} fg="#7dcfff">
-                {`\n  计划\n${plan.entries.map((e) => `  ${markOf(e.status)} ${e.content}`).join("\n")}`}
+                {`\n  Plan\n${plan.entries.map((e) => `  ${markOf(e.status)} ${e.content}`).join("\n")}`}
               </text>
             );
           }
           return null;
         })}
         {runningProviders.map((provider) => (
-          <text key={provider} fg="#565f89">{`\n${provider} 思考中… (Esc 中断)`}</text>
+          <text key={provider} fg="#565f89">{`\n${provider} thinking… (Esc to interrupt)`}</text>
         ))}
       </scrollbox>
 
       {queuedTurns.length > 0 && (
         <box style={{ flexDirection: "column", flexShrink: 0, paddingLeft: 1, paddingRight: 1 }}>
-          <text>• 排队的后续消息</text>
+          <text>• Queued follow-ups</text>
           {queuedTurns.map((turn) => (
             <text key={turn.id} fg="#565f89">
               {`${queuedPreviewText(textOf(turn.blocks))}  [${turn.provider}]`}
             </text>
           ))}
-          <text fg="#565f89">↑ 编辑最后一条排队消息</text>
+          <text fg="#565f89">↑ edit last queued message</text>
         </box>
       )}
 
@@ -466,7 +466,7 @@ function App(): ReactNode {
         <textarea
           ref={composer}
           focused={!approval && !picker}
-          placeholder={`发给 ${agent}（/ 命令，@ 引用，Ctrl+J 换行）`}
+          placeholder={`Message ${agent} (/ commands, @ mentions, Ctrl+J newline)`}
           cursorStyle={{ style: "line", blinking: true }}
           keyBindings={COMPOSER_KEY_BINDINGS}
           style={{ flexGrow: 1 }}
@@ -485,7 +485,7 @@ function App(): ReactNode {
         <box
           border
           borderColor="#3b4261"
-          title="候选 (Tab 补全 · ↑↓ 选择 · Esc 关闭)"
+          title="Suggestions (Tab complete · ↑↓ select · Esc close)"
           style={{ position: "absolute", left: 2, bottom: overlayBottom, width: 60, height: candidates.length + 2, zIndex: 150, flexDirection: "column" }}
         >
           {candidates.map((c, i) => (
@@ -524,7 +524,7 @@ function App(): ReactNode {
 
       {approval && (
         <box
-          title="需要你的批准"
+          title="Approval required"
           border
           borderColor="#e0af68"
           // 同 picker：紧贴输入框上方，视线不用离开输入区
@@ -549,7 +549,7 @@ function App(): ReactNode {
 }
 
 if (!process.stdout.isTTY) {
-  console.error("baton tui 需要在真实终端（TTY）里运行");
+  console.error("baton tui requires a real terminal (TTY)");
   process.exit(1);
 }
 // Ctrl+C 自己接管（分层语义，见 keys.ts），不走 renderer 的直接退出。

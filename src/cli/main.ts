@@ -31,7 +31,7 @@ async function askApproval(req: PermissionRequest): Promise<{ optionId: string }
     const byId = req.options.find((o) => o.optionId === answer);
     const chosen = byId ?? byIndex;
     if (chosen) return { optionId: chosen.optionId };
-    stdout.write("输入序号或 optionId\n");
+    stdout.write("Enter an option number or optionId\n");
   }
 }
 
@@ -51,7 +51,7 @@ async function main(): Promise<void> {
       : new CodexAdapter({ approvalHandler: askApproval, command: config.codexCommand });
   const ref = await adapter.start({ cwd });
   session.setProviderSession(adapter.provider, { provider: adapter.provider, providerSessionId: ref.providerSessionId });
-  stdout.write(`${adapter.provider} session: ${ref.providerSessionId}\n输入内容开始对话，/exit 退出\n\n`);
+  stdout.write(`${adapter.provider} session: ${ref.providerSessionId}\nType to chat, /exit to quit\n\n`);
 
   for (;;) {
     const line = (await rl.question("you> ")).trim();
@@ -66,7 +66,7 @@ async function main(): Promise<void> {
 
     // @bs_xxx 急切展开：把被引用会话的紧凑摘要拼进 prompt（design §5.6）
     const { prompt, mentions } = expandMentions(store, line, config.mentionBudgetChars);
-    if (mentions.length) stdout.write(`(已注入 ${mentions.length} 个会话的上下文摘要)\n`);
+    if (mentions.length) stdout.write(`(injected context summaries from ${mentions.length} session(s))\n`);
 
     const turnId = newId("t");
     let sawOutput = false;

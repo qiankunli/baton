@@ -96,13 +96,13 @@ export class BatonSessionRuntime {
 
   async listModels(provider: string): Promise<ModelOption[]> {
     const slot = await this.ensureProvider(provider);
-    if (!slot.ref || !isModelConfigurable(slot.adapter)) throw new Error(`${provider} 不支持 /model`);
+    if (!slot.ref || !isModelConfigurable(slot.adapter)) throw new Error(`${provider} does not support /model`);
     return slot.adapter.listModels(slot.ref);
   }
 
   async setModel(provider: string, modelId: string | null): Promise<void> {
     const slot = await this.ensureProvider(provider);
-    if (!slot.ref || !isModelConfigurable(slot.adapter)) throw new Error(`${provider} 不支持 /model`);
+    if (!slot.ref || !isModelConfigurable(slot.adapter)) throw new Error(`${provider} does not support /model`);
     await slot.adapter.setModel(slot.ref, modelId);
     const key = slot.adapter.provider;
     const existing = this.options.session.meta.providerSessions[key] ?? { provider: key };
@@ -162,7 +162,7 @@ export class BatonSessionRuntime {
     this.changed();
     try {
       const slot = await this.ensureProvider(turn.provider);
-      if (!slot.ref) throw new Error(`${turn.provider} 启动失败`);
+      if (!slot.ref) throw new Error(`${turn.provider} failed to start`);
       this.active = { provider: turn.provider, slot };
       this.changed();
       const session = this.options.session;

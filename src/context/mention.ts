@@ -61,10 +61,10 @@ export function buildSessionContext(
   const summaries = session.loadState().turnSummaries;
   const title = session.meta.title ?? batonSessionId;
   const providers = Object.keys(session.meta.providerSessions).join(", ") || "unknown";
-  const header = `# 会话摘要：${title}（id: ${batonSessionId}，agent: ${providers}）`;
+  const header = `# Session summary: ${title} (id: ${batonSessionId}, agent: ${providers})`;
 
   if (summaries.length === 0) {
-    return `${header}\n(该会话尚无已完成的 turn)`;
+    return `${header}\n(no completed turns in this session yet)`;
   }
 
   const picked: string[] = [];
@@ -86,7 +86,7 @@ export function buildSessionContext(
     }
   }
   const parts = [header];
-  if (dropped > 0) parts.push(`(更早的 ${dropped} 个 turn 因篇幅省略)`);
+  if (dropped > 0) parts.push(`(${dropped} earlier turns omitted for length)`);
   parts.push(...picked);
   return parts.join("\n\n");
 }
@@ -141,8 +141,8 @@ export function buildProviderCatchUpContext(
   if (missed.length === 0) return null;
 
   const header = opts.includeProviderTurns
-    ? "# BatonSession 历史（baton 自动恢复）"
-    : "# 同会话中其它 agent 的最新进展（baton 自动同步）";
+    ? "# BatonSession history (auto-restored by baton)"
+    : "# Latest progress from other agents in this session (auto-synced by baton)";
   const budgetChars = opts.budgetChars ?? DEFAULT_MENTION_BUDGET_CHARS;
   const picked: string[] = [];
   let used = header.length;
@@ -158,7 +158,7 @@ export function buildProviderCatchUpContext(
     picked.unshift(block);
   }
   const parts = [header];
-  if (dropped > 0) parts.push(`(更早的 ${dropped} 个 turn 因篇幅省略)`);
+  if (dropped > 0) parts.push(`(${dropped} earlier turns omitted for length)`);
   parts.push(...picked);
   return {
     text: parts.join("\n\n"),
@@ -181,7 +181,7 @@ export function expandMentions(
   const contexts = mentions.map((m) => buildSessionContext(store, m.batonSessionId, perMentionBudget));
   const prompt = [
     "<baton-context>",
-    "以下是用户引用的其它 agent 会话的摘要，仅作背景参考：",
+    "Summaries of other agent sessions referenced by the user, provided as background context only:",
     ...contexts,
     "</baton-context>",
     "",

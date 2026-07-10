@@ -18,7 +18,7 @@ export function openBatonSession(
   opts: OpenBatonSessionOptions,
 ): OpenBatonSessionResult {
   if (opts.sessionId && opts.continueLast) {
-    throw new Error("--session 与 --continue 不能同时使用");
+    throw new Error("--session and --continue cannot be used together");
   }
 
   if (opts.sessionId) {

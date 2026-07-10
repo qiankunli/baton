@@ -54,6 +54,6 @@ describe("openBatonSession", () => {
   test("rejects conflicting selectors", () => {
     expect(() =>
       openBatonSession(store, { cwd: "/repo", sessionId: "bs_x", continueLast: true }),
-    ).toThrow(/不能同时使用/);
+    ).toThrow(/cannot be used together/);
   });
 });

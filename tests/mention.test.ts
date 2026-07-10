@@ -60,12 +60,12 @@ describe("buildSessionContext", () => {
     const ctx = buildSessionContext(store, h.id, 600);
     expect(ctx).toContain("a9"); // 最新的在
     expect(ctx).not.toContain("q0 "); // 最旧的被丢
-    expect(ctx).toMatch(/更早的 \d+ 个 turn 因篇幅省略/);
+    expect(ctx).toMatch(/\d+ earlier turns omitted for length/);
   });
 
   test("empty session yields placeholder", () => {
     const h = sessionWithTurns([]);
-    expect(buildSessionContext(store, h.id)).toContain("尚无已完成的 turn");
+    expect(buildSessionContext(store, h.id)).toContain("no completed turns in this session yet");
   });
 });
 
