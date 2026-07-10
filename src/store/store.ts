@@ -32,6 +32,8 @@ import { reduceEvents, type SessionState } from "./reduce.ts";
 export interface ProviderSessionMeta {
   provider: string;
   providerSessionId?: string;
+  /** 该 provider session 后续 turn 使用的模型；缺省表示 provider 默认值。 */
+  model?: string;
   /** provider 侧恢复所需的游标（如 Claude SDK resume cursor），语义归 adapter */
   resumeCursor?: string;
   parentSessionId?: string;

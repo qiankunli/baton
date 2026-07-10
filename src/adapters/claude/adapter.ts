@@ -11,6 +11,7 @@ import type {
   AgentAdapter,
   ApprovalHandler,
   EventSink,
+  ModelOption,
   PromptOptions,
   ProviderSessionRef,
   StartOptions,
@@ -97,8 +98,29 @@ interface ClaudeRuntime {
   activeQuery?: Query;
   /** 当前正在流式输出的 assistant 消息的内部 messageId（chunk 与最终 upsert 共用） */
   streamMessageId?: string;
+  /** 用户在 baton 中选择的模型；只在下一次 query 创建时生效。 */
+  model?: string;
+  models?: ModelOption[];
   /** 已归一成 plan_update 的 tool_use id：其 tool_result 也要跳过，避免时间线出现重复工具卡 */
   suppressedToolIds: Set<string>;
+}
+
+const CLAUDE_FALLBACK_MODELS: ModelOption[] = [
+  { id: "default", label: "Default", description: "使用 Claude Code 默认模型" },
+  { id: "sonnet", label: "Sonnet" },
+  { id: "opus", label: "Opus" },
+  { id: "haiku", label: "Haiku" },
+];
+
+function claudeModels(models: Array<{ value: string; displayName: string; description?: string }>): ModelOption[] {
+  return [
+    CLAUDE_FALLBACK_MODELS[0] as ModelOption,
+    ...models.map((model) => ({
+      id: model.value,
+      label: model.displayName,
+      description: model.description,
+    })),
+  ];
 }
 
 export interface ClaudeAdapterOptions {
@@ -125,6 +147,27 @@ export class ClaudeAdapter implements AgentAdapter {
     return this.sessions.get(ref.providerSessionId)?.claudeSessionId;
   }
 
+  async listModels(ref: ProviderSessionRef): Promise<ModelOption[]> {
+    const rt = this.mustSession(ref);
+    if (rt.activeQuery) {
+      try {
+        rt.models = claudeModels(await rt.activeQuery.supportedModels());
+      } catch {
+        // 首个 query 尚未完成 initialize 时允许退回稳定别名，picker 不应阻塞发送链路。
+      }
+    }
+    return rt.models ?? CLAUDE_FALLBACK_MODELS;
+  }
+
+  async setModel(ref: ProviderSessionRef, modelId: string | null): Promise<void> {
+    const rt = this.mustSession(ref);
+    rt.model = !modelId || modelId === "default" ? undefined : modelId;
+  }
+
+  currentModel(ref: ProviderSessionRef): string | null {
+    return this.mustSession(ref).model ?? null;
+  }
+
   async prompt(
     ref: ProviderSessionRef,
     blocks: ContentBlock[],
@@ -146,12 +189,19 @@ export class ClaudeAdapter implements AgentAdapter {
       env: { ...(process.env as Record<string, string>), ...rt.env },
       resume: rt.claudeSessionId,
       includePartialMessages: true,
+      ...(rt.model ? { model: rt.model } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       canUseTool: (toolName, input, meta) => this.handleCanUseTool(emit, toolName, input, meta.title),
     };
 
     const q = query({ prompt: textOf(blocks), options: sdkOptions });
     rt.activeQuery = q;
+    void q
+      .initializationResult()
+      .then((result) => {
+        rt.models = claudeModels(result.models);
+      })
+      .catch(() => {});
     try {
       for await (const msg of q) {
         this.handleMessage(rt, emit, msg);
@@ -171,6 +221,12 @@ export class ClaudeAdapter implements AgentAdapter {
     if (!rt) return;
     this.sessions.delete(ref.providerSessionId);
     await rt.activeQuery?.interrupt().catch(() => {});
+  }
+
+  private mustSession(ref: ProviderSessionRef): ClaudeRuntime {
+    const rt = this.sessions.get(ref.providerSessionId);
+    if (!rt) throw new Error(`unknown claude session: ${ref.providerSessionId}`);
+    return rt;
   }
 
   private async handleCanUseTool(

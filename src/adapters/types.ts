@@ -35,6 +35,31 @@ export interface AgentAdapter {
   close(ref: ProviderSessionRef): Promise<void>;
 }
 
+export interface ModelOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+/**
+ * 可选模型能力。setModel 只影响后续 prompt，不得改变已经在运行的 turn，
+ * 让 `/model` 在 provider busy 时也有稳定、跨 provider 一致的语义。
+ */
+export interface ModelConfigurable {
+  listModels(ref: ProviderSessionRef): Promise<ModelOption[]>;
+  setModel(ref: ProviderSessionRef, modelId: string | null): Promise<void>;
+  currentModel(ref: ProviderSessionRef): string | null;
+}
+
+export function isModelConfigurable(adapter: AgentAdapter): adapter is AgentAdapter & ModelConfigurable {
+  const candidate = adapter as Partial<ModelConfigurable>;
+  return (
+    typeof candidate.listModels === "function" &&
+    typeof candidate.setModel === "function" &&
+    typeof candidate.currentModel === "function"
+  );
+}
+
 /** 审批决策：optionId 取自 PermissionRequest.options */
 export interface ApprovalDecision {
   optionId: string;

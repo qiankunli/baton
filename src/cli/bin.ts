@@ -14,8 +14,8 @@ import { SessionStore } from "../store/store.ts";
 const HELP = `baton — terminal-native shared workspace for coding agents
 
 用法:
-  baton [--cwd <dir>]   启动聊天 TUI：直接输入即发送；/ 弹命令候选（/claude 切
-                        agent、/exit 退出），@ 弹引用候选（其它会话）；Tab 补全，
+  baton [--cwd <dir>]   启动聊天 TUI：直接输入即发送；/provider 切换 provider，
+                        /model 选择模型，@ 弹引用候选（其它会话）；Tab 补全，
                         Esc 中断当前 turn
   baton repl [--agent codex|claude] [--cwd <dir>]   headless REPL
   baton sessions        列出会话（可在输入里用 @<id> 引用）
