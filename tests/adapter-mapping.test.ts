@@ -117,6 +117,87 @@ describe("claude: edit tools → diff content", () => {
   });
 });
 
+describe("structured questions", () => {
+  test("Claude AskUserQuestion emits request/resolved and returns answers in updatedInput", async () => {
+    const events: AnyNewEvent[] = [];
+    const adapter = new ClaudeAdapter({
+      approvalHandler,
+      questionHandler: async (request) => ({ answers: { [request.questions[0]!.questionId]: ["Careful"] } }),
+    });
+    const result = await (
+      adapter as unknown as {
+        handleCanUseTool: (
+          emit: (event: AnyNewEvent) => void,
+          name: string,
+          input: Record<string, unknown>,
+          meta: Record<string, unknown>,
+        ) => Promise<{ behavior: string; updatedInput?: Record<string, unknown> }>;
+      }
+    ).handleCanUseTool(
+      (event) => events.push(event),
+      "AskUserQuestion",
+      {
+        questions: [
+          {
+            header: "Approach",
+            question: "How should we proceed?",
+            multiSelect: false,
+            options: [{ label: "Careful", description: "Verify first" }],
+          },
+        ],
+      },
+      {},
+    );
+
+    expect(events.map((event) => event.kind)).toEqual(["question_request", "question_resolved"]);
+    expect(result).toEqual({
+      behavior: "allow",
+      updatedInput: {
+        questions: [
+          {
+            header: "Approach",
+            question: "How should we proceed?",
+            multiSelect: false,
+            options: [{ label: "Careful", description: "Verify first" }],
+          },
+        ],
+        answers: { "How should we proceed?": "Careful" },
+      },
+    });
+  });
+
+  test("Codex requestUserInput returns the app-server answer envelope", async () => {
+    const events: AnyNewEvent[] = [];
+    const adapter = new CodexAdapter({
+      approvalHandler,
+      questionHandler: async () => ({ answers: { approach: ["Fast", "Safe"] } }),
+    });
+    const result = await (
+      adapter as unknown as {
+        handleServerRequest: (runtime: unknown, method: string, params: unknown) => Promise<unknown>;
+      }
+    ).handleServerRequest(
+      { threadId: "th1", sink: (event: AnyNewEvent) => events.push(event) },
+      "item/tool/requestUserInput",
+      {
+        itemId: "item1",
+        questions: [
+          {
+            id: "approach",
+            header: "Approach",
+            question: "Choose approaches",
+            isOther: true,
+            options: [{ label: "Fast", description: "Move quickly" }],
+          },
+        ],
+      },
+    );
+
+    expect(events.map((event) => event.kind)).toEqual(["question_request", "question_resolved"]);
+    expect(result).toEqual({ answers: { approach: { answers: ["Fast", "Safe"] } } });
+  });
+});
+
 describe("codex: tool output mapping", () => {
   test("fileChange item maps object kinds and builds renderable unified patches", () => {
     const { events, notify } = codexHarness();

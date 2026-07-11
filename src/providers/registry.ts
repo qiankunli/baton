@@ -1,10 +1,11 @@
 import { ClaudeAdapter } from "../adapters/claude/adapter.ts";
 import { CodexAdapter } from "../adapters/codex/adapter.ts";
-import type { AgentAdapter, ApprovalHandler } from "../adapters/types.ts";
+import type { AgentAdapter, ApprovalHandler, QuestionHandler } from "../adapters/types.ts";
 import type { BatonConfig } from "../config/config.ts";
 
 export interface ProviderAdapterOptions {
   approvalHandler: ApprovalHandler;
+  questionHandler?: QuestionHandler;
   config: BatonConfig;
 }
 
@@ -21,15 +22,15 @@ export const PROVIDER_REGISTRY = [
     id: "codex",
     label: "Codex",
     sessionKey: "codex",
-    create: ({ approvalHandler, config }) =>
-      new CodexAdapter({ approvalHandler, command: config.codexCommand }),
+    create: ({ approvalHandler, questionHandler, config }) =>
+      new CodexAdapter({ approvalHandler, questionHandler, command: config.codexCommand }),
   },
   {
     id: "claude",
     label: "Claude Code",
     sessionKey: "claude-code",
-    create: ({ approvalHandler, config }) =>
-      new ClaudeAdapter({ approvalHandler, executablePath: config.claudeExecutable }),
+    create: ({ approvalHandler, questionHandler, config }) =>
+      new ClaudeAdapter({ approvalHandler, questionHandler, executablePath: config.claudeExecutable }),
   },
 ] as const satisfies readonly ProviderDefinition[];
 

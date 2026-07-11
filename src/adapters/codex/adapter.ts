@@ -5,7 +5,14 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { newId } from "../../events/ids.ts";
-import type { ContentBlock, DiffBlock, PermissionOption, PromptBlock, StopReason } from "../../events/types.ts";
+import type {
+  ContentBlock,
+  DiffBlock,
+  PermissionOption,
+  PromptBlock,
+  QuestionPrompt,
+  StopReason,
+} from "../../events/types.ts";
 import { textOf } from "../../events/types.ts";
 import type {
   AdapterCapabilities,
@@ -17,6 +24,7 @@ import type {
   PromptInput,
   PromptReceipt,
   ProviderSessionRef,
+  QuestionHandler,
 } from "../types.ts";
 import { unsupportedPromptBlocks } from "../types.ts";
 import { JsonRpcPeer } from "./jsonrpc.ts";
@@ -171,6 +179,7 @@ function stopReasonOf(turnStatus: string): StopReason {
 
 export interface CodexAdapterOptions {
   approvalHandler: ApprovalHandler;
+  questionHandler?: QuestionHandler;
   /** 覆盖二进制，测试用 */
   command?: string[];
 }
@@ -245,6 +254,7 @@ export class CodexAdapter implements AgentAdapter {
 
     await peer.request("initialize", {
       clientInfo: { name: "baton", version: "0.0.1", title: "baton" },
+      capabilities: { experimentalApi: true },
     });
     peer.notify("initialized", {});
 
@@ -583,6 +593,42 @@ export class CodexAdapter implements AgentAdapter {
           payload: { requestId, outcome: "selected", optionId: decision.optionId },
         });
         return { decision: decision.optionId };
+      }
+      case "item/tool/requestUserInput": {
+        if (!this.options.questionHandler) throw new Error("baton question handler unavailable");
+        const source = Array.isArray(p.questions) ? p.questions : [];
+        const questions: QuestionPrompt[] = source.map((value, index) => {
+          const question = (value ?? {}) as Record<string, unknown>;
+          return {
+            questionId: String(question.id ?? `q${index}`),
+            header: String(question.header ?? `Question ${index + 1}`),
+            question: String(question.question ?? ""),
+            options: Array.isArray(question.options)
+              ? question.options.map((option) => {
+                  const item = (option ?? {}) as Record<string, unknown>;
+                  return { label: String(item.label ?? ""), description: String(item.description ?? "") };
+                })
+              : undefined,
+            allowOther: question.isOther === true,
+            secret: question.isSecret === true,
+          };
+        });
+        const request = {
+          requestId: String(p.itemId ?? newId("qr")),
+          questions,
+        };
+        this.emit(rt, { kind: "question_request", provider: this.provider, payload: request }, params);
+        const decision = await this.options.questionHandler(request);
+        this.emit(rt, {
+          kind: "question_resolved",
+          provider: this.provider,
+          payload: { requestId: request.requestId, outcome: "answered", answers: decision.answers },
+        });
+        return {
+          answers: Object.fromEntries(
+            Object.entries(decision.answers).map(([questionId, answers]) => [questionId, { answers }]),
+          ),
+        };
       }
       default:
         throw new Error(`unsupported server request: ${method}`);

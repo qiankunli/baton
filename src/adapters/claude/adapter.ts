@@ -12,7 +12,14 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 
 import { newId } from "../../events/ids.ts";
-import type { ContentBlock, DiffBlock, PermissionOption, PlanEntry, PromptBlock } from "../../events/types.ts";
+import type {
+  ContentBlock,
+  DiffBlock,
+  PermissionOption,
+  PlanEntry,
+  PromptBlock,
+  QuestionPrompt,
+} from "../../events/types.ts";
 import { textOf } from "../../events/types.ts";
 import type {
   AdapterCapabilities,
@@ -24,6 +31,7 @@ import type {
   PromptInput,
   PromptReceipt,
   ProviderSessionRef,
+  QuestionHandler,
 } from "../types.ts";
 import { unsupportedPromptBlocks } from "../types.ts";
 
@@ -178,6 +186,7 @@ function claudeModels(models: Array<{ value: string; displayName: string; descri
 
 export interface ClaudeAdapterOptions {
   approvalHandler: ApprovalHandler;
+  questionHandler?: QuestionHandler;
   /** claude 可执行文件路径；默认 BATON_CLAUDE_BIN 环境变量，再默认交给 SDK 自己找 */
   executablePath?: string;
 }
@@ -356,6 +365,7 @@ export class ClaudeAdapter implements AgentAdapter {
     input: Record<string, unknown>,
     meta: { title?: string; suggestions?: PermissionUpdate[] },
   ): Promise<PermissionResult> {
+    if (toolName === "AskUserQuestion") return this.handleQuestion(emit, input);
     const suggestions = meta.suggestions ?? [];
     const request = {
       requestId: newId("ar"),
@@ -376,6 +386,46 @@ export class ClaudeAdapter implements AgentAdapter {
       return { behavior: "allow", updatedInput: input, updatedPermissions: suggestions };
     }
     return { behavior: "deny", message: "denied by baton user" };
+  }
+
+  private async handleQuestion(emit: EventSink, input: Record<string, unknown>): Promise<PermissionResult> {
+    if (!this.options.questionHandler) {
+      return { behavior: "deny", message: "baton question handler unavailable" };
+    }
+    const source = Array.isArray(input.questions) ? input.questions : [];
+    const questions: QuestionPrompt[] = source.map((value, index) => {
+      const question = (value ?? {}) as Record<string, unknown>;
+      return {
+        questionId: `q${index}`,
+        header: String(question.header ?? `Question ${index + 1}`),
+        question: String(question.question ?? ""),
+        options: Array.isArray(question.options)
+          ? question.options.map((option) => {
+              const item = (option ?? {}) as Record<string, unknown>;
+              return {
+                label: String(item.label ?? ""),
+                description: String(item.description ?? ""),
+                ...(typeof item.preview === "string" ? { preview: item.preview } : {}),
+              };
+            })
+          : undefined,
+        multiSelect: question.multiSelect === true,
+        // Claude Code adds Other automatically for AskUserQuestion.
+        allowOther: true,
+      };
+    });
+    const request = { requestId: newId("qr"), questions };
+    emit({ kind: "question_request", provider: this.provider, payload: request });
+    const decision = await this.options.questionHandler(request);
+    emit({
+      kind: "question_resolved",
+      provider: this.provider,
+      payload: { requestId: request.requestId, outcome: "answered", answers: decision.answers },
+    });
+    const answers = Object.fromEntries(
+      questions.map((question) => [question.question, (decision.answers[question.questionId] ?? []).join(", ")]),
+    );
+    return { behavior: "allow", updatedInput: { ...input, answers } };
   }
 
   private handleMessage(rt: ClaudeRuntime, emit: EventSink, msg: SDKMessage, turn: ClaudeTurn): void {

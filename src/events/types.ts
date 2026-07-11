@@ -165,6 +165,33 @@ export interface PermissionResolved {
   optionId?: string;
 }
 
+export interface QuestionOption {
+  label: string;
+  description: string;
+  preview?: string;
+}
+
+export interface QuestionPrompt {
+  questionId: string;
+  header: string;
+  question: string;
+  options?: QuestionOption[];
+  multiSelect?: boolean;
+  allowOther?: boolean;
+  secret?: boolean;
+}
+
+export interface QuestionRequest {
+  requestId: string;
+  questions: QuestionPrompt[];
+}
+
+export interface QuestionResolved {
+  requestId: string;
+  outcome: "answered" | "cancelled" | (string & {});
+  answers?: Record<string, string[]>;
+}
+
 /** provider 声明的可用 slash command（形状对齐 ACP available command） */
 export interface AvailableCommand {
   name: string;
@@ -278,6 +305,8 @@ export type EventPayloadMap = {
   plan_update: PlanUpdate;
   permission_request: PermissionRequest;
   permission_resolved: PermissionResolved;
+  question_request: QuestionRequest;
+  question_resolved: QuestionResolved;
   usage_update: UsageUpdate;
   available_commands_update: AvailableCommandsUpdate;
   config_option_update: ConfigOptionUpdate;
