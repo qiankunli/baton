@@ -2,7 +2,7 @@
 // 以"用户提供的材料"身份拼进目标 agent 的 prompt。二期换 mention:// 句柄 + CLI 惰性回查。
 
 import type { TurnSummary } from "../events/types.ts";
-import type { SessionHandle, SessionStore } from "../store/store.ts";
+import { sessionDisplayTitle, type SessionHandle, type SessionStore } from "../store/store.ts";
 
 /** @bs_<ULID>：MVP 只支持引用整个 BatonSession */
 const MENTION_PATTERN = /@(bs_[0-9A-HJKMNP-TV-Z]{26})/g;
@@ -59,7 +59,7 @@ export function buildSessionContext(
 ): string {
   const session = store.openSession(batonSessionId);
   const summaries = session.loadState().turnSummaries;
-  const title = session.meta.title ?? batonSessionId;
+  const title = sessionDisplayTitle(session.meta);
   const providers = Object.keys(session.meta.providerSessions).join(", ") || "unknown";
   const header = `# Session summary: ${title} (id: ${batonSessionId}, agent: ${providers})`;
 

@@ -11,7 +11,7 @@ import type { ReactNode } from "react";
 
 import type { Theme } from "chat-tui";
 
-import type { SessionMeta } from "../store/store.ts";
+import { sessionDisplayTitle, type SessionMeta } from "../store/store.ts";
 
 export interface SessionPickerProps {
   title: string;
@@ -35,7 +35,7 @@ export function sessionPickerOptions(
   opts: { currentSessionId?: string } = {},
 ): Array<{ name: string; description: string; value: string }> {
   return sessions.map((meta) => ({
-    name: `${meta.batonSessionId === opts.currentSessionId ? "● " : ""}${meta.title ?? meta.batonSessionId}`,
+    name: `${meta.batonSessionId === opts.currentSessionId ? "● " : ""}${sessionDisplayTitle(meta)}`,
     description: `${meta.batonSessionId} · ${meta.cwd} · ${meta.updatedAt ?? meta.createdAt} · [${
       Object.keys(meta.providerSessions).join(",") || "-"
     }]`,

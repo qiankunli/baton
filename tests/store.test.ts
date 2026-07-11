@@ -11,7 +11,13 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { SessionStore, projectDirName, type SessionMeta } from "../src/store/store.ts";
+import {
+  SessionStore,
+  projectDirName,
+  sessionDisplayTitle,
+  sessionPreview,
+  type SessionMeta,
+} from "../src/store/store.ts";
 import { textOf, type TurnSummary } from "../src/events/types.ts";
 
 let root: string;
@@ -27,6 +33,59 @@ afterEach(() => {
 });
 
 describe("session lifecycle", () => {
+  test("preview uses the first visible line and is character-bounded", () => {
+    expect(sessionPreview("<baton-sync>hidden</baton-sync>\n\n  Implement resume titles\nsecond line")).toBe(
+      "Implement resume titles",
+    );
+    expect(sessionPreview("/tmp/image-123.png 解释这个报错")).toBe("解释这个报错");
+    expect(sessionPreview("/tmp/image-123.png\n修复 resume 标题")).toBe("修复 resume 标题");
+    expect(sessionPreview("/tmp/image-123.png")).toBeUndefined();
+    expect(sessionPreview("界".repeat(101))).toBe(`${"界".repeat(97)}...`);
+  });
+
+  test("preview is persisted once and explicit titles remain authoritative", () => {
+    const h = store.createSession({ cwd: "/tmp/proj", title: "My release session" });
+    h.setPreviewIfEmpty("First task");
+    h.setPreviewIfEmpty("Later task");
+    const reopened = store.openSession(h.id);
+    expect(reopened.meta.preview).toBe("First task");
+    expect(sessionDisplayTitle(reopened.meta)).toBe("My release session");
+  });
+
+  test("old generated titles yield to a preview recovered from session history", () => {
+    const h = store.createSession({ cwd: "/tmp/proj", title: "chat @ /tmp/proj" });
+    h.append({
+      kind: "user_message",
+      provider: "codex",
+      payload: {
+        messageId: "m1",
+        content: [{ type: "text", text: "<baton-context>old context</baton-context>\nAdd session previews" }],
+      },
+    });
+
+    const listed = store.listSessions().find((meta) => meta.batonSessionId === h.id)!;
+    expect(listed.preview).toBe("Add session previews");
+    expect(sessionDisplayTitle(listed)).toBe("Add session previews");
+    expect(store.openSession(h.id).meta.preview).toBe("Add session previews");
+  });
+
+  test("history backfill skips an attachment-only message", () => {
+    const h = store.createSession({ cwd: "/tmp/proj", title: "chat @ /tmp/proj" });
+    h.append({
+      kind: "user_message",
+      provider: "codex",
+      payload: { messageId: "m1", content: [{ type: "text", text: "/tmp/image-123.png" }] },
+    });
+    h.append({
+      kind: "user_message",
+      provider: "codex",
+      payload: { messageId: "m2", content: [{ type: "text", text: "Explain this failure" }] },
+    });
+
+    const listed = store.listSessions().find((meta) => meta.batonSessionId === h.id)!;
+    expect(sessionDisplayTitle(listed)).toBe("Explain this failure");
+  });
+
   test("create / open / list roundtrip", () => {
     const h = store.createSession({ cwd: "/tmp/proj", title: "demo" });
     expect(h.id.startsWith("bs_")).toBe(true);

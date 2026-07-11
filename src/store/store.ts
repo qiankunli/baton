@@ -10,6 +10,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   rmSync,
@@ -25,6 +26,7 @@ import {
   ENVELOPE_VERSION,
   textOf,
   type AnyEventEnvelope,
+  type ContentBlock,
   type EventEnvelope,
   type EventKind,
   type NewEvent,
@@ -56,7 +58,10 @@ export interface SessionForkOrigin {
 
 export interface SessionMeta {
   batonSessionId: string;
+  /** 用户显式名称；自动生成的旧版 `chat @ cwd` 仅作兼容占位，不覆盖 preview。 */
   title?: string;
+  /** 第一条真实用户输入的紧凑预览，只写一次；供 resume/list/@ 发现会话。 */
+  preview?: string;
   cwd: string;
   createdAt: string;
   updatedAt?: string;
@@ -67,6 +72,77 @@ export interface SessionMeta {
 /** 与 Claude Code 同规则：cwd 中非字母数字字符全部替换为 "-"，作为项目目录名。 */
 export function projectDirName(cwd: string): string {
   return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+}
+
+const SESSION_PREVIEW_MAX_CHARS = 100;
+const SESSION_PREVIEW_SCAN_BYTES = 256 * 1024;
+
+/** 对齐 Codex resume：取第一条有效用户输入的首个非空行，并做有界字符截断。 */
+export function sessionPreview(text: string): string | undefined {
+  const firstLine = stripBatonInjectedContext(text)
+    .split(/\r?\n/)
+    // chat-tui 的图片粘贴目前以本地路径进入文本；它是附件，不是可辨识的会话名称。
+    .map((line) =>
+      line
+        .trim()
+        .replace(/^\/\S+\.(?:avif|bmp|gif|jpe?g|png|tiff?|webp)(?:\s+|$)/i, "")
+        .trim(),
+    )
+    .find(Boolean);
+  if (!firstLine) return undefined;
+  const chars = [...firstLine];
+  return chars.length <= SESSION_PREVIEW_MAX_CHARS
+    ? firstLine
+    : `${chars.slice(0, SESSION_PREVIEW_MAX_CHARS - 3).join("")}...`;
+}
+
+/** 旧版本自动写入的标题不是用户命名，展示时应让位给 conversation preview。 */
+function explicitSessionTitle(meta: SessionMeta): string | undefined {
+  const title = meta.title?.trim();
+  if (!title) return undefined;
+  const generated = ["chat", "codex", "claude", "claude-code"].flatMap((agent) => {
+    const base = `${agent} @ ${meta.cwd}`;
+    return [base, `${base} (fork)`];
+  });
+  return generated.includes(title) ? undefined : title;
+}
+
+export function sessionDisplayTitle(meta: SessionMeta): string {
+  return explicitSessionTitle(meta) ?? meta.preview?.trim() ?? `chat @ ${meta.cwd}`;
+}
+
+function previewFromSessionLog(dir: string): string | undefined {
+  const path = join(dir, "session.jsonl");
+  if (!existsSync(path)) return undefined;
+  const fd = openSync(path, "r");
+  try {
+    const buffer = Buffer.alloc(SESSION_PREVIEW_SCAN_BYTES);
+    const bytes = readSync(fd, buffer, 0, buffer.length, 0);
+    const text = buffer.toString("utf8", 0, bytes);
+    const lastNewline = text.lastIndexOf("\n");
+    const complete = bytes < buffer.length ? text : lastNewline >= 0 ? text.slice(0, lastNewline) : "";
+    for (const line of complete.split("\n")) {
+      if (!line) continue;
+      try {
+        const event = JSON.parse(line) as AnyEventEnvelope;
+        if (event.kind !== "user_message") continue;
+        const payload = event.payload as { content?: ContentBlock[] };
+        const preview = sessionPreview(textOf(payload.content ?? []));
+        if (preview) return preview;
+      } catch {
+        // 有界扫描只用于旧会话的展示回填；单行损坏不应让整个 session picker 失败。
+      }
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return undefined;
+}
+
+function withSessionPreview(dir: string, meta: SessionMeta): SessionMeta {
+  if (meta.preview?.trim()) return meta;
+  const preview = previewFromSessionLog(dir);
+  return preview ? { ...meta, preview } : meta;
 }
 
 export class SessionStore {
@@ -133,7 +209,7 @@ export class SessionStore {
       const dir = join(projectDir, id);
       const metaPath = join(dir, "meta.json");
       if (!existsSync(metaPath)) continue;
-      const meta = JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta;
+      const meta = withSessionPreview(dir, JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta);
       return new SessionHandle(id, dir, meta);
     }
     throw new Error(`baton session not found: ${id}`);
@@ -153,7 +229,10 @@ export class SessionStore {
         const metaPath = join(projectDir, name, "meta.json");
         if (!existsSync(metaPath)) continue;
         try {
-          const meta = JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta;
+          const meta = withSessionPreview(
+            join(projectDir, name),
+            JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta,
+          );
           if (opts.cwd !== undefined && meta.cwd !== opts.cwd) continue;
           out.push(meta);
         } catch {
@@ -191,9 +270,11 @@ export class SessionStore {
       providerSessions[key] = { provider: ps.provider, ...(ps.model !== undefined ? { model: ps.model } : {}) };
     }
     const now = new Date().toISOString();
+    const sourceTitle = explicitSessionTitle(source.meta);
     const meta: SessionMeta = {
       batonSessionId: id,
-      title: opts.title ?? `${source.meta.title ?? sourceSessionId} (fork)`,
+      title: opts.title ?? (sourceTitle ? `${sourceTitle} (fork)` : undefined),
+      preview: source.meta.preview,
       cwd: source.meta.cwd,
       createdAt: now,
       updatedAt: now,
@@ -333,6 +414,12 @@ export class SessionHandle {
   updateMeta(patch: Partial<Omit<SessionMeta, "batonSessionId">>): void {
     this.meta = { ...this.meta, ...patch };
     writeMetaAtomic(this.dir, this.meta);
+  }
+
+  setPreviewIfEmpty(text: string): void {
+    if (this.meta.preview?.trim()) return;
+    const preview = sessionPreview(text);
+    if (preview) this.updateMeta({ preview });
   }
 
   setProviderSession(key: string, ps: ProviderSessionMeta): void {

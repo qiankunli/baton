@@ -129,6 +129,7 @@ export class BatonChatProtocol implements ChatProtocol {
   async submit(text: string): Promise<void> {
     const target = this.agent;
     this.status = null;
+    this.session.setPreviewIfEmpty(text);
     const { prompt } = expandMentions(this.store, text, this.config.mentionBudgetChars);
     if (this.runtime.isBusy || this.runtime.queueLength > 0) {
       this.status = { text: `${target} turn queued`, tone: "info" };
@@ -151,10 +152,7 @@ export class BatonChatProtocol implements ChatProtocol {
       case "new": {
         if (argument) throw new Error("/new takes no arguments");
         return this.switchSession(() => {
-          const next = this.store.createSession({
-            cwd: this.session.meta.cwd,
-            title: `chat @ ${this.session.meta.cwd}`,
-          });
+          const next = this.store.createSession({ cwd: this.session.meta.cwd });
           next.acquireLock();
           return { session: next };
         });

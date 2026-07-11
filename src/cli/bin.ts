@@ -11,7 +11,7 @@
 
 import packageJson from "../../package.json" with { type: "json" };
 
-import { SessionStore } from "../store/store.ts";
+import { SessionStore, sessionDisplayTitle } from "../store/store.ts";
 
 const HELP = `baton — one durable terminal session across coding-agent providers
 
@@ -138,7 +138,7 @@ async function run(command: string): Promise<void> {
       }
       for (const m of sessions) {
         const providers = Object.keys(m.providerSessions).join(",") || "-";
-        console.log(`@${m.batonSessionId}  [${providers}]  ${m.title ?? ""}  (${m.createdAt})`);
+        console.log(`@${m.batonSessionId}  [${providers}]  ${sessionDisplayTitle(m)}  (${m.createdAt})`);
       }
       break;
     }

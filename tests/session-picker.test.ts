@@ -8,6 +8,7 @@ describe("sessionPickerOptions", () => {
     {
       batonSessionId: "bs_titled",
       title: "chat @ /repo",
+      preview: "Implement resume titles",
       cwd: "/repo",
       createdAt: "2026-07-01T00:00:00Z",
       updatedAt: "2026-07-02T00:00:00Z",
@@ -15,6 +16,7 @@ describe("sessionPickerOptions", () => {
     },
     {
       batonSessionId: "bs_untitled",
+      preview: "Inspect provider logs",
       cwd: "/other",
       createdAt: "2026-07-03T00:00:00Z",
       providerSessions: {},
@@ -24,12 +26,12 @@ describe("sessionPickerOptions", () => {
   test("projects SessionMeta into select rows (title fallback, providers, time fallback)", () => {
     expect(sessionPickerOptions(sessions)).toEqual([
       {
-        name: "chat @ /repo",
+        name: "Implement resume titles",
         description: "bs_titled · /repo · 2026-07-02T00:00:00Z · [codex,claude-code]",
         value: "bs_titled",
       },
       {
-        name: "bs_untitled",
+        name: "Inspect provider logs",
         description: "bs_untitled · /other · 2026-07-03T00:00:00Z · [-]",
         value: "bs_untitled",
       },
@@ -38,6 +40,13 @@ describe("sessionPickerOptions", () => {
 
   test("marks the current session for the in-chat /sessions entry", () => {
     const names = sessionPickerOptions(sessions, { currentSessionId: "bs_untitled" }).map((o) => o.name);
-    expect(names).toEqual(["chat @ /repo", "● bs_untitled"]);
+    expect(names).toEqual(["Implement resume titles", "● Inspect provider logs"]);
+  });
+
+  test("keeps an explicit title ahead of preview", () => {
+    const [option] = sessionPickerOptions([
+      { ...sessions[0]!, title: "Release follow-up", preview: "first prompt" },
+    ]);
+    expect(option!.name).toBe("Release follow-up");
   });
 });

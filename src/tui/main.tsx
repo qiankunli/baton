@@ -64,7 +64,6 @@ const openedAtStartup: OpenBatonSessionResult | undefined = pickIntent
       cwd: requestedCwd,
       sessionId: argValueAny("--session", "-s"),
       continueLast: hasArg("--continue", "-c"),
-      title: `chat @ ${requestedCwd}`,
     });
 
 // Ctrl+C 由 ChatShell 接管（分层语义），不走 renderer 的直接退出。
@@ -92,7 +91,7 @@ function startChat(opened: OpenBatonSessionResult): void {
 }
 
 function startFresh(): void {
-  startChat(openBatonSession(store, { cwd: requestedCwd, title: `chat @ ${requestedCwd}` }));
+  startChat(openBatonSession(store, { cwd: requestedCwd }));
 }
 
 if (openedAtStartup) {

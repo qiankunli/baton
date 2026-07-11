@@ -38,6 +38,28 @@ describe("BatonChatProtocol exit", () => {
   });
 });
 
+describe("BatonChatProtocol session preview", () => {
+  test("captures the first raw user input before mention expansion", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-preview-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+      const internals = protocol as unknown as {
+        runtime: { submit: () => Promise<"completed">; close: () => Promise<void> };
+      };
+      internals.runtime.submit = async () => "completed";
+
+      await protocol.submit("Implement session previews");
+      await protocol.submit("Do not replace the preview");
+      expect(store.openSession(session.id).meta.preview).toBe("Implement session previews");
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("BatonChatProtocol transcript projection", () => {
   test("renders agent messages as Markdown with an explicit streaming boundary", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-markdown-"));
