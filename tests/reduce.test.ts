@@ -85,6 +85,7 @@ describe("tool call upsert semantics", () => {
     ]);
     const tc = state.toolCalls.get("tc1")!;
     expect(tc.status).toBe("completed");
+    expect(tc.provider).toBe("test");
     expect(tc.kind).toBe("read");
     expect(tc.title).toBeUndefined();
   });

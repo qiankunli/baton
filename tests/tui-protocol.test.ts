@@ -52,6 +52,12 @@ describe("BatonChatProtocol transcript projection", () => {
       });
       session.append({ kind: "state_update", provider: "codex", turnId: "t1", payload: { state: "running" } });
       session.append({
+        kind: "agent_thought",
+        provider: "codex",
+        turnId: "t1",
+        payload: { messageId: "m_thought", content: [{ type: "text", text: "**Inspecting image**" }] },
+      });
+      session.append({
         kind: "agent_message_chunk",
         provider: "codex",
         turnId: "t1",
@@ -94,6 +100,11 @@ describe("BatonChatProtocol transcript projection", () => {
           streaming: false,
         },
       ]);
+      // thought/tool block 的归属走一等 author 字段，不再拼进 title
+      expect(protocol.getView().transcript.find((item) => item.id === "m_thought:0")).toMatchObject({
+        author: "codex",
+        title: "Inspecting image",
+      });
       await protocol.exit();
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -125,6 +136,7 @@ describe("toolTranscriptItem", () => {
     expect(
       toolTranscriptItem({
         toolCallId: "tc_cmd",
+        provider: "codex",
         title: "Bash: git status --short",
         kind: "execute",
         status: "completed",
@@ -136,6 +148,7 @@ describe("toolTranscriptItem", () => {
       type: "block",
       id: "tc_cmd",
       kind: "tool",
+      author: "codex",
       title: "Ran",
       status: "completed",
       content: [
