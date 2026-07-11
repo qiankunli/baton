@@ -97,29 +97,85 @@ export function todoWritePlan(input: Record<string, unknown>): PlanEntry[] {
   }));
 }
 
-/** 编辑类工具入参 → 统一 diff 内容块；非编辑类返回 null */
+/**
+ * 编辑类工具入参 → 意图 diff（只有 op+path，不合成 patch）；非编辑类返回 null。
+ * 不从 old_string/new_string 拼 patch：拼出来的不是合法 unified diff（无 +++/@@，
+ * 多行内容直接破格式），而渲染层信任 patch 的合法性（行号/split 视图都建立在其上）。
+ * 真 patch 在工具完成时由 claudeResultDiff 从 tool_use_result.structuredPatch 回填。
+ */
 export function claudeToolDiff(toolName: string, input: Record<string, unknown>): DiffBlock | null {
   const path = String(input.file_path ?? input.notebook_path ?? "");
   if (!path) return null;
   switch (toolName) {
     case "Write":
+      // 入参阶段猜 add（多数 Write 是新建）；覆盖写会被 claudeResultDiff 按结果修正为 modify
       return { type: "diff", changes: [{ operation: "add", path }] };
-    case "Edit": {
-      const patch = `--- ${path}\n- ${String(input.old_string ?? "")}\n+ ${String(input.new_string ?? "")}`;
-      return { type: "diff", changes: [{ operation: "modify", path }], patch: patch.slice(0, 4000) };
-    }
-    case "MultiEdit": {
-      const edits = (Array.isArray(input.edits) ? input.edits : []) as Array<Record<string, unknown>>;
-      const patch = edits
-        .map((e) => `- ${String(e.old_string ?? "")}\n+ ${String(e.new_string ?? "")}`)
-        .join("\n");
-      return { type: "diff", changes: [{ operation: "modify", path }], patch: `--- ${path}\n${patch}`.slice(0, 4000) };
-    }
+    case "Edit":
+    case "MultiEdit":
     case "NotebookEdit":
       return { type: "diff", changes: [{ operation: "modify", path }] };
     default:
       return null;
   }
+}
+
+interface StructuredHunk {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: string[];
+}
+
+/** patch 收录的 hunk 行上限：大文件 Write 的全量内容会撑爆 session.jsonl 事件行，展示层也只看头部 */
+const MAX_PATCH_LINES = 400;
+
+/**
+ * Edit/Write/MultiEdit 的 tool_use_result → 带真 patch 的 diff 内容块。
+ * tool_use_result 是 Claude Code 无文档的私有形状（SDK 类型就是 unknown），只允许
+ * 在本函数出现：解析成功产出标准 unified diff 进 DiffBlock；任何字段不合形状即
+ * 返回 null，降级为入参阶段的 changes-only 展示，不让私有格式漂移打崩事件流。
+ */
+export function claudeResultDiff(result: unknown): DiffBlock | null {
+  if (typeof result !== "object" || result === null) return null;
+  const r = result as Record<string, unknown>;
+  const path = typeof r.filePath === "string" ? r.filePath : "";
+  const rawHunks = Array.isArray(r.structuredPatch) ? r.structuredPatch : [];
+  if (!path || rawHunks.length === 0) return null;
+  const hunks: StructuredHunk[] = [];
+  for (const raw of rawHunks) {
+    const h = raw as Record<string, unknown>;
+    if (
+      typeof h.oldStart !== "number" ||
+      typeof h.oldLines !== "number" ||
+      typeof h.newStart !== "number" ||
+      typeof h.newLines !== "number" ||
+      !Array.isArray(h.lines) ||
+      !h.lines.every((line) => typeof line === "string")
+    ) {
+      return null;
+    }
+    hunks.push(h as unknown as StructuredHunk);
+  }
+  // Write 新建文件的结果带 type:"create"；Edit / 覆盖写没有该值 → modify
+  const operation = r.type === "create" ? "add" : "modify";
+  const header = operation === "add" ? `--- /dev/null\n+++ ${path}` : `--- ${path}\n+++ ${path}`;
+  const body: string[] = [];
+  let budget = MAX_PATCH_LINES;
+  for (const hunk of hunks) {
+    if (budget <= 0) break;
+    const lines = hunk.lines.slice(0, budget);
+    budget -= lines.length;
+    if (lines.length === hunk.lines.length) {
+      body.push(`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`, ...lines);
+    } else {
+      // 截断后按实际收录行数重写 hunk 头：patch 保持合法（低估改动量，展示层可接受）
+      const oldCount = lines.filter((line) => !line.startsWith("+")).length;
+      const newCount = lines.filter((line) => !line.startsWith("-")).length;
+      body.push(`@@ -${hunk.oldStart},${oldCount} +${hunk.newStart},${newCount} @@`, ...lines);
+    }
+  }
+  return { type: "diff", changes: [{ operation, path }], patch: `${header}\n${body.join("\n")}` };
 }
 
 function claudeToolResultBlocks(result: unknown): ContentBlock[] {
@@ -511,7 +567,11 @@ export class ClaudeAdapter implements AgentAdapter {
       case "user": {
         const content = msg.message.content;
         if (!Array.isArray(content)) break;
-        for (const b of content as unknown as Array<Record<string, unknown>>) {
+        const blocks = content as unknown as Array<Record<string, unknown>>;
+        // tool_use_result 是消息级字段：仅当消息里恰有一个 tool_result 时归属无歧义
+        const toolResultCount = blocks.filter((b) => b.type === "tool_result").length;
+        const resultDiff = toolResultCount === 1 ? claudeResultDiff(msg.tool_use_result) : null;
+        for (const b of blocks) {
           if (b.type !== "tool_result") continue;
           // 已归一成 plan_update 的调用不再出工具卡（首见 upsert 会凭空造出一张）
           if (rt.suppressedToolIds.has(String(b.tool_use_id))) continue;
@@ -522,9 +582,14 @@ export class ClaudeAdapter implements AgentAdapter {
               toolCallId: String(b.tool_use_id),
               status: b.is_error ? "failed" : "completed",
               rawOutput: b.content,
+              // 真 patch 回填：整体替换入参阶段的意图 diff（changes-only）
+              content: resultDiff ? [resultDiff] : undefined,
             },
             raw: msg,
           });
+          // diff 即输出：编辑类结果的文本（"The file ... has been updated..." + 片段）
+          // 与 patch 完全重复，有 resultDiff 时不再追加文本块
+          if (resultDiff) continue;
           for (const output of claudeToolResultBlocks(b.content)) {
             emit({
               kind: "tool_call_content_chunk",

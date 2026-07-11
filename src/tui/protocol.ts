@@ -7,6 +7,7 @@ import type {
   ChatViewState,
   Candidate,
   CommandSpec,
+  DiffOp,
   StatusMessage,
   TranscriptBlockContent,
   TranscriptItem,
@@ -414,6 +415,15 @@ function commandOf(tc: ToolCallState, fallback: string): string {
   return typeof input?.command === "string" ? input.command : fallback;
 }
 
+const DIFF_OPS = new Set<DiffOp>(["add", "modify", "delete", "move"]);
+
+/** 事件模型的开放 operation → chat-tui 的闭合 DiffOp；未知操作按 modify 处理（最保守的展示待遇） */
+function diffOpOf(operation: string): DiffOp {
+  if (operation === "update") return "modify";
+  if (operation === "rename") return "move";
+  return DIFF_OPS.has(operation as DiffOp) ? (operation as DiffOp) : "modify";
+}
+
 /** 工具状态 → chat-tui 展示块；命令源码和 diff 保持结构化，避免组件层猜字符串。 */
 export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, { type: "block" }> {
   const status = normalizeToolStatus(tc.status);
@@ -425,18 +435,20 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
     content.push({ type: "command", command: commandOf(tc, rawTitle) });
   }
 
-  const detailLines: string[] = [];
   for (const block of tc.content) {
     if (block.type !== "diff") continue;
     const diff = block as DiffBlock;
-    if (diff.patch) {
-      content.push({ type: "diff", patch: diff.patch, path: diff.changes[0]?.path });
-    } else {
-      for (const change of diff.changes) detailLines.push(`± ${change.operation} ${change.path}`);
+    for (const [index, change] of diff.changes.entries()) {
+      content.push({
+        type: "diff",
+        op: diffOpOf(change.operation),
+        path: change.path,
+        oldPath: change.oldPath,
+        // DiffBlock 契约：patch 归 changes[0]（adapter 按单文件发块）
+        patch: index === 0 ? diff.patch : undefined,
+      });
     }
   }
-
-  if (detailLines.length > 0) content.push({ type: "lines", lines: detailLines });
 
   // 输出传全量行不预截断；output 类型的展示待遇（弱化色、全量渲染）归 chat-tui
   const outputLines = textOf(tc.content).split("\n").filter(Boolean);
