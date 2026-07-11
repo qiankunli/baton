@@ -118,7 +118,7 @@ describe("claude: edit tools → diff content", () => {
 });
 
 describe("codex: tool output mapping", () => {
-  test("fileChange item maps changes and joins patch", () => {
+  test("fileChange item maps object kinds and builds renderable unified patches", () => {
     const { events, notify } = codexHarness();
     notify("item/completed", {
       threadId: "th1",
@@ -128,19 +128,24 @@ describe("codex: tool output mapping", () => {
         id: "fc1",
         status: "completed",
         changes: [
-          { path: "/x.ts", kind: "update", diff: "@@ -1 +1 @@" },
-          { path: "/y.ts", kind: "add", diff: "+new file" },
+          { path: "/x.ts", kind: { type: "update", move_path: null }, diff: "@@ -1 +1 @@\n-old\n+new" },
+          { path: "/y.ts", kind: { type: "add" }, diff: "new file" },
+          { path: "/z.ts", kind: { type: "delete" }, diff: "old file" },
         ],
       },
     });
     const tc = events.find((e) => e.kind === "tool_call_update");
     const content = (tc!.payload as { content: Array<Record<string, unknown>> }).content;
-    expect(content[0]!.type).toBe("diff");
-    expect(content[0]!.changes).toEqual([
-      { operation: "modify", path: "/x.ts" },
-      { operation: "add", path: "/y.ts" },
+    expect(content.map((block) => block.changes)).toEqual([
+      [{ operation: "modify", path: "/x.ts" }],
+      [{ operation: "add", path: "/y.ts" }],
+      [{ operation: "delete", path: "/z.ts" }],
     ]);
-    expect(content[0]!.patch).toBe("@@ -1 +1 @@\n+new file");
+    expect(content.map((block) => block.patch)).toEqual([
+      "--- /x.ts\n+++ /x.ts\n@@ -1 +1 @@\n-old\n+new",
+      "--- /dev/null\n+++ /y.ts\n@@ -0,0 +1,1 @@\n+new file",
+      "--- /z.ts\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-old file",
+    ]);
   });
 
   test("commandExecution outputDelta streams as tool_call_content_chunk", () => {

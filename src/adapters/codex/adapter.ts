@@ -109,22 +109,49 @@ function toolTitleOf(item: Record<string, unknown>): string {
   }
 }
 
-/** fileChange item → 统一 diff 内容块（changes: {path, kind: add|delete|update, diff}[]） */
-function fileChangeDiff(item: Record<string, unknown>): DiffBlock {
+function fileChangeKind(change: Record<string, unknown>): string {
+  if (typeof change.kind === "string") return change.kind;
+  const kind = change.kind as Record<string, unknown> | undefined;
+  return typeof kind?.type === "string" ? kind.type : "update";
+}
+
+function unifiedFilePatch(change: Record<string, unknown>): string {
+  const path = String(change.path ?? "");
+  const source = String(change.diff ?? "").replace(/\n$/, "");
+  if (!source) return "";
+  if (source.startsWith("--- ")) return source;
+
+  const kind = fileChangeKind(change);
+  if (kind === "add" || kind === "delete") {
+    const lines = source.split("\n");
+    const oldPath = kind === "add" ? "/dev/null" : path;
+    const newPath = kind === "delete" ? "/dev/null" : path;
+    const range = kind === "add" ? `-0,0 +1,${lines.length}` : `-1,${lines.length} +0,0`;
+    const marker = kind === "add" ? "+" : "-";
+    return `--- ${oldPath}\n+++ ${newPath}\n@@ ${range} @@\n${lines.map((line) => `${marker}${line}`).join("\n")}`;
+  }
+
+  return `--- ${path}\n+++ ${path}\n${source}`;
+}
+
+/** Codex fileChange → 每个文件一个 OpenTUI 可解析的 unified diff。 */
+function fileChangeDiffs(item: Record<string, unknown>): DiffBlock[] {
   const changes = (Array.isArray(item.changes) ? item.changes : []) as Array<Record<string, unknown>>;
-  return {
+  return changes.map((change) => ({
     type: "diff",
-    changes: changes.map((c) => ({
-      operation: c.kind === "update" ? "modify" : String(c.kind ?? "modify"),
-      path: String(c.path ?? ""),
-    })),
-    patch: changes.map((c) => String(c.diff ?? "")).filter(Boolean).join("\n") || undefined,
-  };
+    changes: [
+      {
+        operation: fileChangeKind(change) === "update" ? "modify" : fileChangeKind(change),
+        path: String(change.path ?? ""),
+      },
+    ],
+    patch: unifiedFilePatch(change) || undefined,
+  }));
 }
 
 /** completed item 是工具输出的自愈点：即使 outputDelta 缺失，也能回填完整命令结果。 */
 function completedToolContent(itemType: string, item: Record<string, unknown>): ContentBlock[] | undefined {
-  if (itemType === "fileChange") return [fileChangeDiff(item)];
+  if (itemType === "fileChange") return fileChangeDiffs(item);
   if (itemType === "commandExecution" && typeof item.aggregatedOutput === "string") {
     return item.aggregatedOutput ? [{ type: "text", text: item.aggregatedOutput }] : [];
   }
@@ -459,7 +486,7 @@ export class CodexAdapter implements AgentAdapter {
                   method === "item/completed"
                     ? completedToolContent(itemType, item)
                     : itemType === "fileChange"
-                      ? [fileChangeDiff(item)]
+                      ? fileChangeDiffs(item)
                       : undefined,
                 rawInput: method === "item/started" ? item : undefined,
                 rawOutput: method === "item/completed" ? item : undefined,
