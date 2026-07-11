@@ -433,7 +433,7 @@ function buildTranscript(state: SessionState): TranscriptItem[] {
       if (msg.role === "thought") {
         const turnCompleted = state.turnSummaries.some((summary) => summary.turnId === msg.turnId);
         const status =
-          msg.thoughtStatus === "completed" || turnCompleted || state.runState !== "running"
+          msg.streamStatus === "completed" || turnCompleted || state.runState !== "running"
             ? "completed"
             : "in_progress";
         for (const [index, block] of thoughtDisplayBlocks(textOf(msg.content)).entries()) {
@@ -456,6 +456,12 @@ function buildTranscript(state: SessionState): TranscriptItem[] {
         role: msg.role === "user" ? "user" : "agent",
         author,
         text: msg.role === "user" ? userVisibleText(textOf(msg.content)) : textOf(msg.content),
+        ...(msg.role === "agent"
+          ? {
+              format: "markdown" as const,
+              streaming: msg.streamStatus === "in_progress" && state.runState === "running",
+            }
+          : { format: "plain" as const }),
       });
       continue;
     }
