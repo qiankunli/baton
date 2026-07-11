@@ -56,6 +56,7 @@ baton/
 │   └── tui/                 # UI 组件层来自 chat-tui（github.com/qiankunli/chat-tui，git 依赖）
 │       ├── main.tsx         # 入口：参数解析 + ChatShell 装配
 │       ├── protocol.ts      # ChatProtocol 实现：runtime/store → 视图投影，intents → runtime 操作
+│       ├── theme.ts         # baton 配色：按 author 区分 agent 颜色（provider 语义不进 chat-tui）
 │       └── mentions.ts      # @ 候选源（BatonSession 匹配）
 └── tests/                   # bun test 单测
 ```
