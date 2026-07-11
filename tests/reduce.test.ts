@@ -61,8 +61,9 @@ describe("message upsert semantics", () => {
     ]);
     expect(state.messages.get("m1")!.role).toBe("user");
     expect(state.messages.get("m2")!.role).toBe("thought");
-    expect(state.messages.get("m2")!.thoughtStatus).toBe("in_progress");
+    expect(state.messages.get("m2")!.streamStatus).toBe("in_progress");
     expect(state.messages.get("m3")!.role).toBe("agent");
+    expect(state.messages.get("m3")!.streamStatus).toBe("in_progress");
     expect(state.timeline.map((t) => t.id)).toEqual(["m1", "m2", "m3"]);
   });
 
@@ -71,7 +72,7 @@ describe("message upsert semantics", () => {
       ev("agent_thought_chunk", { messageId: "m1", content: { type: "text", text: "draft" } }),
       ev("agent_thought", { messageId: "m1", content: [{ type: "text", text: "final" }] }),
     ]);
-    expect(state.messages.get("m1")!.thoughtStatus).toBe("completed");
+    expect(state.messages.get("m1")!.streamStatus).toBe("completed");
   });
 });
 

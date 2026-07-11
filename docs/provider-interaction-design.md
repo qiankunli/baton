@@ -268,6 +268,10 @@ type DisplayBlock =
   | { type: "progress"; current?: number; total?: number; label?: string };
 ```
 
+消息的来源与展示格式正交：role/author 只表达谁在说话，plain/markdown 由 projection
+显式选择；流式 Markdown 的开始与完成边界也由 projection 提供，chat-tui 不从文本内容或
+provider 名猜测格式。工具输出、命令、diff 与 plan 继续走各自的展示 primitive。
+
 边界：
 
 - `kind` 继续开放，允许 tool、thought、plan、subagent、process、hook 等 activity；

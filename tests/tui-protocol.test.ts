@@ -38,6 +38,69 @@ describe("BatonChatProtocol exit", () => {
   });
 });
 
+describe("BatonChatProtocol transcript projection", () => {
+  test("renders agent messages as Markdown with an explicit streaming boundary", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-markdown-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      session.append({
+        kind: "user_message",
+        provider: "codex",
+        turnId: "t1",
+        payload: { messageId: "m_user", content: [{ type: "text", text: "## literal" }] },
+      });
+      session.append({ kind: "state_update", provider: "codex", turnId: "t1", payload: { state: "running" } });
+      session.append({
+        kind: "agent_message_chunk",
+        provider: "codex",
+        turnId: "t1",
+        payload: { messageId: "m_stream", content: { type: "text", text: "## Streaming" } },
+      });
+      session.append({
+        kind: "agent_message",
+        provider: "codex",
+        turnId: "t1",
+        payload: { messageId: "m_done", content: [{ type: "text", text: "**Done**" }] },
+      });
+
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: true }, () => undefined);
+      const messages = protocol.getView().transcript.filter((item) => item.type === "message");
+      expect(messages).toEqual([
+        {
+          type: "message",
+          id: "m_user",
+          role: "user",
+          author: "you",
+          text: "## literal",
+          format: "plain",
+        },
+        {
+          type: "message",
+          id: "m_stream",
+          role: "agent",
+          author: "codex",
+          text: "## Streaming",
+          format: "markdown",
+          streaming: true,
+        },
+        {
+          type: "message",
+          id: "m_done",
+          role: "agent",
+          author: "codex",
+          text: "**Done**",
+          format: "markdown",
+          streaming: false,
+        },
+      ]);
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("thoughtDisplayBlocks", () => {
   test("turns Codex title-only summaries into separate blocks", () => {
     expect(thoughtDisplayBlocks("**Inspecting files**\n\n<!-- -->\n**Planning changes**\n\n<!-- -->")).toEqual([
