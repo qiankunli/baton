@@ -14,7 +14,7 @@ resume 和 fork 都是 **BatonSession 自己的语义**，不依赖任何 provid
 
 ## 流程
 
-1. `baton resume [bs_xxx]` / `baton fork [bs_xxx]` 由 `cli/bin.ts` 转译成 TUI 入口已支持的 `--session` / `--continue` flags；fork 先经 `SessionStore.forkSession()` 产出 child 再打开。
+1. `baton resume [bs_xxx]` / `baton fork [bs_xxx]` 由 `cli/bin.ts` 转译成 TUI 入口已支持的 `--session` / `--continue` flags。不带 id 时默认走启动会话选择（对齐 codex CLI 的 picker 语义）：先照常打开 cwd 最近会话，首帧叠会话 picker，Esc 即留在该会话；fork 的落盘发生在选中之后（选错 / Esc 不产生副本），显式 id / `--last` / 非 TTY 直通。picker 与 `/sessions` 复用同一套选项与 `switchSession` 路径，没有独立的"启动阶段"概念。
 2. 一切打开路径（CLI 启动、TUI `/sessions` 切换、`/new`）收敛到 `session/open.ts` 的 `openBatonSession()`：解析目标 → `acquireLock()` → `recoverInterruptedState()`。
 3. fork 的 child 首次发消息时，`BatonSessionRuntime.ensureProvider()` 发现无 `providerSessionId` → 开 fresh 原生会话 → `syncedSeq=0` 触发全量补课（`buildProviderCatchUpContext`），上下文自然重建——完全复用既有能力，fork 没有为 runtime 增加任何分支。
 

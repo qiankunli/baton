@@ -21,10 +21,13 @@ Usage:
                         -c continues the latest session in the cwd, -s opens a
                         specific session; /provider switches provider
   baton repl [--agent codex|claude] [--cwd <dir>]   headless REPL
-  baton resume [bs_xxx] resume a BatonSession in the TUI; without an id continues
-                        the latest session in the cwd (starts fresh if none)
-  baton fork [bs_xxx]   fork a BatonSession (full-history copy, fresh provider
-                        sessions) and open the fork; defaults to the latest in cwd
+  baton resume [bs_xxx] resume a BatonSession in the TUI; without an id opens the
+                        latest session in the cwd (starts fresh if none) and
+                        shows a session picker when there is more than one
+  baton fork [bs_xxx|--last]
+                        fork a BatonSession (full-history copy, fresh provider
+                        sessions) and open the fork; without an id shows a picker
+                        to choose the source (--last forks the latest in cwd)
   baton sessions        list sessions (reference with @<id> in the input)
   baton version         show version (also --version / -V)
   baton help            this help
@@ -83,17 +86,30 @@ async function run(command: string): Promise<void> {
       await import("./main.ts");
       break;
     // resume/fork 都转译成 TUI 入口已支持的 flags 再进 TUI，
-    // 打开语义（锁、crash recovery）统一收在 openBatonSession，不在这里分叉
+    // 打开语义（锁、crash recovery）统一收在 openBatonSession，不在这里分叉。
+    // 无 id 时默认弹启动会话选择（对齐 codex CLI 的 picker 语义），选中才切换 / 落盘 fork
     case "resume": {
       const id = positionalAfterCommand();
-      process.argv.push(...(id ? ["--session", id] : ["--continue"]));
+      process.argv.push(...(id ? ["--session", id] : ["--continue", "--pick-session", "resume"]));
       await import("../tui/main.tsx");
       break;
     }
     case "fork": {
       const store = new SessionStore(argValue("--root"));
       const cwd = argValue("--cwd") ?? process.cwd();
-      const sourceId = positionalAfterCommand() ?? store.listSessions({ cwd })[0]?.batonSessionId;
+      const positional = positionalAfterCommand();
+      // picker 需要 TTY 且确有可选项；显式 id / --last / 非 TTY（管道、CI）直通老路径
+      const wantPicker =
+        !positional &&
+        !process.argv.includes("--last") &&
+        process.stdout.isTTY &&
+        store.listSessions().length > 1;
+      if (wantPicker) {
+        process.argv.push("--continue", "--pick-session", "fork");
+        await import("../tui/main.tsx");
+        break;
+      }
+      const sourceId = positional ?? store.listSessions({ cwd })[0]?.batonSessionId;
       if (!sourceId) {
         console.error(`no baton session to fork in ${cwd} (run baton first, or pass a session id)`);
         process.exit(1);
