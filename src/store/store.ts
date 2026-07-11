@@ -5,13 +5,17 @@
 
 import {
   appendFileSync,
+  closeSync,
   existsSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   renameSync,
+  rmSync,
   rmdirSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -43,6 +47,13 @@ export interface ProviderSessionMeta {
   parentSessionId?: string;
 }
 
+/** fork 谱系：child 复制了哪个会话、复制到哪个事件水位（将来从消息 fork 时即边界）。 */
+export interface SessionForkOrigin {
+  batonSessionId: string;
+  /** 源会话中被复制历史的最后一个事件 seq */
+  throughSeq: number;
+}
+
 export interface SessionMeta {
   batonSessionId: string;
   title?: string;
@@ -50,6 +61,7 @@ export interface SessionMeta {
   createdAt: string;
   updatedAt?: string;
   providerSessions: Record<string, ProviderSessionMeta>;
+  forkedFrom?: SessionForkOrigin;
 }
 
 /** 与 Claude Code 同规则：cwd 中非字母数字字符全部替换为 "-"，作为项目目录名。 */
@@ -153,6 +165,45 @@ export class SessionStore {
     return out;
   }
 
+  /**
+   * Fork 一个 BatonSession：把 throughSeq（默认 head）之前的事件历史复制进新会话。
+   * 复制的前缀与源是同一段逻辑历史（git-branch 语义）：seq 与 turn/message/toolCall ID
+   * 原样保留，只换 batonSessionId——不做 ID remap（toolCallId 等本就是 provider 原生
+   * ID，remap 只会破坏与 raw 的对照），谱系由 meta.forkedFrom 表达。
+   * providerSessions 只保留 provider 与 model 偏好：child 不得 resume 源的原生
+   * ProviderSession（否则两个 BatonSession 会写进同一份 provider 历史）；child 首 turn
+   * 由 runtime 走 fresh native + 全量补课（syncedSeq 缺省=0）重建上下文。
+   */
+  forkSession(sourceSessionId: string, opts: { title?: string; throughSeq?: number } = {}): SessionHandle {
+    const source = this.openSession(sourceSessionId);
+    const events = source
+      .readEvents()
+      .filter((ev) => opts.throughSeq === undefined || ev.seq <= opts.throughSeq);
+    const id = newId("bs");
+    const dir = join(this.projectsDir(), projectDirName(source.meta.cwd), id);
+    mkdirSync(dir, { recursive: true });
+    if (events.length > 0) {
+      const lines = events.map((ev) => JSON.stringify({ ...ev, batonSessionId: id }));
+      writeFileSync(join(dir, "session.jsonl"), `${lines.join("\n")}\n`);
+    }
+    const providerSessions: Record<string, ProviderSessionMeta> = {};
+    for (const [key, ps] of Object.entries(source.meta.providerSessions)) {
+      providerSessions[key] = { provider: ps.provider, ...(ps.model !== undefined ? { model: ps.model } : {}) };
+    }
+    const now = new Date().toISOString();
+    const meta: SessionMeta = {
+      batonSessionId: id,
+      title: opts.title ?? `${source.meta.title ?? sourceSessionId} (fork)`,
+      cwd: source.meta.cwd,
+      createdAt: now,
+      updatedAt: now,
+      providerSessions,
+      forkedFrom: { batonSessionId: sourceSessionId, throughSeq: events.at(-1)?.seq ?? 0 },
+    };
+    writeMetaAtomic(dir, meta);
+    return new SessionHandle(id, dir, meta);
+  }
+
   private listProjectDirs(): string[] {
     const dir = this.projectsDir();
     if (!existsSync(dir)) return [];
@@ -180,6 +231,58 @@ export class SessionHandle {
 
   private jsonlPath(): string {
     return join(this.dir, "session.jsonl");
+  }
+
+  private lockPath(): string {
+    return join(this.dir, "lock");
+  }
+
+  /**
+   * 会话独占锁（pid 文件）。存在的意义是给 crash recovery 提供写入前提：
+   * "最后事件是 running"只有在没有活进程持有会话时才能断定为崩溃残留，
+   * 否则往活会话里合成终态会污染它。不承担并发追加的完整保护。
+   * 同进程重入直接通过，且不做引用计数——约定同一进程内一个 session 至多
+   * 一个活 handle（TUI 单前台会话；将来 workspace runtime 由 session slot
+   * 唯一性保证），进程内并发归上层，锁只管跨进程。
+   */
+  acquireLock(): void {
+    const path = this.lockPath();
+    // 每轮要么 O_EXCL 原子创建成功，要么排除一个失效持有者再试；
+    // 不用 existsSync 预检查——检查与创建之间的窗口就是 TOCTOU。
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const fd = openSync(path, "wx");
+        writeSync(fd, String(process.pid));
+        closeSync(fd);
+        return;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      }
+      let holder: number;
+      try {
+        holder = Number(readFileSync(path, "utf8").trim());
+      } catch {
+        continue; // 持有者恰在此刻释放了锁，直接重试创建
+      }
+      if (holder === process.pid) return; // 同进程重入
+      if (Number.isFinite(holder) && holder > 0 && pidAlive(holder)) {
+        throw new Error(`baton session ${this.id} is in use by another baton process (pid ${holder})`);
+      }
+      rmSync(path, { force: true }); // 持有者已死（或锁内容损坏）：清除 stale 锁重试
+    }
+    throw new Error(`failed to acquire session lock for ${this.id} after retries`);
+  }
+
+  /** 只释放自己持有的锁；释放失败不阻塞退出（stale 锁由下次 acquire 的存活判定接管）。 */
+  releaseLock(): void {
+    try {
+      const path = this.lockPath();
+      if (existsSync(path) && readFileSync(path, "utf8").trim() === String(process.pid)) {
+        rmSync(path);
+      }
+    } catch {
+      // 见 docstring：宁可留 stale 锁也不在退出路径抛错
+    }
   }
 
   /** 补齐 v/ts/seq/batonSessionId 并追加一行。seq 以文件为准（重开进程后继续单调）。 */
@@ -295,6 +398,16 @@ export class SessionHandle {
     const event = this.append({ kind: "_baton_turn_summary", payload: summary, provider, turnId }) as EventEnvelope<"_baton_turn_summary">;
     this.updateMeta({ updatedAt: summary.endedAt ?? new Date().toISOString() });
     return event;
+  }
+}
+
+/** kill(pid, 0) 探活：EPERM 表示进程存在但无权限发信号，同样算活。 */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 

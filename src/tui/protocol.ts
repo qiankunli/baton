@@ -17,6 +17,7 @@ import type { BatonConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
 import { textOf, type DiffBlock, type PermissionRequest } from "../events/types.ts";
 import { createProviderAdapter, providerSessionKey } from "../providers/registry.ts";
+import { openBatonSession } from "../session/open.ts";
 import { BatonSessionRuntime } from "../session/runtime.ts";
 import { applyEvent, emptySessionState, type SessionState, type ToolCallState } from "../store/reduce.ts";
 import type { SessionHandle, SessionStore } from "../store/store.ts";
@@ -82,11 +83,14 @@ export class BatonChatProtocol implements ChatProtocol {
   constructor(
     private readonly store: SessionStore,
     private readonly config: BatonConfig,
-    opened: { session: SessionHandle; resumed: boolean },
+    opened: { session: SessionHandle; resumed: boolean; recovered?: boolean },
   ) {
     this.session = opened.session;
     this.state = opened.resumed ? opened.session.loadState() : emptySessionState();
     this.agent = config.defaultAgent;
+    if (opened.recovered) {
+      this.status = { text: "Recovered an interrupted turn from a previous baton run", tone: "info" };
+    }
     this.runtime = this.createRuntime();
     this.view = this.buildView();
   }
@@ -128,11 +132,14 @@ export class BatonChatProtocol implements ChatProtocol {
         return this.exit();
       case "new": {
         if (argument) throw new Error("/new takes no arguments");
-        const next = this.store.createSession({
-          cwd: this.session.meta.cwd,
-          title: `chat @ ${this.session.meta.cwd}`,
+        return this.switchSession(() => {
+          const next = this.store.createSession({
+            cwd: this.session.meta.cwd,
+            title: `chat @ ${this.session.meta.cwd}`,
+          });
+          next.acquireLock();
+          return { session: next };
         });
-        return this.switchSession(next);
       }
       case "sessions": {
         if (argument) throw new Error("/sessions takes no arguments");
@@ -145,7 +152,9 @@ export class BatonChatProtocol implements ChatProtocol {
           })),
           onSelect: async (value) => {
             if (value === this.session.id) return;
-            await this.switchSession(this.store.openSession(value));
+            await this.switchSession(() =>
+              openBatonSession(this.store, { cwd: this.session.meta.cwd, sessionId: value }),
+            );
           },
         });
         return;
@@ -201,6 +210,7 @@ export class BatonChatProtocol implements ChatProtocol {
     this.status = { text: "Exiting…", tone: "info" };
     this.changed();
     await this.runtime.close();
+    this.session.releaseLock();
     process.exit(0);
   }
 
@@ -262,15 +272,25 @@ export class BatonChatProtocol implements ChatProtocol {
     });
   }
 
-  private async switchSession(next: SessionHandle): Promise<void> {
+  /**
+   * open 以回调传入且在 busy 检查之后才执行：目标会话的锁在 openBatonSession 里
+   * 获取，若先锁后检查，busy 抛错会把已锁的目标泄漏给当前进程。
+   */
+  private async switchSession(
+    open: () => { session: SessionHandle; recovered?: boolean },
+  ): Promise<void> {
     if (this.runtime.isBusy || this.runtime.queueLength > 0) {
       throw new Error("Wait for the current turn to finish before switching BatonSession");
     }
+    const next = open();
     await this.runtime.close();
-    this.session = next;
-    this.state = next.loadState();
+    this.session.releaseLock();
+    this.session = next.session;
+    this.state = next.session.loadState();
     this.runtime = this.createRuntime();
-    this.status = { text: `Opened session ${next.id}`, tone: "info" };
+    this.status = next.recovered
+      ? { text: `Opened session ${next.session.id} (recovered an interrupted turn)`, tone: "info" }
+      : { text: `Opened session ${next.session.id}`, tone: "info" };
     this.changed();
   }
 
