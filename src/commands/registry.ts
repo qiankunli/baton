@@ -5,7 +5,7 @@ import { PROVIDERS, type ProviderName } from "../providers/registry.ts";
 
 export { PROVIDERS, type ProviderName };
 
-export type CommandName = "provider" | "model" | "sessions" | "new" | "exit";
+export type CommandName = "provider" | "model" | "sessions" | "status" | "new" | "exit";
 
 export interface CommandDefinition {
   name: CommandName;
@@ -33,6 +33,12 @@ export const COMMANDS: readonly CommandDefinition[] = [
     description: "Open the BatonSession picker",
     scope: "baton",
     runPolicy: "idle",
+  },
+  {
+    name: "status",
+    description: "Show the current BatonSession information",
+    scope: "baton",
+    runPolicy: "always",
   },
   {
     name: "new",
