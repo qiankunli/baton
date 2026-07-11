@@ -29,6 +29,30 @@ export function userVisibleText(text: string): string {
   return text.replace(/<baton-(context|sync)>[\s\S]*<\/baton-\1>\s*/g, "").trim();
 }
 
+export interface ThoughtDisplayBlock {
+  title: string;
+  content?: string;
+}
+
+/** 将 reasoning summary 投影成独立时间线块，并隐藏 Codex 的空正文占位符。 */
+export function thoughtDisplayBlocks(text: string): ThoughtDisplayBlock[] {
+  return text
+    .replace(/\r?\n\r?\n<!--\s*$/, "")
+    .split(/\r?\n\r?\n<!-- -->\s*(?:\r?\n)?/g)
+    .flatMap((part) => {
+      const content = part.trim();
+      if (!content) return [];
+      const summary = content.match(/^\*\*([^*\n]+)\*\*(?:\r?\n\r?\n([\s\S]*))?$/);
+      if (summary) {
+        const body = summary[2]?.trim();
+        return [{ title: summary[1]!.trim(), ...(body ? { content: body } : {}) }];
+      }
+      const [title, ...body] = content.split(/\r?\n/);
+      const detail = body.join("\n").trim();
+      return [{ title: title!.trim(), ...(detail ? { content: detail } : {}) }];
+    });
+}
+
 interface PendingApproval {
   id: string;
   request: PermissionRequest;
@@ -319,6 +343,12 @@ function normalizePlanStatus(status: string): "pending" | "in_progress" | "compl
   return (PLAN_STATUSES.has(status) ? status : "pending") as ReturnType<typeof normalizePlanStatus>;
 }
 
+function outputPreview(lines: string[], limit = 5): string[] {
+  if (lines.length <= limit) return lines;
+  const edge = Math.floor((limit - 1) / 2);
+  return [...lines.slice(0, edge), `… +${lines.length - edge * 2} lines`, ...lines.slice(-edge)];
+}
+
 /** SessionState → chat-tui 展示形状。diff/输出块在这里压成行，块语义不出 baton。 */
 function buildTranscript(state: SessionState): TranscriptItem[] {
   const items: TranscriptItem[] = [];
@@ -327,7 +357,21 @@ function buildTranscript(state: SessionState): TranscriptItem[] {
       const msg = state.messages.get(entry.id);
       if (!msg) continue;
       if (msg.role === "thought") {
-        items.push({ type: "message", id: entry.id, role: "thought", text: textOf(msg.content).trim() });
+        const turnCompleted = state.turnSummaries.some((summary) => summary.turnId === msg.turnId);
+        const status =
+          msg.thoughtStatus === "completed" || turnCompleted || state.runState !== "running"
+            ? "completed"
+            : "in_progress";
+        for (const [index, block] of thoughtDisplayBlocks(textOf(msg.content)).entries()) {
+          items.push({
+            type: "block",
+            id: `${entry.id}:${index}`,
+            kind: "thought",
+            status,
+            title: block.title,
+            content: block.content ? { type: "text", text: block.content } : undefined,
+          });
+        }
         continue;
       }
       const author =
@@ -352,22 +396,40 @@ function buildTranscript(state: SessionState): TranscriptItem[] {
           }
         }
       }
+      const status = normalizeToolStatus(tc.status);
+      const rawTitle = tc.title ?? entry.id;
+      const title =
+        tc.kind === "execute"
+          ? `${status === "completed" ? "Ran" : status === "failed" ? "Failed" : "Running"} ${rawTitle}`
+          : rawTitle;
+      const outputLines = outputPreview(textOf(tc.content).split("\n").filter(Boolean));
+      const contentLines = [...detailLines, ...outputLines];
       items.push({
-        type: "tool_call",
+        type: "block",
         id: entry.id,
-        title: tc.title ?? entry.id,
-        status: normalizeToolStatus(tc.status),
-        detailLines,
-        tailLines: tc.status === "in_progress" ? textOf(tc.content).split("\n").filter(Boolean).slice(-3) : [],
+        kind: "tool",
+        title,
+        status,
+        content: contentLines.length > 0 ? { type: "lines", lines: contentLines } : undefined,
       });
       continue;
     }
     const plan = state.plans.get(entry.id);
     if (!plan) continue;
+    const entries = plan.entries.map((e) => ({ content: e.content, status: normalizePlanStatus(e.status) }));
+    const status =
+      entries.length > 0 && entries.every((entry) => entry.status === "completed")
+        ? "completed"
+        : entries.some((entry) => entry.status === "in_progress" || entry.status === "completed")
+          ? "in_progress"
+          : "pending";
     items.push({
-      type: "plan",
+      type: "block",
       id: entry.id,
-      entries: plan.entries.map((e) => ({ content: e.content, status: normalizePlanStatus(e.status) })),
+      kind: "plan",
+      title: "Plan",
+      status,
+      content: { type: "plan", entries },
     });
   }
   return items;

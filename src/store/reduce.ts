@@ -19,6 +19,8 @@ export interface MessageState {
   messageId: string;
   role: MessageRole;
   content: ContentBlock[];
+  /** thought chunk 仍在流式追加；完整 upsert 后转 completed。 */
+  thoughtStatus?: "in_progress" | "completed";
   turnId?: string;
   /** 产生该消息的 provider（多 agent 同时间线时用于标注说话人） */
   provider?: string;
@@ -128,6 +130,7 @@ function applyMessageUpsert(
   if (p.content !== undefined) {
     msg.content = p.content === null ? [] : [...p.content];
   }
+  if (role === "thought") msg.thoughtStatus = "completed";
 }
 
 function applyMessageChunk(
@@ -138,6 +141,7 @@ function applyMessageChunk(
   const p = ev.payload;
   const msg = getOrCreateMessage(state, p.messageId, role, ev.turnId, ev.provider);
   msg.content.push(p.content);
+  if (role === "thought") msg.thoughtStatus = "in_progress";
 }
 
 function applyToolCallUpdate(state: SessionState, ev: EventEnvelope<"tool_call_update">): void {

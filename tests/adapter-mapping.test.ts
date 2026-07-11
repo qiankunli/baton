@@ -135,3 +135,40 @@ describe("codex: fileChange → diff content, outputDelta → content chunk", ()
     expect((chunk!.payload as { content: { text: string } }).content.text).toBe("line1\n");
   });
 });
+
+describe("codex: reasoning summary parts", () => {
+  test("keeps each summary part as an independent thought message", () => {
+    const { events, notify } = codexHarness();
+    notify("item/reasoning/summaryTextDelta", {
+      threadId: "th1",
+      itemId: "rs1",
+      summaryIndex: 0,
+      delta: "**Inspecting files**\n\n<!-- -->",
+    });
+    notify("item/reasoning/summaryTextDelta", {
+      threadId: "th1",
+      itemId: "rs1",
+      summaryIndex: 1,
+      delta: "**Planning changes**\n\n<!-- -->",
+    });
+    notify("item/completed", {
+      threadId: "th1",
+      item: {
+        type: "reasoning",
+        id: "rs1",
+        summary: ["**Inspecting files**\n\n<!-- -->", "**Planning changes**\n\n<!-- -->"],
+      },
+    });
+
+    expect(
+      events
+        .filter((event) => event.kind === "agent_thought" || event.kind === "agent_thought_chunk")
+        .map((event) => ({ kind: event.kind, messageId: (event.payload as { messageId: string }).messageId })),
+    ).toEqual([
+      { kind: "agent_thought_chunk", messageId: "rs1:summary:0" },
+      { kind: "agent_thought_chunk", messageId: "rs1:summary:1" },
+      { kind: "agent_thought", messageId: "rs1:summary:0" },
+      { kind: "agent_thought", messageId: "rs1:summary:1" },
+    ]);
+  });
+});
