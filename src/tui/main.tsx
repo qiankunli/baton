@@ -7,6 +7,7 @@
 //   - 切换 agent 时自动注入对方最新进展（buildCatchUpContext），无需手动搬运上下文
 //   - @bs_xxx 引用其它 baton 会话；@ 不承担 provider 路由
 // 用法：baton [--root <batonRoot>] [--cwd <dir>] [-c|--continue] [-s|--session <id>]
+//       [--pick-session resume|fork]（bin.ts 内部 flag：启动即弹会话选择）
 
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
@@ -58,6 +59,9 @@ const protocol = new BatonChatProtocol(store, config, opened, () => {
   renderer?.destroy();
   process.exit(0);
 });
+// baton resume / fork 不带 id：默认会话已照常打开，首帧即叠会话选择浮层
+const pickIntent = argValue("--pick-session");
+if (pickIntent === "resume" || pickIntent === "fork") protocol.openStartupPicker(pickIntent);
 // Ctrl+C 由 ChatShell 接管（分层语义），不走 renderer 的直接退出。
 // autoFocus=false：禁止鼠标点击把焦点从输入框抢走——点击 scrollbox 夺焦不触发 React
 // 重渲染，focused prop 拉不回来，这是"操作久了输入框失焦"的主因。
