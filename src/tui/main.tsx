@@ -16,6 +16,7 @@ import { ensureConfigFile, loadConfig } from "../config/config.ts";
 import { openBatonSession } from "../session/open.ts";
 import { SessionStore } from "../store/store.ts";
 import { BatonChatProtocol, CHAT_COMMANDS } from "./protocol.ts";
+import { batonTheme } from "./theme.ts";
 
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -56,5 +57,10 @@ const protocol = new BatonChatProtocol(store, config, opened);
 // 重渲染，focused prop 拉不回来，这是"操作久了输入框失焦"的主因。
 const renderer = await createCliRenderer({ exitOnCtrlC: false, targetFps: 30, autoFocus: false });
 createRoot(renderer).render(
-  <ChatShell protocol={protocol} commands={CHAT_COMMANDS} mentions={protocol.mentionCandidates} />,
+  <ChatShell
+    protocol={protocol}
+    commands={CHAT_COMMANDS}
+    mentions={protocol.mentionCandidates}
+    theme={batonTheme}
+  />,
 );

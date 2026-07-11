@@ -23,6 +23,7 @@ import { applyEvent, emptySessionState, type SessionState, type ToolCallState } 
 import type { SessionHandle, SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
 
+// 展示名同时是 theme.ts PROVIDER_COLORS 的着色 key，两处保持一致
 const PROVIDER_LABEL: Record<string, string> = { codex: "codex", "claude-code": "claude" };
 
 export const CHAT_COMMANDS: readonly CommandSpec[] = COMMANDS;
