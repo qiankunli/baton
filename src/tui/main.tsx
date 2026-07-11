@@ -7,16 +7,17 @@
 //   - 切换 agent 时自动注入对方最新进展（buildCatchUpContext），无需手动搬运上下文
 //   - @bs_xxx 引用其它 baton 会话；@ 不承担 provider 路由
 // 用法：baton [--root <batonRoot>] [--cwd <dir>] [-c|--continue] [-s|--session <id>]
-//       [--pick-session resume|fork]（bin.ts 内部 flag：启动即弹会话选择）
+//       [--pick-session resume|fork]（bin.ts 内部 flag：先展示前置会话选择屏，选中才打开）
 
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
 import { ChatShell } from "chat-tui";
 
 import { ensureConfigFile, loadConfig } from "../config/config.ts";
-import { openBatonSession } from "../session/open.ts";
+import { openBatonSession, type OpenBatonSessionResult } from "../session/open.ts";
 import { SessionStore } from "../store/store.ts";
 import { BatonChatProtocol, CHAT_COMMANDS } from "./protocol.ts";
+import { SessionSelectScreen } from "./session-select.tsx";
 import { batonTheme } from "./theme.ts";
 
 function argValue(flag: string): string | undefined {
@@ -41,36 +42,91 @@ ensureConfigFile(rootArg);
 const config = loadConfig(rootArg);
 const store = new SessionStore(rootArg);
 const requestedCwd = argValue("--cwd") ?? process.cwd();
-const opened = openBatonSession(store, {
-  cwd: requestedCwd,
-  sessionId: argValueAny("--session", "-s"),
-  continueLast: hasArg("--continue", "-c"),
-  title: `chat @ ${requestedCwd}`,
-});
 
 if (!process.stdout.isTTY) {
   console.error("baton tui requires a real terminal (TTY)");
   process.exit(1);
 }
-let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
-const protocol = new BatonChatProtocol(store, config, opened, () => {
-  // OpenTUI owns raw mode and mouse tracking; restore both before process.exit,
-  // whose forced exit does not run OpenTUI's beforeExit cleanup handler.
-  renderer?.destroy();
-  process.exit(0);
-});
-// baton resume / fork 不带 id：默认会话已照常打开，首帧即叠会话选择浮层
-const pickIntent = argValue("--pick-session");
-if (pickIntent === "resume" || pickIntent === "fork") protocol.openStartupPicker(pickIntent);
+
+const pickArg = argValue("--pick-session");
+const pickIntent = pickArg === "resume" || pickArg === "fork" ? pickArg : undefined;
+// fork 无源可选是硬错误（对齐直通路径的提示），在 renderer 起来前干净地退出
+if (pickIntent === "fork" && store.listSessions().length === 0) {
+  console.error(`no baton session to fork (run baton first, or pass a session id)`);
+  process.exit(1);
+}
+
+// pick 模式推迟打开：选中哪个才锁哪个；其余入口保持"先开会话再起 renderer"，
+// 打开失败（锁冲突等）在 raw mode 之前报错
+const openedAtStartup: OpenBatonSessionResult | undefined = pickIntent
+  ? undefined
+  : openBatonSession(store, {
+      cwd: requestedCwd,
+      sessionId: argValueAny("--session", "-s"),
+      continueLast: hasArg("--continue", "-c"),
+      title: `chat @ ${requestedCwd}`,
+    });
+
 // Ctrl+C 由 ChatShell 接管（分层语义），不走 renderer 的直接退出。
 // autoFocus=false：禁止鼠标点击把焦点从输入框抢走——点击 scrollbox 夺焦不触发 React
 // 重渲染，focused prop 拉不回来，这是"操作久了输入框失焦"的主因。
-renderer = await createCliRenderer({ exitOnCtrlC: false, targetFps: 30, autoFocus: false });
-createRoot(renderer).render(
-  <ChatShell
-    protocol={protocol}
-    commands={CHAT_COMMANDS}
-    mentions={protocol.mentionCandidates}
-    theme={batonTheme}
-  />,
-);
+const renderer = await createCliRenderer({ exitOnCtrlC: false, targetFps: 30, autoFocus: false });
+const root = createRoot(renderer);
+const quit = () => {
+  // OpenTUI owns raw mode and mouse tracking; restore both before process.exit,
+  // whose forced exit does not run OpenTUI's beforeExit cleanup handler.
+  renderer.destroy();
+  process.exit(0);
+};
+
+function startChat(opened: OpenBatonSessionResult): void {
+  const protocol = new BatonChatProtocol(store, config, opened, quit);
+  root.render(
+    <ChatShell
+      protocol={protocol}
+      commands={CHAT_COMMANDS}
+      mentions={protocol.mentionCandidates}
+      theme={batonTheme}
+    />,
+  );
+}
+
+function startFresh(): void {
+  startChat(openBatonSession(store, { cwd: requestedCwd, title: `chat @ ${requestedCwd}` }));
+}
+
+if (openedAtStartup) {
+  startChat(openedAtStartup);
+} else if (store.listSessions().length === 0) {
+  startFresh(); // resume 无历史会话：与老的 --continue 语义一致，直接新开
+} else {
+  // 前置会话选择屏（对齐 codex resume/fork picker）：Enter 打开 / fork，
+  // Esc = StartFresh，Ctrl+C = 退出；打开失败回显错误并停留在列表
+  const intent = pickIntent as "resume" | "fork";
+  const showPicker = (error?: string): void =>
+    root.render(
+      <SessionSelectScreen
+        title={intent === "fork" ? "Fork a previous session" : "Resume a previous session"}
+        actionLabel={intent}
+        sessions={store.listSessions()}
+        theme={batonTheme}
+        error={error}
+        onPick={(batonSessionId) => {
+          try {
+            if (intent === "fork") {
+              // fork 落盘发生在选中之后：选错 / Esc 不产生副本
+              const child = store.forkSession(batonSessionId);
+              startChat(openBatonSession(store, { cwd: child.meta.cwd, sessionId: child.id }));
+            } else {
+              startChat(openBatonSession(store, { cwd: requestedCwd, sessionId: batonSessionId }));
+            }
+          } catch (err) {
+            showPicker(err instanceof Error ? err.message : String(err));
+          }
+        }}
+        onStartFresh={startFresh}
+        onExit={quit}
+      />,
+    );
+  showPicker();
+}
