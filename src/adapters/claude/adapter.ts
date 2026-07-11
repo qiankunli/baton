@@ -2,7 +2,14 @@
 // SDK 以子进程拉起 claude CLI；可执行文件可换成公司包装器（BATON_CLAUDE_BIN），
 // 凭证零持有，复用本机登录态。见 docs/design.md §5.1。
 
-import { query, type Options, type PermissionResult, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  query,
+  type Options,
+  type PermissionResult,
+  type PermissionUpdate,
+  type Query,
+  type SDKMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 
 import { newId } from "../../events/ids.ts";
 import type { ContentBlock, DiffBlock, PermissionOption, PlanEntry, PromptBlock } from "../../events/types.ts";
@@ -24,6 +31,20 @@ const APPROVAL_OPTIONS: PermissionOption[] = [
   { optionId: "allow", name: "Allow once", kind: "allow_once" },
   { optionId: "deny", name: "Deny", kind: "reject_once" },
 ];
+
+/**
+ * 审批候选。always 项只在 SDK 给出 permission suggestions 时提供：baton 不自造
+ * 授权规则，只透传 CLI "don't ask again" 的同款路径（选中后把整组 suggestions
+ * 作为 updatedPermissions 返回，规则作用域由 SDK 决定，通常是 session 级）。
+ */
+export function claudeApprovalOptions(hasSuggestions: boolean): PermissionOption[] {
+  if (!hasSuggestions) return APPROVAL_OPTIONS;
+  return [
+    APPROVAL_OPTIONS[0] as PermissionOption,
+    { optionId: "allowAlways", name: "Always allow (don't ask again)", kind: "allow_always" },
+    APPROVAL_OPTIONS[1] as PermissionOption,
+  ];
+}
 
 /** Claude 工具名 → 内部 tool kind */
 export function claudeToolKind(toolName: string): string {
@@ -233,7 +254,7 @@ export class ClaudeAdapter implements AgentAdapter {
       includePartialMessages: true,
       ...(rt.model ? { model: rt.model } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
-      canUseTool: (toolName, toolInput, meta) => this.handleCanUseTool(emit, toolName, toolInput, meta.title),
+      canUseTool: (toolName, toolInput, meta) => this.handleCanUseTool(emit, toolName, toolInput, meta),
     };
 
     try {
@@ -319,12 +340,13 @@ export class ClaudeAdapter implements AgentAdapter {
     emit: EventSink,
     toolName: string,
     input: Record<string, unknown>,
-    promptTitle: string | undefined,
+    meta: { title?: string; suggestions?: PermissionUpdate[] },
   ): Promise<PermissionResult> {
+    const suggestions = meta.suggestions ?? [];
     const request = {
       requestId: newId("ar"),
-      title: promptTitle ?? claudeToolTitle(toolName, input),
-      options: APPROVAL_OPTIONS,
+      title: meta.title ?? claudeToolTitle(toolName, input),
+      options: claudeApprovalOptions(suggestions.length > 0),
     };
     emit({ kind: "permission_request", provider: this.provider, payload: request });
     const decision = await this.options.approvalHandler(request);
@@ -334,6 +356,11 @@ export class ClaudeAdapter implements AgentAdapter {
       payload: { requestId: request.requestId, outcome: "selected", optionId: decision.optionId },
     });
     if (decision.optionId === "allow") return { behavior: "allow", updatedInput: input };
+    if (decision.optionId === "allowAlways") {
+      // SDK 契约：把 canUseTool 收到的整组 suggestions 原样作为 updatedPermissions
+      // 返回，即 CLI "Yes, don't ask again" 的同款授权路径
+      return { behavior: "allow", updatedInput: input, updatedPermissions: suggestions };
+    }
     return { behavior: "deny", message: "denied by baton user" };
   }
 
