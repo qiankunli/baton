@@ -83,12 +83,18 @@ export class BatonSessionRuntime {
   private nextQueueId = 1;
   private draining = false;
   private processingProvider?: string;
+  private processingStartedAt?: number;
   private active?: ActiveTurn;
 
   constructor(private readonly options: BatonSessionRuntimeOptions) {}
 
   get activeProvider(): string | undefined {
     return this.processingProvider;
+  }
+
+  /** 当前 turn 的起跑时刻（epoch ms）；elapsed 跳秒由 TUI 组件自理，这里只给起点 */
+  get activeStartedAt(): number | undefined {
+    return this.processingStartedAt;
   }
 
   get queueLength(): number {
@@ -214,6 +220,7 @@ export class BatonSessionRuntime {
 
   private async runTurn(turn: QueuedTurn): Promise<void> {
     this.processingProvider = turn.provider;
+    this.processingStartedAt = Date.now();
     this.changed();
     try {
       const slot = await this.ensureProvider(turn.provider);
@@ -271,6 +278,7 @@ export class BatonSessionRuntime {
       });
     } finally {
       this.processingProvider = undefined;
+      this.processingStartedAt = undefined;
       this.changed();
     }
   }

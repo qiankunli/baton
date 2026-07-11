@@ -79,6 +79,8 @@ export interface SessionState {
   contextUsage?: ContextUsageUpdate;
   /** 最近一次结构化错误；willRetry 时 runState 仍应为 running（由事件源保证） */
   lastError?: ErrorUpdate & { seq: number };
+  /** 当前运行阶段（compacting…）：null phase 事件清除；idle 也清除（阶段不跨 turn） */
+  runPhase?: { phase: string; title?: string; provider?: string };
   /**
    * 提示历史（append-only），同时进 timeline（id 为 `n_<seq>`）：打断标记、
    * provider warning 等属于会话流的一部分，要按发生位置内联展示。
@@ -191,6 +193,8 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       const p = ev.payload;
       state.runState = p.state;
       if (p.stopReason !== undefined) state.lastStopReason = p.stopReason;
+      // idle 兜底清除运行阶段：adapter 异常退出可能来不及发 phase:null
+      if (p.state === "idle") state.runPhase = undefined;
       break;
     }
     case "user_message":
@@ -252,6 +256,12 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
     case "_baton_error_update":
       state.lastError = { ...ev.payload, seq: ev.seq };
       break;
+    case "_baton_run_status": {
+      const p = ev.payload;
+      state.runPhase =
+        p.phase === null ? undefined : { phase: p.phase, title: p.title, provider: ev.provider };
+      break;
+    }
     case "_baton_notice":
       state.notices.push({ ...ev.payload, seq: ev.seq });
       state.timeline.push({ type: "notice", id: `n_${ev.seq}` });

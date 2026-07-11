@@ -268,3 +268,25 @@ describe("error and notice events", () => {
     expect(state.notices[1]!.seq).toBeGreaterThan(state.notices[0]!.seq);
   });
 });
+
+describe("run status events", () => {
+  test("phase sets runPhase with provider attribution, null clears", () => {
+    const state = reduceEvents([
+      ev("_baton_run_status", { phase: "compacting", title: "Compacting context…" }),
+    ]);
+    expect(state.runPhase).toEqual({ phase: "compacting", title: "Compacting context…", provider: "test" });
+    const cleared = reduceEvents([
+      ev("_baton_run_status", { phase: "compacting" }),
+      ev("_baton_run_status", { phase: null }),
+    ]);
+    expect(cleared.runPhase).toBeUndefined();
+  });
+
+  test("idle clears runPhase as a safety net (adapter 崩溃可能来不及发 null)", () => {
+    const state = reduceEvents([
+      ev("_baton_run_status", { phase: "compacting" }),
+      ev("state_update", { state: "idle", stopReason: "end_turn" }),
+    ]);
+    expect(state.runPhase).toBeUndefined();
+  });
+});
