@@ -170,6 +170,7 @@ interface NativeSessionIdentifiable { nativeSessionId(ref: ProviderSessionRef): 
 | 文件改动 | tool_call content 里的 **diff 内容块**（`changes[]` + 可选 `patch`，形状对齐 ACP v2） | fileChange item 的 `changes[].diff` | Edit/Write/MultiEdit 入参合成 |
 | 命令实时输出 | `tool_call_content_chunk` | `item/commandExecution/outputDelta` | 无此能力（输出随 tool_result 一次性到达） |
 | 计划 | `plan_update` | `turn/plan/updated` | `TodoWrite` 工具调用归一（并抑制其工具卡） |
+| 运行阶段（compacting…） | `_baton_run_status`（phase 开放字符串，null 清除） | `contextCompaction` item started/completed（并抑制其工具卡） | `system/status` 消息（SDKStatus 原生就是 phase-or-null 形状） |
 
 归一是"最大公约数 + raw 保真"：形状统一，粒度差异（如 claude 是原始思考流、codex 是 reasoning 摘要）不掩盖，细节永远在信封 `raw` 里。
 
@@ -228,6 +229,22 @@ composer 里 `@` 触发补全，可引用对象：BatonSession / 单个 turn / t
 ### 5.9 TUI
 
 UI 组件层来自 [chat-tui](https://github.com/qiankunli/chat-tui)（从 baton 抽出的开源库，基于 opentui React reconciler）：baton 侧实现 ChatProtocol——`tui/protocol.ts` 把 runtime/store 状态投影成视图快照、把 intents 翻译成 runtime 操作；补全、分层 Ctrl+C、浮层等交互语义都在 chat-tui。当前布局为 transcript、可增长 composer、状态栏与贴近 composer 的命令 / 引用 / 审批浮层；`/sessions` 提供持久会话切换，`/new` 新建会话。
+
+#### 界面分层：过去时 / 现在时
+
+界面自上而下分五层，核心区分是信息的**时态与寿命**——越"现在时"的信息越往下、越固定（不随历史滚动）：
+
+```text
+Transcript        可滚动历史（过去时；plan 块暂留这里）
+[Current Plan]    预留：若把最新 plan 升级为 pinned 展示，放这层（turn 级长寿命状态）
+Run Status        固定运行状态区（现在时：thinking / compacting / retrying）
+Composer          输入框（命令 / 引用 / 审批浮层贴近它）
+Footer            常驻状态栏（usage、队列、cwd）
+```
+
+- **Run Status 不在 scrollbox 里**：运行状态是"现在"的信息，用户翻历史时它必须仍然可见；idle 时区域清空不占高度。plan 与 run status 同为中间过程但寿命不同——plan 是 turn 级、值得留在历史里回看，故进 transcript（未来可另加 pinned 投影）；run status 是秒级阶段、只有当下有意义，只 pinned 不落 transcript。
+- **语义合成在 baton projection，chat-tui 只收展示结构**：projection 的合成规则是——active provider 默认 thinking；`_baton_run_status` 的 phase 覆盖之（如 compacting，来源见 5.2 归一表）；`willRetry` 错误合成 retrying；idle 清空。chat-tui 侧的 `runStatus` 只有 label / startedAt / hint，elapsed 跳秒由 TUI 自理，baton 只在状态变化时发快照（避免为跳秒每秒重建整个 view）。
+- **run status 不塞 `state_update`、不建模成 tool_call**：前者驱动 runtime 的 busy/idle finalize（adapter 终态硬约定），是生命周期语义，混入阶段信息会污染 finalize；后者没有输入输出契约，也不值得在 transcript 占工具卡。
 
 输入语义刻意分开：`/provider` 选择当前输入目标，`/model` 配置该 ProviderSession 后续 turn 使用的模型，`@` 只引用 baton session / turn / 产物。所有普通输入先进入 BatonSessionRuntime 的全局串行队列，因此切换 provider 不会分裂出两条并发逻辑历史。
 
