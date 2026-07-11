@@ -1,6 +1,42 @@
 import { describe, expect, test } from "bun:test";
 
-import { thoughtDisplayBlocks, toolTranscriptItem } from "../src/tui/protocol.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { DEFAULT_CONFIG } from "../src/config/config.ts";
+import { SessionStore } from "../src/store/store.ts";
+import { BatonChatProtocol, thoughtDisplayBlocks, toolTranscriptItem } from "../src/tui/protocol.ts";
+
+describe("BatonChatProtocol exit", () => {
+  test("restores the TUI only after runtime and session cleanup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-exit-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      const calls: string[] = [];
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => {
+        calls.push("quit");
+      });
+
+      const internals = protocol as unknown as {
+        runtime: { close: () => Promise<void> };
+        session: { releaseLock: () => void };
+      };
+      internals.runtime.close = async () => {
+        calls.push("runtime");
+      };
+      internals.session.releaseLock = () => {
+        calls.push("lock");
+      };
+
+      await protocol.exit();
+      expect(calls).toEqual(["runtime", "lock", "quit"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("thoughtDisplayBlocks", () => {
   test("turns Codex title-only summaries into separate blocks", () => {

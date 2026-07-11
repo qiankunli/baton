@@ -85,6 +85,7 @@ export class BatonChatProtocol implements ChatProtocol {
     private readonly store: SessionStore,
     private readonly config: BatonConfig,
     opened: { session: SessionHandle; resumed: boolean; recovered?: boolean },
+    private readonly quit: () => void,
   ) {
     this.session = opened.session;
     this.state = opened.resumed ? opened.session.loadState() : emptySessionState();
@@ -212,7 +213,7 @@ export class BatonChatProtocol implements ChatProtocol {
     this.changed();
     await this.runtime.close();
     this.session.releaseLock();
-    process.exit(0);
+    this.quit();
   }
 
   resolvePicker(id: string, value: string | null): void {
