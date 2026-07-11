@@ -556,7 +556,9 @@ export class ClaudeAdapter implements AgentAdapter {
             emit({
               kind: "plan_update",
               provider: this.provider,
-              payload: { planId: `pl_${rt.claudeSessionId ?? "claude"}`, entries: todoWritePlan(input) },
+              // planId 用 per-turn（对齐 codex 的 pl_<turnId>）：卡片锚定在当前 turn 的位置，本 turn 内
+              // 的 todo 更新原地 mark。per-session 会一直改写 session 首次出现的旧卡，进度在 scrollback 里不可见
+              payload: { planId: `pl_${turn.turnId}`, entries: todoWritePlan(input) },
               raw: msg,
             });
             continue;

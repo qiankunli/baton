@@ -19,12 +19,13 @@ function claudeHarness(): { events: AnyNewEvent[]; feed: (msg: unknown) => void 
   const adapter = new ClaudeAdapter({ approvalHandler });
   const events: AnyNewEvent[] = [];
   const rt = { cwd: "/tmp", suppressedToolIds: new Set<string>(), claudeSessionId: "sess1" };
+  const turn = { turnId: "t1", finalized: false, cancelRequested: false };
   const feed = (msg: unknown) =>
-    (adapter as unknown as { handleMessage: (r: unknown, e: (ev: AnyNewEvent) => void, m: unknown) => void }).handleMessage(
-      rt,
-      (ev) => events.push(ev),
-      msg,
-    );
+    (
+      adapter as unknown as {
+        handleMessage: (r: unknown, e: (ev: AnyNewEvent) => void, m: unknown, t: unknown) => void;
+      }
+    ).handleMessage(rt, (ev) => events.push(ev), msg, turn);
   return { events, feed };
 }
 
@@ -60,6 +61,8 @@ describe("claude: TodoWrite → plan_update", () => {
     });
     const plans = events.filter((e) => e.kind === "plan_update");
     expect(plans).toHaveLength(1);
+    // planId per-turn：卡片锚定在当前 turn，跨 turn 的新 plan 不改写 scrollback 里的旧卡
+    expect((plans[0]!.payload as { planId: string }).planId).toBe("pl_t1");
     expect((plans[0]!.payload as { entries: unknown[] }).entries).toEqual([
       { content: "步骤一", priority: "medium", status: "completed" },
       { content: "步骤二", priority: "medium", status: "in_progress" },
