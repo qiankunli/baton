@@ -475,6 +475,20 @@ export class CodexAdapter implements AgentAdapter {
           }
         } else if (itemType === "userMessage" || itemType === "plan") {
           // userMessage 由 prompt() 侧发；plan 走 turn/plan/updated
+        } else if (itemType === "contextCompaction") {
+          // 运行阶段不是工具调用（无输入输出契约，不占工具卡），归一成 run status（design §5.2/§5.9）
+          this.emit(
+            rt,
+            {
+              kind: "_baton_run_status",
+              provider: this.provider,
+              payload:
+                method === "item/started"
+                  ? { phase: "compacting", title: "Compacting context…" }
+                  : { phase: null },
+            },
+            params,
+          );
         } else if (itemType) {
           this.emit(
             rt,

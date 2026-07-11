@@ -41,6 +41,17 @@ export function userVisibleText(text: string): string {
   return text.replace(/<baton-(context|sync)>[\s\S]*<\/baton-\1>\s*/g, "").trim();
 }
 
+/**
+ * Run status 文案合成（design §5.9）：运行阶段（compacting…）覆盖默认 thinking；
+ * willRetry 错误仅当它是最新事件时显示 retrying——其后一旦有任何事件即视为已恢复，
+ * 避免"重试成功后 retrying 挂到 turn 结束"。
+ */
+export function runStatusLabel(state: Pick<SessionState, "runPhase" | "lastError" | "lastSeq">): string {
+  if (state.runPhase) return state.runPhase.title ?? `${state.runPhase.phase}…`;
+  if (state.lastError?.willRetry && state.lastError.seq === state.lastSeq) return "retrying…";
+  return "thinking…";
+}
+
 export interface ThoughtDisplayBlock {
   title: string;
   content?: string;
@@ -394,8 +405,17 @@ export class BatonChatProtocol implements ChatProtocol {
     return {
       transcript: [...buildTranscript(v), ...(this.commandOutput ? [this.commandOutput] : [])],
       busy: active !== undefined,
+      // 语义合成在 baton（phase/retry/thinking），chat-tui 只收展示结构；跳秒由组件按 startedAt 自理
       runStatus: active
-        ? [{ id: `run:${active}`, author: providerAuthor(active), label: "thinking…", hint: "Esc to interrupt" }]
+        ? [
+            {
+              id: `run:${active}`,
+              author: providerAuthor(active),
+              label: runStatusLabel(v),
+              startedAt: this.runtime.activeStartedAt,
+              hint: "Esc to interrupt",
+            },
+          ]
         : [],
       queued: this.runtime.queuedTurns.map((turn) => ({
         id: String(turn.id),

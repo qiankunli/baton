@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
 import { SessionStore } from "../src/store/store.ts";
-import { BatonChatProtocol, thoughtDisplayBlocks, toolTranscriptItem } from "../src/tui/protocol.ts";
+import { BatonChatProtocol, runStatusLabel, thoughtDisplayBlocks, toolTranscriptItem } from "../src/tui/protocol.ts";
 
 describe("BatonChatProtocol exit", () => {
   test("restores the TUI only after runtime and session cleanup", async () => {
@@ -249,3 +249,25 @@ describe("toolTranscriptItem", () => {
 
 // 启动时的 resume/fork 会话选择已移到 session picker（src/tui/session-picker.tsx，
 // 不经过 BatonChatProtocol）；/sessions 的会话内切换浮层仍由 protocol 承载。
+
+describe("runStatusLabel", () => {
+  const base = { runPhase: undefined, lastError: undefined, lastSeq: 5 };
+
+  test("defaults to thinking", () => {
+    expect(runStatusLabel(base)).toBe("thinking…");
+  });
+
+  test("phase overrides thinking; title wins over generic phase text", () => {
+    expect(runStatusLabel({ ...base, runPhase: { phase: "compacting", title: "Compacting context…" } })).toBe(
+      "Compacting context…",
+    );
+    expect(runStatusLabel({ ...base, runPhase: { phase: "warming" } })).toBe("warming…");
+  });
+
+  test("willRetry shows retrying only while the error is the latest event", () => {
+    const err = { message: "boom", willRetry: true, seq: 5 };
+    expect(runStatusLabel({ ...base, lastError: err })).toBe("retrying…");
+    // 其后有任何事件（lastSeq 前进）即视为已恢复
+    expect(runStatusLabel({ ...base, lastError: err, lastSeq: 6 })).toBe("thinking…");
+  });
+});

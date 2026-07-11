@@ -488,6 +488,20 @@ export class ClaudeAdapter implements AgentAdapter {
     switch (msg.type) {
       case "system":
         if (msg.subtype === "init") rt.claudeSessionId = msg.session_id;
+        else if (msg.subtype === "status") {
+          // SDK 的 status 原生就是 phase-or-null 形状（'compacting' | 'requesting' | null）。
+          // 只有 compacting 值得成为可见阶段；requesting 是普通运行态，与 null 一样
+          // 归一成"无阶段"（回落默认 thinking），未来未知 status 同样安全降级。
+          emit({
+            kind: "_baton_run_status",
+            provider: this.provider,
+            payload:
+              msg.status === "compacting"
+                ? { phase: "compacting", title: "Compacting context…" }
+                : { phase: null },
+            raw: msg,
+          });
+        }
         break;
       case "stream_event": {
         // 子 agent（parent_tool_use_id 非空）的流式输出不进主时间线，内容随 tool result 汇总

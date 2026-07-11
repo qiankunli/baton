@@ -265,6 +265,17 @@ export interface Notice {
   detail?: string;
 }
 
+/**
+ * 短寿命运行阶段快照（compacting…），见 docs/design.md §5.2 归一表"运行阶段"行。
+ * phase 开放字符串（forward-compat）；null = 阶段结束，投影层回落默认 thinking。
+ * 刻意不塞 state_update：那是驱动 busy/idle finalize 的生命周期语义（§5.9）。
+ */
+export interface RunStatusUpdate {
+  phase: string | null;
+  /** 可展示文案（如 "Compacting context…"）；缺省由投影层按 phase 兜底 */
+  title?: string;
+}
+
 /** 语义为增量：reducer 直接累加。adapter 拿到累计快照时须先差分再发。快照语义见 ContextUsageUpdate。 */
 export interface UsageUpdate {
   inputTokens?: number;
@@ -318,6 +329,7 @@ export type EventPayloadMap = {
   context_usage_update: ContextUsageUpdate;
   _baton_error_update: ErrorUpdate;
   _baton_notice: Notice;
+  _baton_run_status: RunStatusUpdate;
   _baton_turn_summary: TurnSummary;
 };
 

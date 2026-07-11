@@ -376,3 +376,35 @@ describe("claude: approval options", () => {
     expect(new Set(options.map((o) => o.optionId)).size).toBe(options.length);
   });
 });
+
+describe("run status: context compaction → _baton_run_status", () => {
+  test("codex contextCompaction item maps to phase set/clear, no tool card", () => {
+    const { events, notify } = codexHarness();
+    notify("item/started", { threadId: "th1", turnId: "ct1", item: { type: "contextCompaction", id: "cc1" } });
+    notify("item/completed", { threadId: "th1", turnId: "ct1", item: { type: "contextCompaction", id: "cc1" } });
+    const statuses = events.filter((e) => e.kind === "_baton_run_status");
+    expect(statuses.map((e) => e.payload)).toEqual([
+      { phase: "compacting", title: "Compacting context…" },
+      { phase: null },
+    ]);
+    expect(events.filter((e) => e.kind === "tool_call_update")).toHaveLength(0);
+  });
+
+  test("claude system/status maps compacting and clears on null", () => {
+    const { events, feed } = claudeHarness();
+    feed({ type: "system", subtype: "status", status: "compacting" });
+    feed({ type: "system", subtype: "status", status: null });
+    const statuses = events.filter((e) => e.kind === "_baton_run_status");
+    expect(statuses.map((e) => e.payload)).toEqual([
+      { phase: "compacting", title: "Compacting context…" },
+      { phase: null },
+    ]);
+  });
+
+  test("claude 'requesting' status degrades to no-phase (thinking fallback)", () => {
+    const { events, feed } = claudeHarness();
+    feed({ type: "system", subtype: "status", status: "requesting" });
+    const statuses = events.filter((e) => e.kind === "_baton_run_status");
+    expect(statuses.map((e) => e.payload)).toEqual([{ phase: null }]);
+  });
+});
