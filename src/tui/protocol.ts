@@ -352,7 +352,21 @@ function outputPreview(lines: string[], limit = 5): string[] {
 /** SessionState → chat-tui 展示形状。diff/输出块在这里压成行，块语义不出 baton。 */
 function buildTranscript(state: SessionState): TranscriptItem[] {
   const items: TranscriptItem[] = [];
+  const noticesById = new Map(state.notices.map((notice) => [`n_${notice.seq}`, notice]));
   for (const entry of state.timeline) {
+    if (entry.type === "notice") {
+      const notice = noticesById.get(entry.id);
+      if (!notice) continue;
+      // warning/error 用 failed（红色 ✗）：打断标记等要像 Codex 一样醒目；info 用 pending（低调 ○）
+      items.push({
+        type: "block",
+        id: entry.id,
+        kind: "notice",
+        status: notice.level === "info" ? "pending" : "failed",
+        title: notice.detail ? `${notice.title} · ${notice.detail}` : notice.title,
+      });
+      continue;
+    }
     if (entry.type === "message") {
       const msg = state.messages.get(entry.id);
       if (!msg) continue;

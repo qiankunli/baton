@@ -49,7 +49,25 @@ async function main(): Promise<void> {
     agentName === "claude"
       ? new ClaudeAdapter({ approvalHandler: askApproval, executablePath: config.claudeExecutable })
       : new CodexAdapter({ approvalHandler: askApproval, command: config.codexCommand });
-  const ref = await adapter.start({ cwd });
+
+  // open 时绑定 session 级 sink；turn 完成以 idle 终态事件为准（design §4.1）
+  let sawOutput = false;
+  let turnDone: (() => void) | undefined;
+  const ref = await adapter.open({ cwd }, (ev) => {
+    session.append(ev);
+    if (ev.kind === "agent_message_chunk" && ev.payload.content.type === "text") {
+      if (!sawOutput) {
+        stdout.write(`${adapter.provider}> `);
+        sawOutput = true;
+      }
+      stdout.write((ev.payload.content as { text: string }).text);
+    } else if (ev.kind === "tool_call_update" && ev.payload.title) {
+      stdout.write(`\n[tool:${ev.payload.status ?? ""}] ${ev.payload.title}\n`);
+    } else if (ev.kind === "_baton_error_update") {
+      stdout.write(`\nerror: ${ev.payload.message}\n`);
+    }
+    if (ev.kind === "state_update" && ev.payload.state === "idle") turnDone?.();
+  });
   session.setProviderSession(adapter.provider, { provider: adapter.provider, providerSessionId: ref.providerSessionId });
   stdout.write(`${adapter.provider} session: ${ref.providerSessionId}\nType to chat, /exit to quit\n\n`);
 
@@ -69,29 +87,19 @@ async function main(): Promise<void> {
     if (mentions.length) stdout.write(`(injected context summaries from ${mentions.length} session(s))\n`);
 
     const turnId = newId("t");
-    let sawOutput = false;
+    sawOutput = false;
+    const done = new Promise<void>((resolve) => {
+      turnDone = resolve;
+    });
     try {
-      await adapter.prompt(
-        ref,
-        [{ type: "text", text: prompt }],
-        (ev) => {
-          session.append(ev);
-          if (ev.kind === "agent_message_chunk" && ev.payload.content.type === "text") {
-            if (!sawOutput) {
-              stdout.write(`${adapter.provider}> `);
-              sawOutput = true;
-            }
-            stdout.write((ev.payload.content as { text: string }).text);
-          } else if (ev.kind === "tool_call_update" && ev.payload.title) {
-            stdout.write(`\n[tool:${ev.payload.status ?? ""}] ${ev.payload.title}\n`);
-          }
-        },
-        { turnId },
-      );
+      // submit 只确认接收；进展与终结经 open 时绑定的 sink 上报
+      await adapter.submit(ref, { turnId, messageId: newId("m"), blocks: [{ type: "text", text: prompt }] });
     } catch (err) {
       stdout.write(`\nerror: ${err instanceof Error ? err.message : String(err)}\n`);
       continue;
     }
+    await done;
+    turnDone = undefined;
     const summary = session.summarizeTurn(turnId);
     // Claude 的原生 session id 首轮结束才拿得到，回填 meta 以支持将来 resume
     if (adapter instanceof ClaudeAdapter) {

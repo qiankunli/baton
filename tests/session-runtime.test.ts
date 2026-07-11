@@ -8,18 +8,20 @@ import type {
   AgentAdapter,
   EventSink,
   ModelOption,
-  PromptOptions,
+  OpenOptions,
+  PromptInput,
+  PromptReceipt,
   ProviderSessionRef,
-  StartOptions,
 } from "../src/adapters/types.ts";
-import type { AnyEventEnvelope, ContentBlock } from "../src/events/types.ts";
+import type { AnyEventEnvelope, PromptBlock } from "../src/events/types.ts";
 import { textOf } from "../src/events/types.ts";
 import { BatonSessionRuntime } from "../src/session/runtime.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 class FakeAdapter implements AgentAdapter {
   readonly capabilities: AdapterCapabilities = { prompt: {} };
-  startOptions?: StartOptions;
+  openOptions?: OpenOptions;
+  sink?: EventSink;
   model: string | null = null;
   synced: string[] = [];
   prompts: string[] = [];
@@ -29,8 +31,9 @@ class FakeAdapter implements AgentAdapter {
     private readonly hooks: { enter?: () => void; leave?: () => void; delayMs?: number } = {},
   ) {}
 
-  async start(opts: StartOptions): Promise<ProviderSessionRef> {
-    this.startOptions = opts;
+  async open(opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+    this.openOptions = opts;
+    this.sink = sink;
     return {
       provider: this.provider,
       providerSessionId: `${this.provider}-runtime-ref`,
@@ -42,7 +45,7 @@ class FakeAdapter implements AgentAdapter {
     return `${this.provider}-native`;
   }
 
-  async syncContext(_ref: ProviderSessionRef, blocks: ContentBlock[]): Promise<void> {
+  async syncContext(_ref: ProviderSessionRef, blocks: PromptBlock[]): Promise<void> {
     this.synced.push(textOf(blocks));
   }
 
@@ -58,34 +61,33 @@ class FakeAdapter implements AgentAdapter {
     return this.model;
   }
 
-  async prompt(
-    _ref: ProviderSessionRef,
-    blocks: ContentBlock[],
-    sink: EventSink,
-    opts: PromptOptions,
-  ): Promise<void> {
+  /** submit 立即回执；事件（含终态）异步经 open 绑定的 sink 上报 */
+  async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.hooks.enter?.();
-    this.prompts.push(textOf(blocks));
-    sink({
+    this.prompts.push(textOf(input.blocks));
+    this.sink?.({
       kind: "user_message",
       provider: this.provider,
-      turnId: opts.turnId,
-      payload: { messageId: `${opts.turnId}-user`, content: blocks },
+      turnId: input.turnId,
+      payload: { messageId: input.messageId, content: input.blocks },
     });
-    if (this.hooks.delayMs) await Bun.sleep(this.hooks.delayMs);
-    sink({
-      kind: "agent_message",
-      provider: this.provider,
-      turnId: opts.turnId,
-      payload: { messageId: `${opts.turnId}-agent`, content: [{ type: "text", text: "done" }] },
-    });
-    sink({
-      kind: "state_update",
-      provider: this.provider,
-      turnId: opts.turnId,
-      payload: { state: "idle", stopReason: "end_turn" },
-    });
-    this.hooks.leave?.();
+    void (async () => {
+      if (this.hooks.delayMs) await Bun.sleep(this.hooks.delayMs);
+      this.sink?.({
+        kind: "agent_message",
+        provider: this.provider,
+        turnId: input.turnId,
+        payload: { messageId: `${input.turnId}-agent`, content: [{ type: "text", text: "done" }] },
+      });
+      this.hooks.leave?.();
+      this.sink?.({
+        kind: "state_update",
+        provider: this.provider,
+        turnId: input.turnId,
+        payload: { state: "idle", stopReason: "end_turn" },
+      });
+    })();
+    return { accepted: true };
   }
 
   async cancel(_ref: ProviderSessionRef): Promise<void> {}
@@ -256,7 +258,7 @@ describe("BatonSessionRuntime", () => {
 
     await runtime.submit("codex", [{ type: "text", text: "next" }]);
 
-    expect(codex.startOptions?.resumeSessionId).toBe("thread-old");
+    expect(codex.openOptions?.resumeSessionId).toBe("thread-old");
     expect(codex.model).toBe("fast");
     expect(codex.synced[0]).toContain("new claude work");
     expect(codex.synced[0]).not.toContain("old codex work");

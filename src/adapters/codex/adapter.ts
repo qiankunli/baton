@@ -13,10 +13,12 @@ import type {
   ApprovalHandler,
   EventSink,
   ModelOption,
-  PromptOptions,
+  OpenOptions,
+  PromptInput,
+  PromptReceipt,
   ProviderSessionRef,
-  StartOptions,
 } from "../types.ts";
+import { unsupportedPromptBlocks } from "../types.ts";
 import { JsonRpcPeer } from "./jsonrpc.ts";
 
 interface ThreadRuntime {
@@ -24,11 +26,13 @@ interface ThreadRuntime {
   peer: JsonRpcPeer;
   threadId: string;
   sink?: EventSink;
+  /** 最近一次 submit 的 baton turn id：迟到通知（tokenUsage 等）也用它标注信封 */
   turnId?: string;
+  /** 当前被接受、尚未逻辑终结的 turn；finalized 保证物理终态重复到达时只终结一次 */
+  activeTurn?: { turnId: string; finalized: boolean };
   codexTurnId?: string;
   /** 用户在 baton 中选择的模型；作为下一次 turn/start override。 */
   model?: string;
-  turnDone?: { resolve: () => void; reject: (e: Error) => void };
   /** 上次 tokenUsage.total 快照，差分成 usage_update 增量 */
   prevUsage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningOutputTokens: number };
 }
@@ -175,7 +179,7 @@ export class CodexAdapter implements AgentAdapter {
 
   constructor(private options: CodexAdapterOptions) {}
 
-  async start(opts: StartOptions): Promise<ProviderSessionRef> {
+  async open(opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
     const [cmd, ...args] = this.options.command ?? ["codex", "app-server"];
     const child = spawn(cmd as string, args, {
       cwd: opts.cwd,
@@ -186,9 +190,18 @@ export class CodexAdapter implements AgentAdapter {
     const peer = new JsonRpcPeer((line) => child.stdin.write(line));
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => peer.feed(chunk));
-    child.on("close", (code) => peer.close(`codex app-server exited (${code})`));
 
-    const rt: ThreadRuntime = { child, peer, threadId: "" };
+    const rt: ThreadRuntime = { child, peer, threadId: "", sink };
+    // transport 终结 = 该 session 所有在途工作的终结点：pending request 全部 reject，
+    // 活跃 turn 必须在此合成终态，否则 runtime 永远等不到 idle（design §4.1 终态保证）。
+    child.on("close", (code) => {
+      peer.close(`codex app-server exited (${code})`);
+      this.failActiveTurn(rt, `codex app-server exited (code ${code})`);
+    });
+    child.on("error", (error) => {
+      peer.close(`codex app-server spawn error: ${error.message}`);
+      this.failActiveTurn(rt, `codex app-server error: ${error.message}`);
+    });
     peer.onNotification((method, params) => this.handleNotification(rt, method, params));
     peer.onServerRequest((method, params) => this.handleServerRequest(rt, method, params));
 
@@ -232,40 +245,33 @@ export class CodexAdapter implements AgentAdapter {
     return this.mustThread(ref).model ?? null;
   }
 
-  async prompt(
-    ref: ProviderSessionRef,
-    blocks: PromptBlock[],
-    sink: EventSink,
-    opts: PromptOptions,
-  ): Promise<void> {
+  /** submit 只做 admission 并发出 turn/start；进展与终结全部经通知/终态合成路径报告 */
+  async submit(ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
     const rt = this.mustThread(ref);
-    rt.sink = sink;
-    rt.turnId = opts.turnId;
+    if (rt.activeTurn && !rt.activeTurn.finalized) {
+      throw new Error(`codex turn ${rt.activeTurn.turnId} still active; steer/parallel prompt unsupported`);
+    }
+    const unsupported = unsupportedPromptBlocks(input.blocks, this.capabilities);
+    if (unsupported.length) {
+      throw new Error(`codex adapter does not support prompt block type(s): ${unsupported.join(", ")}`);
+    }
 
-    sink({
+    rt.turnId = input.turnId;
+    rt.activeTurn = { turnId: input.turnId, finalized: false };
+
+    this.emit(rt, {
       kind: "user_message",
       provider: this.provider,
-      providerSessionId: rt.threadId,
-      turnId: opts.turnId,
-      payload: { messageId: newId("m"), content: blocks },
+      payload: { messageId: input.messageId, content: input.blocks },
     });
-    sink({
-      kind: "state_update",
-      provider: this.provider,
-      providerSessionId: rt.threadId,
-      turnId: opts.turnId,
-      payload: { state: "running" },
-    });
+    this.emit(rt, { kind: "state_update", provider: this.provider, payload: { state: "running" } });
 
-    const done = new Promise<void>((resolve, reject) => {
-      rt.turnDone = { resolve, reject };
-    });
     // fast-submit：turn/start 的响应立即返回 status=inProgress 的 Turn（旧版本才会阻塞到结束）。
     // 因此响应只用于拿 codex turn id 和捕获终态；正常结束以 turn/completed 通知为准。
     void rt.peer
       .request("turn/start", {
         threadId: rt.threadId,
-        input: [{ type: "text", text: textOf(blocks) }],
+        input: [{ type: "text", text: textOf(input.blocks) }],
         ...(rt.model ? { model: rt.model } : {}),
         // 不显式开启则 codex 不发 item/reasoning/* 通知，中间过程对用户不可见
         summary: "auto",
@@ -279,10 +285,9 @@ export class CodexAdapter implements AgentAdapter {
         }
       })
       .catch((err) => {
-        rt.turnDone?.reject(err instanceof Error ? err : new Error(String(err)));
-        rt.turnDone = undefined;
+        this.failActiveTurn(rt, err instanceof Error ? err.message : String(err));
       });
-    await done;
+    return { accepted: true };
   }
 
   async cancel(ref: ProviderSessionRef): Promise<void> {
@@ -295,6 +300,8 @@ export class CodexAdapter implements AgentAdapter {
     const rt = this.threads.get(ref.providerSessionId);
     if (!rt) return;
     this.threads.delete(ref.providerSessionId);
+    // 宿主主动关闭：活跃 turn 读作 cancelled；先终结再 kill，child close 回调就不会再合成 failed
+    this.finishTurn(rt, "interrupted");
     rt.child.kill();
   }
 
@@ -308,16 +315,24 @@ export class CodexAdapter implements AgentAdapter {
     rt.sink?.({ ...ev, provider: this.provider, providerSessionId: rt.threadId, turnId: rt.turnId, raw });
   }
 
+  /** 每个 turn 只发一次逻辑终态；turn/completed 通知、turn/start 响应终态、transport 失败谁先到都行 */
   private finishTurn(rt: ThreadRuntime, turnStatus: string): void {
-    if (!rt.turnDone) return; // turn/completed 通知与 turn/start 响应谁先到都行，只结一次
+    if (!rt.activeTurn || rt.activeTurn.finalized) return;
+    rt.activeTurn.finalized = true;
     this.emit(rt, {
       kind: "state_update",
       provider: this.provider,
       payload: { state: "idle", stopReason: stopReasonOf(turnStatus) },
     });
-    rt.turnDone.resolve();
-    rt.turnDone = undefined;
+    rt.activeTurn = undefined;
     rt.codexTurnId = undefined;
+  }
+
+  /** 错误路径终态：先留结构化 error，再合成 idle（design §4.9） */
+  private failActiveTurn(rt: ThreadRuntime, message: string): void {
+    if (!rt.activeTurn || rt.activeTurn.finalized) return;
+    this.emit(rt, { kind: "_baton_error_update", provider: this.provider, payload: { message } });
+    this.finishTurn(rt, "failed");
   }
 
   private handleNotification(rt: ThreadRuntime, method: string, params: unknown): void {
