@@ -40,8 +40,8 @@ describe("toolTranscriptItem", () => {
       title: "Ran",
       status: "completed",
       content: [
-        { type: "code", code: "git status --short", language: "bash" },
-        { type: "lines", lines: [" M src/index.ts"] },
+        { type: "command", command: "git status --short" },
+        { type: "output", lines: [" M src/index.ts"] },
       ],
     });
   });

@@ -365,12 +365,6 @@ function normalizePlanStatus(status: string): "pending" | "in_progress" | "compl
   return (PLAN_STATUSES.has(status) ? status : "pending") as ReturnType<typeof normalizePlanStatus>;
 }
 
-function outputPreview(lines: string[], limit = 5): string[] {
-  if (lines.length <= limit) return lines;
-  const edge = Math.floor((limit - 1) / 2);
-  return [...lines.slice(0, edge), `… +${lines.length - edge * 2} lines`, ...lines.slice(-edge)];
-}
-
 function commandOf(tc: ToolCallState, fallback: string): string {
   const input = tc.rawInput as Record<string, unknown> | undefined;
   return typeof input?.command === "string" ? input.command : fallback;
@@ -383,7 +377,8 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
   const content: TranscriptBlockContent[] = [];
 
   if (tc.kind === "execute") {
-    content.push({ type: "code", code: commandOf(tc, rawTitle), language: "bash" });
+    // language 不写死：chat-tui 对 command 缺省按 shell 高亮
+    content.push({ type: "command", command: commandOf(tc, rawTitle) });
   }
 
   const detailLines: string[] = [];
@@ -397,9 +392,11 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
     }
   }
 
-  const outputLines = outputPreview(textOf(tc.content).split("\n").filter(Boolean));
-  const lines = [...detailLines, ...outputLines];
-  if (lines.length > 0) content.push({ type: "lines", lines });
+  if (detailLines.length > 0) content.push({ type: "lines", lines: detailLines });
+
+  // 输出传全量行，头尾截断的预览策略统一归 chat-tui，baton 不再预截断
+  const outputLines = textOf(tc.content).split("\n").filter(Boolean);
+  if (outputLines.length > 0) content.push({ type: "output", lines: outputLines });
 
   return {
     type: "block",
@@ -411,7 +408,7 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
   };
 }
 
-/** SessionState → chat-tui 展示形状。provider 内容在这里收敛为通用 code/diff/lines，块语义不出 baton。 */
+/** SessionState → chat-tui 展示形状。provider 内容在这里收敛为通用 command/output/diff/lines，块语义不出 baton。 */
 function buildTranscript(state: SessionState): TranscriptItem[] {
   const items: TranscriptItem[] = [];
   const noticesById = new Map(state.notices.map((notice) => [`n_${notice.seq}`, notice]));
