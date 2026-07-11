@@ -260,3 +260,93 @@ describe("turn summary", () => {
     expect(() => h.summarizeTurn("t_missing")).toThrow(/no events/);
   });
 });
+
+describe("forkSession", () => {
+  function playTurn(h: ReturnType<SessionStore["createSession"]>, turnId: string): void {
+    h.append({ kind: "state_update", payload: { state: "running" }, provider: "codex", turnId });
+    h.append({
+      kind: "user_message",
+      payload: { messageId: `${turnId}_u`, content: [{ type: "text", text: "do the thing" }] },
+      provider: "codex",
+      turnId,
+    });
+    h.append({
+      kind: "agent_message_chunk",
+      payload: { messageId: `${turnId}_a`, content: { type: "text", text: "done" } },
+      provider: "codex",
+      turnId,
+    });
+    h.append({ kind: "state_update", payload: { state: "idle", stopReason: "end_turn" }, provider: "codex", turnId });
+    h.summarizeTurn(turnId);
+  }
+
+  test("copies history with new batonSessionId; seq and object ids preserved (git-branch 语义)", () => {
+    const source = store.createSession({ cwd: "/tmp/proj", title: "demo" });
+    playTurn(source, "t1");
+    const sourceEvents = source.readEvents();
+
+    const child = store.forkSession(source.id);
+    expect(child.id).not.toBe(source.id);
+    expect(child.meta.cwd).toBe("/tmp/proj");
+    expect(child.meta.title).toBe("demo (fork)");
+    expect(child.meta.forkedFrom).toEqual({
+      batonSessionId: source.id,
+      throughSeq: sourceEvents.at(-1)!.seq,
+    });
+
+    const childEvents = child.readEvents();
+    expect(childEvents).toHaveLength(sourceEvents.length);
+    for (let i = 0; i < childEvents.length; i++) {
+      expect(childEvents[i]!.batonSessionId).toBe(child.id);
+      expect(childEvents[i]!.seq).toBe(sourceEvents[i]!.seq);
+    }
+    // 对象 ID 不做 remap：同一段逻辑历史
+    const userMsg = childEvents.find((e) => e.kind === "user_message");
+    expect((userMsg!.payload as { messageId: string }).messageId).toBe("t1_u");
+    // child 可独立续写
+    const next = child.append({ kind: "state_update", payload: { state: "idle" }, provider: "codex" });
+    expect(next.seq).toBe(sourceEvents.at(-1)!.seq + 1);
+    // 源不受影响
+    expect(source.readEvents()).toHaveLength(sourceEvents.length);
+  });
+
+  test("providerSessions keep only provider + model (child must not resume source native sessions)", () => {
+    const source = store.createSession({ cwd: "/tmp/proj" });
+    source.setProviderSession("codex", {
+      provider: "codex",
+      providerSessionId: "thread_123",
+      resumeCursor: "42",
+      syncedSeq: 7,
+      model: "gpt-5",
+    });
+    source.setProviderSession("claude-code", { provider: "claude-code", providerSessionId: "sess_9" });
+
+    const child = store.forkSession(source.id);
+    expect(child.meta.providerSessions["codex"]).toEqual({ provider: "codex", model: "gpt-5" });
+    expect(child.meta.providerSessions["claude-code"]).toEqual({ provider: "claude-code" });
+  });
+
+  test("throughSeq bounds the copied prefix", () => {
+    const source = store.createSession({ cwd: "/tmp/proj" });
+    playTurn(source, "t1");
+    const boundary = source.readEvents().at(-1)!.seq;
+    playTurn(source, "t2");
+
+    const child = store.forkSession(source.id, { throughSeq: boundary });
+    const childEvents = child.readEvents();
+    expect(childEvents.at(-1)!.seq).toBe(boundary);
+    expect(childEvents.some((e) => e.turnId === "t2")).toBe(false);
+    expect(child.meta.forkedFrom!.throughSeq).toBe(boundary);
+  });
+
+  test("forking an empty session yields an empty history", () => {
+    const source = store.createSession({ cwd: "/tmp/proj" });
+    const child = store.forkSession(source.id);
+    expect(child.readEvents()).toEqual([]);
+    expect(child.meta.forkedFrom!.throughSeq).toBe(0);
+  });
+
+  test("forking an unknown session throws", () => {
+    expect(() => store.forkSession("bs_NOPE")).toThrow(/not found/);
+  });
+});
