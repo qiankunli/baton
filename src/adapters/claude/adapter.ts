@@ -54,7 +54,7 @@ export function claudeToolKind(toolName: string): string {
 /** 工具调用的一行标题：工具名 + 最有辨识度的入参 */
 export function claudeToolTitle(toolName: string, input: Record<string, unknown>): string {
   const detail =
-    input.command ?? input.file_path ?? input.pattern ?? input.url ?? input.query ?? input.description;
+    input.command ?? input.file_path ?? input.pattern ?? input.url ?? input.query ?? input.skill ?? input.description;
   return detail !== undefined ? `${toolName}: ${String(detail)}` : toolName;
 }
 

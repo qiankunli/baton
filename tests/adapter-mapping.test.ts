@@ -2,7 +2,7 @@
 // 归一成同一套事件（plan_update / diff 内容块 / tool_call_content_chunk）。
 import { describe, expect, test } from "bun:test";
 
-import { ClaudeAdapter, claudeToolDiff, todoWritePlan } from "../src/adapters/claude/adapter.ts";
+import { ClaudeAdapter, claudeToolDiff, claudeToolTitle, todoWritePlan } from "../src/adapters/claude/adapter.ts";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
 
@@ -70,6 +70,10 @@ describe("claude: TodoWrite → plan_update", () => {
 });
 
 describe("claude: edit tools → diff content", () => {
+  test("Skill title includes the launched skill name", () => {
+    expect(claudeToolTitle("Skill", { skill: "devloop:gcampr" })).toBe("Skill: devloop:gcampr");
+  });
+
   test("Edit carries modify diff with patch", () => {
     const diff = claudeToolDiff("Edit", { file_path: "/a/b.ts", old_string: "old", new_string: "new" });
     expect(diff).toEqual({
