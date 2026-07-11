@@ -6,6 +6,7 @@ import type { SessionMeta } from "../src/store/store.ts";
 const sessions: SessionMeta[] = [
   { batonSessionId: "bs_01AAAAAAAAAAAAAAAAAAAAAAAA", title: "claude 设计会话", cwd: "/a", createdAt: "2026-07-09T00:00:00Z", providerSessions: {} },
   { batonSessionId: "bs_01BBBBBBBBBBBBBBBBBBBBBBBB", title: "codex 实现会话", cwd: "/b", createdAt: "2026-07-09T01:00:00Z", providerSessions: {} },
+  { batonSessionId: "bs_01CCCCCCCCCCCCCCCCCCCCCCCC", preview: "resume 标题方案", cwd: "/c", createdAt: "2026-07-09T02:00:00Z", providerSessions: {} },
 ];
 
 describe("sessionMentionCandidates", () => {
@@ -14,18 +15,23 @@ describe("sessionMentionCandidates", () => {
     expect(byId.map((c) => c.insert)).toEqual(["@bs_01BBBBBBBBBBBBBBBBBBBBBBBB"]);
     const byTitle = sessionMentionCandidates(sessions, "设计");
     expect(byTitle.map((c) => c.insert)).toEqual(["@bs_01AAAAAAAAAAAAAAAAAAAAAAAA"]);
+    const byPreview = sessionMentionCandidates(sessions, "resume");
+    expect(byPreview.map((c) => c.insert)).toEqual(["@bs_01CCCCCCCCCCCCCCCCCCCCCCCC"]);
   });
 
   test("lists sessions, not providers", () => {
     const all = sessionMentionCandidates(sessions, "");
     expect(all.some((c) => c.insert === "@codex" || c.insert === "@claude")).toBe(false);
-    expect(all).toHaveLength(2);
+    expect(all).toHaveLength(3);
   });
 
   test("excludes current session", () => {
     const cands = sessionMentionCandidates(sessions, "bs_", {
       excludeSessionId: "bs_01AAAAAAAAAAAAAAAAAAAAAAAA",
     });
-    expect(cands.map((c) => c.insert)).toEqual(["@bs_01BBBBBBBBBBBBBBBBBBBBBBBB"]);
+    expect(cands.map((c) => c.insert)).toEqual([
+      "@bs_01BBBBBBBBBBBBBBBBBBBBBBBB",
+      "@bs_01CCCCCCCCCCCCCCCCCCCCCCCC",
+    ]);
   });
 });

@@ -13,7 +13,7 @@ import { ensureConfigFile, loadConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
 import { newId } from "../events/ids.ts";
 import type { PermissionRequest, QuestionRequest } from "../events/types.ts";
-import { SessionStore } from "../store/store.ts";
+import { SessionStore, sessionDisplayTitle } from "../store/store.ts";
 
 function argValue(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -60,7 +60,7 @@ async function main(): Promise<void> {
   const agentName = argValue("--agent") ?? config.defaultAgent;
   const cwd = argValue("--cwd") ?? process.cwd();
   const store = new SessionStore(rootArg);
-  const session = store.createSession({ cwd, title: `${agentName} @ ${cwd}` });
+  const session = store.createSession({ cwd });
   stdout.write(`baton session: ${session.id}\nlog: ${session.dir}/session.jsonl\n`);
 
   const adapter: AgentAdapter =
@@ -103,12 +103,13 @@ async function main(): Promise<void> {
     if (line === "/exit") break;
     if (line === "/sessions") {
       for (const m of store.listSessions()) {
-        stdout.write(`  @${m.batonSessionId}  ${m.title ?? ""}\n`);
+        stdout.write(`  @${m.batonSessionId}  ${sessionDisplayTitle(m)}\n`);
       }
       continue;
     }
 
     // @bs_xxx 急切展开：把被引用会话的紧凑摘要拼进 prompt（design §5.6）
+    session.setPreviewIfEmpty(line);
     const { prompt, mentions } = expandMentions(store, line, config.mentionBudgetChars);
     if (mentions.length) stdout.write(`(injected context summaries from ${mentions.length} session(s))\n`);
 

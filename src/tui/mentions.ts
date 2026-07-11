@@ -3,7 +3,7 @@
 
 import type { Candidate } from "chat-tui";
 
-import type { SessionMeta } from "../store/store.ts";
+import { sessionDisplayTitle, type SessionMeta } from "../store/store.ts";
 
 export function sessionMentionCandidates(
   sessions: SessionMeta[],
@@ -16,11 +16,11 @@ export function sessionMentionCandidates(
     .filter(
       (s) =>
         s.batonSessionId.toLowerCase().startsWith(p) ||
-        (p !== "" && (s.title ?? "").toLowerCase().includes(p)),
+        (p !== "" && sessionDisplayTitle(s).toLowerCase().includes(p)),
     )
     .map((s) => ({
       insert: `@${s.batonSessionId}`,
       label: `@${s.batonSessionId.slice(0, 12)}…`,
-      detail: s.title ?? "",
+      detail: sessionDisplayTitle(s),
     }));
 }
