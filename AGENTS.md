@@ -81,4 +81,5 @@ baton/
 - `docs/design.md` — 完整设计与竞品定位
 - `docs/provider-interaction-design.md` — chat-tui 与 Adapter 的交互抽象方案
 - `docs/resume-fork.md` — resume/fork 语义（fork=同一段逻辑历史的复制，不做 ID remap）、会话锁与 crash recovery
+- `docs/session-paths.md` — 主线/草稿 path 设计稿：会话树（森林表示）、写令牌、context-import 收录原语与两步走实施
 - 参考实现与协议规范的外部链接见 `docs/design.md` 末尾"参考"一节
