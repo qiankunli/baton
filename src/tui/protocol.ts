@@ -394,7 +394,7 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
 
   if (detailLines.length > 0) content.push({ type: "lines", lines: detailLines });
 
-  // 输出传全量行，头尾截断的预览策略统一归 chat-tui，baton 不再预截断
+  // 输出传全量行不预截断；output 类型的展示待遇（弱化色、全量渲染）归 chat-tui
   const outputLines = textOf(tc.content).split("\n").filter(Boolean);
   if (outputLines.length > 0) content.push({ type: "output", lines: outputLines });
 
