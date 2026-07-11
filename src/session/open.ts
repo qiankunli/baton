@@ -87,13 +87,25 @@ function recoverInterruptedState(session: SessionHandle): boolean {
   }
 
   const interrupted = state.runState !== "idle";
-  if (!interrupted && unsummarized.length === 0 && state.pendingPermissions.size === 0) {
+  if (
+    !interrupted &&
+    unsummarized.length === 0 &&
+    state.pendingPermissions.size === 0 &&
+    state.pendingQuestions.size === 0
+  ) {
     return false;
   }
 
   for (const requestId of state.pendingPermissions.keys()) {
     session.append({
       kind: "permission_resolved",
+      provider: "baton",
+      payload: { requestId, outcome: "cancelled" },
+    });
+  }
+  for (const requestId of state.pendingQuestions.keys()) {
+    session.append({
+      kind: "question_resolved",
       provider: "baton",
       payload: { requestId, outcome: "cancelled" },
     });

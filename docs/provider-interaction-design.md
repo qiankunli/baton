@@ -569,8 +569,8 @@ interface Interactive {
 ### Phase 3：用户交互闭环
 
 - permission 从 constructor callback 迁移到 request event + `respond()`；
-- 接入 Claude AskUserQuestion / user dialog 与 Codex requestUserInput；
-- 随首个真实消费方增加 permission/question view contract 与 overlay；
+- Claude AskUserQuestion 与 Codex requestUserInput 已通过独立 question event + chat-tui overlay 闭环；下一步把 constructor callback 迁移到统一 `respond()`；
+- provider user dialog 尚未接入；
 - 再接 MCP elicitation form / URL，验证 cancel、timeout、带外 resolved。
 
 ### Phase 4：输入与控制

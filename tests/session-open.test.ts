@@ -136,6 +136,24 @@ describe("crash recovery on open", () => {
     expect(result.session.loadState().pendingPermissions.size).toBe(0);
   });
 
+  test("dangling question requests are cancelled", () => {
+    const h = store.createSession({ cwd: "/repo" });
+    h.append({ kind: "state_update", payload: { state: "running" }, provider: "codex", turnId: "t1" });
+    h.append({
+      kind: "question_request",
+      payload: {
+        requestId: "qr1",
+        questions: [{ questionId: "mode", header: "Mode", question: "Which mode?" }],
+      },
+      provider: "codex",
+      turnId: "t1",
+    });
+
+    const result = openBatonSession(store, { cwd: "/repo", sessionId: h.id });
+    expect(result.recovered).toBe(true);
+    expect(result.session.loadState().pendingQuestions.size).toBe(0);
+  });
+
   test("clean session is untouched", () => {
     const h = store.createSession({ cwd: "/repo" });
     h.append({ kind: "state_update", payload: { state: "running" }, provider: "codex", turnId: "t1" });

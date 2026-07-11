@@ -11,6 +11,7 @@ import type {
   MessageRole,
   Notice,
   PermissionRequest,
+  QuestionRequest,
   PlanUpdate,
   SessionConfigOption,
   SessionRunState,
@@ -66,6 +67,7 @@ export interface SessionState {
   toolCalls: Map<string, ToolCallState>;
   plans: Map<string, PlanUpdate>;
   pendingPermissions: Map<string, PermissionRequest>;
+  pendingQuestions: Map<string, QuestionRequest>;
   usage: UsageTotal;
   /** provider command 完整快照：available_commands_update 整体替换，不做增量合并 */
   availableCommands: AvailableCommand[];
@@ -92,6 +94,7 @@ export function emptySessionState(): SessionState {
     toolCalls: new Map(),
     plans: new Map(),
     pendingPermissions: new Map(),
+    pendingQuestions: new Map(),
     usage: {
       inputTokens: 0,
       outputTokens: 0,
@@ -219,6 +222,15 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
     case "permission_resolved": {
       const p = ev.payload;
       state.pendingPermissions.delete(p.requestId);
+      break;
+    }
+    case "question_request": {
+      const p = ev.payload;
+      state.pendingQuestions.set(p.requestId, p);
+      break;
+    }
+    case "question_resolved": {
+      state.pendingQuestions.delete(ev.payload.requestId);
       break;
     }
     case "usage_update":

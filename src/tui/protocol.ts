@@ -10,12 +10,13 @@ import type {
   StatusMessage,
   TranscriptBlockContent,
   TranscriptItem,
+  QuestionAnswers,
 } from "chat-tui";
 
 import { COMMANDS, parseProvider, PROVIDERS, type CommandName, type ProviderName } from "../commands/registry.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
-import { textOf, type DiffBlock, type PermissionRequest } from "../events/types.ts";
+import { textOf, type DiffBlock, type PermissionRequest, type QuestionRequest } from "../events/types.ts";
 import { createProviderAdapter, providerSessionKey } from "../providers/registry.ts";
 import { openBatonSession } from "../session/open.ts";
 import { BatonSessionRuntime } from "../session/runtime.ts";
@@ -62,6 +63,12 @@ interface PendingApproval {
   resolve: (d: { optionId: string }) => void;
 }
 
+interface PendingQuestion {
+  id: string;
+  request: QuestionRequest;
+  resolve: (d: { answers: Record<string, string[]> }) => void;
+}
+
 interface PendingPicker {
   id: string;
   title: string;
@@ -76,6 +83,7 @@ export class BatonChatProtocol implements ChatProtocol {
   private agent: ProviderName;
   private status: StatusMessage | null = null;
   private approvals: PendingApproval[] = [];
+  private questions: PendingQuestion[] = [];
   private picker: PendingPicker | null = null;
   private nextOverlayId = 1;
   private listeners = new Set<() => void>();
@@ -257,6 +265,14 @@ export class BatonChatProtocol implements ChatProtocol {
     this.changed();
   }
 
+  resolveQuestion(id: string, answers: QuestionAnswers): void {
+    const index = this.questions.findIndex((question) => question.id === id);
+    if (index < 0) return;
+    const [question] = this.questions.splice(index, 1);
+    question!.resolve({ answers });
+    this.changed();
+  }
+
   recallQueued(): { text: string } | null {
     const recalled = this.runtime.recallLatestQueued();
     if (!recalled) return null;
@@ -280,12 +296,22 @@ export class BatonChatProtocol implements ChatProtocol {
       this.changed();
     });
 
+  private questionHandler = (request: QuestionRequest): Promise<{ answers: Record<string, string[]> }> =>
+    new Promise((resolve) => {
+      this.questions.push({ id: `qu_${this.nextOverlayId++}`, request, resolve });
+      this.changed();
+    });
+
   private createRuntime(): BatonSessionRuntime {
     return new BatonSessionRuntime({
       session: this.session,
       mentionBudgetChars: this.config.mentionBudgetChars,
       createAdapter: (name) =>
-        createProviderAdapter(name as ProviderName, { approvalHandler: this.approvalHandler, config: this.config }),
+        createProviderAdapter(name as ProviderName, {
+          approvalHandler: this.approvalHandler,
+          questionHandler: this.questionHandler,
+          config: this.config,
+        }),
       providerSessionKey: (name) => providerSessionKey(name as ProviderName),
       onStateChange: () => this.changed(),
     });
@@ -364,6 +390,7 @@ export class BatonChatProtocol implements ChatProtocol {
     const v = this.state;
     const active = this.runtime.activeProvider;
     const approval = this.approvals[0];
+    const question = this.questions[0];
     const selectedModel = this.runtime.currentModel(this.agent) ?? "default";
     const selectedBusy = active === this.agent;
     return {
@@ -381,6 +408,20 @@ export class BatonChatProtocol implements ChatProtocol {
         : null,
       approval: approval
         ? { id: approval.id, title: approval.request.title, options: approval.request.options }
+        : null,
+      question: question
+        ? {
+            id: question.id,
+            questions: question.request.questions.map((prompt) => ({
+              id: prompt.questionId,
+              header: prompt.header,
+              question: prompt.question,
+              options: prompt.options,
+              multiSelect: prompt.multiSelect,
+              allowOther: prompt.allowOther,
+              secret: prompt.secret,
+            })),
+          }
         : null,
       status: this.status,
       footer: `in:${v.usage.inputTokens} out:${v.usage.outputTokens}  turns:${v.turnSummaries.length}  queue:${this.runtime.queueLength}  cwd:${this.session.meta.cwd}`,

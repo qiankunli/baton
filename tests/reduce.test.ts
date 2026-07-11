@@ -125,6 +125,20 @@ describe("state / permission / plan / usage", () => {
     expect(resolved.pendingPermissions.size).toBe(0);
   });
 
+  test("question request pends until resolved", () => {
+    const request = {
+      requestId: "qr1",
+      questions: [{ questionId: "q1", header: "Mode", question: "Which mode?" }],
+    };
+    const pending = reduceEvents([ev("question_request", request)]);
+    expect(pending.pendingQuestions.has("qr1")).toBe(true);
+    const resolved = reduceEvents([
+      ev("question_request", request),
+      ev("question_resolved", { requestId: "qr1", outcome: "answered", answers: { q1: ["fast"] } }),
+    ]);
+    expect(resolved.pendingQuestions.size).toBe(0);
+  });
+
   test("plan update replaces entries per planId", () => {
     const state = reduceEvents([
       ev("plan_update", { planId: "pl1", entries: [{ content: "step1", priority: "high", status: "pending" }] }),

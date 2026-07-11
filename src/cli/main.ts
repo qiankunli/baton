@@ -12,7 +12,7 @@ import type { AgentAdapter } from "../adapters/types.ts";
 import { ensureConfigFile, loadConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
 import { newId } from "../events/ids.ts";
-import type { PermissionRequest } from "../events/types.ts";
+import type { PermissionRequest, QuestionRequest } from "../events/types.ts";
 import { SessionStore } from "../store/store.ts";
 
 function argValue(flag: string): string | undefined {
@@ -35,6 +35,24 @@ async function askApproval(req: PermissionRequest): Promise<{ optionId: string }
   }
 }
 
+async function askQuestions(req: QuestionRequest): Promise<{ answers: Record<string, string[]> }> {
+  const answers: Record<string, string[]> = {};
+  for (const question of req.questions) {
+    stdout.write(`\n? ${question.header}: ${question.question}\n`);
+    question.options?.forEach((option, index) =>
+      stdout.write(`  ${index + 1}. ${option.label} — ${option.description}\n`),
+    );
+    const suffix = question.multiSelect ? " (comma-separated choices)" : "";
+    const answer = (await rl.question(`answer${suffix}> `)).trim();
+    const values = question.multiSelect ? answer.split(",").map((value) => value.trim()).filter(Boolean) : [answer];
+    answers[question.questionId] = values.map((value) => {
+      const option = question.options?.[Number(value) - 1];
+      return option?.label ?? value;
+    });
+  }
+  return { answers };
+}
+
 async function main(): Promise<void> {
   const rootArg = argValue("--root");
   ensureConfigFile(rootArg);
@@ -47,8 +65,16 @@ async function main(): Promise<void> {
 
   const adapter: AgentAdapter =
     agentName === "claude"
-      ? new ClaudeAdapter({ approvalHandler: askApproval, executablePath: config.claudeExecutable })
-      : new CodexAdapter({ approvalHandler: askApproval, command: config.codexCommand });
+      ? new ClaudeAdapter({
+          approvalHandler: askApproval,
+          questionHandler: askQuestions,
+          executablePath: config.claudeExecutable,
+        })
+      : new CodexAdapter({
+          approvalHandler: askApproval,
+          questionHandler: askQuestions,
+          command: config.codexCommand,
+        });
 
   // open 时绑定 session 级 sink；turn 完成以 idle 终态事件为准（design §4.1）
   let sawOutput = false;

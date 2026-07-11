@@ -1,7 +1,7 @@
 // Adapter 统一抽象："小核心 + 可选能力"（见 docs/design.md §5.1）。
 // 各家用原生协议接入，翻译成内部事件（AnyNewEvent）交给 sink；信封字段由 Store 补齐。
 
-import type { AnyNewEvent, PermissionRequest, PromptBlock } from "../events/types.ts";
+import type { AnyNewEvent, PermissionRequest, PromptBlock, QuestionRequest } from "../events/types.ts";
 
 export interface ProviderSessionRef {
   provider: string;
@@ -175,3 +175,10 @@ export interface ApprovalDecision {
  * adapter 负责把 permission_request / permission_resolved 事件发给 sink 留痕。
  */
 export type ApprovalHandler = (req: PermissionRequest) => Promise<ApprovalDecision>;
+
+export interface QuestionDecision {
+  answers: Record<string, string[]>;
+}
+
+/** agent 结构化提问的宿主回调；与 permission approval 不共享 payload。 */
+export type QuestionHandler = (req: QuestionRequest) => Promise<QuestionDecision>;
