@@ -243,7 +243,7 @@ Footer            常驻状态栏（usage、队列、cwd）
 ```
 
 - **Run Status 不在 scrollbox 里**：运行状态是"现在"的信息，用户翻历史时它必须仍然可见；idle 时区域清空不占高度。plan 与 run status 同为中间过程但寿命不同——plan 是 turn 级、值得留在历史里回看，故进 transcript（未来可另加 pinned 投影）；run status 是秒级阶段、只有当下有意义，只 pinned 不落 transcript。
-- **语义合成在 baton projection，chat-tui 只收展示结构**：projection 的合成规则是——active provider 默认 thinking；`_baton_run_status` 的 phase 覆盖之（如 compacting，来源见 5.2 归一表）；`willRetry` 错误合成 retrying；idle 清空。chat-tui 侧的 `runStatus` 只有 label / startedAt / hint，elapsed 跳秒由 TUI 自理，baton 只在状态变化时发快照（避免为跳秒每秒重建整个 view）。
+- **语义合成在 baton projection，chat-tui 只收展示结构**：projection 的合成规则是——active provider 默认 thinking；`_baton_run_status` 的 phase 覆盖之（如 compacting，来源见 5.2 归一表）；`willRetry` 错误合成 retrying；idle 清空。chat-tui 侧的 `runStatus` 只有 author / label / startedAt / hint，elapsed 跳秒由 TUI 自理，baton 只在状态变化时发快照（避免为跳秒每秒重建整个 view）。着色也走展示结构：不在协议里传颜色，author 沿用 transcript 的 `agentColorFor` 约定，同一 provider 在历史与运行状态区天然同色，颜色决策始终归 Theme。
 - **run status 不塞 `state_update`、不建模成 tool_call**：前者驱动 runtime 的 busy/idle finalize（adapter 终态硬约定），是生命周期语义，混入阶段信息会污染 finalize；后者没有输入输出契约，也不值得在 transcript 占工具卡。
 
 输入语义刻意分开：`/provider` 选择当前输入目标，`/model` 配置该 ProviderSession 后续 turn 使用的模型，`@` 只引用 baton session / turn / 产物。所有普通输入先进入 BatonSessionRuntime 的全局串行队列，因此切换 provider 不会分裂出两条并发逻辑历史。
