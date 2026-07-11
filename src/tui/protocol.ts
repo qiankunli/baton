@@ -29,6 +29,12 @@ import { sessionPickerOptions } from "./session-picker.tsx";
 // 展示名同时是 theme.ts PROVIDER_COLORS 的着色 key，两处保持一致
 const PROVIDER_LABEL: Record<string, string> = { codex: "codex", "claude-code": "claude" };
 
+/** provider → 时间线 author 展示名；未知 provider 原样展示。着色由 theme.agentColorFor 按该名字统一处理。 */
+function providerAuthor(provider: string | undefined): string | undefined {
+  if (!provider) return undefined;
+  return PROVIDER_LABEL[provider] ?? provider;
+}
+
 export const CHAT_COMMANDS: readonly CommandSpec[] = COMMANDS;
 
 export function userVisibleText(text: string): string {
@@ -458,6 +464,7 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
     type: "block",
     id: tc.toolCallId,
     kind: "tool",
+    author: providerAuthor(tc.provider),
     title: tc.kind === "execute" ? (status === "in_progress" ? "Running" : "Ran") : rawTitle,
     status,
     content: content.length > 0 ? content : undefined,
@@ -497,14 +504,14 @@ function buildTranscript(state: SessionState): TranscriptItem[] {
             id: `${entry.id}:${index}`,
             kind: "thought",
             status,
+            author: providerAuthor(msg.provider),
             title: block.title,
             content: block.content ? { type: "text", text: block.content } : undefined,
           });
         }
         continue;
       }
-      const author =
-        msg.role === "user" ? "you" : (PROVIDER_LABEL[msg.provider ?? ""] ?? msg.provider ?? "agent");
+      const author = msg.role === "user" ? "you" : (providerAuthor(msg.provider) ?? "agent");
       items.push({
         type: "message",
         id: entry.id,

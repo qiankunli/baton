@@ -34,6 +34,8 @@ export interface MessageState {
 
 export interface ToolCallState {
   toolCallId: string;
+  /** 产生该工具活动的 provider；多 provider 时间线展示归属时使用。 */
+  provider?: string;
   title?: string;
   kind?: string;
   status: ToolCallStatus;
@@ -133,12 +135,14 @@ function getOrCreateMessage(
   return msg;
 }
 
-function getOrCreateToolCall(state: SessionState, id: string, turnId?: string): ToolCallState {
+function getOrCreateToolCall(state: SessionState, id: string, turnId?: string, provider?: string): ToolCallState {
   let tc = state.toolCalls.get(id);
   if (!tc) {
-    tc = { toolCallId: id, status: "pending", content: [], locations: [], turnId };
+    tc = { toolCallId: id, provider, status: "pending", content: [], locations: [], turnId };
     state.toolCalls.set(id, tc);
     state.timeline.push({ type: "tool_call", id });
+  } else if (!tc.provider) {
+    tc.provider = provider;
   }
   return tc;
 }
@@ -170,7 +174,7 @@ function applyMessageChunk(
 
 function applyToolCallUpdate(state: SessionState, ev: EventEnvelope<"tool_call_update">): void {
   const p = ev.payload;
-  const tc = getOrCreateToolCall(state, p.toolCallId, ev.turnId);
+  const tc = getOrCreateToolCall(state, p.toolCallId, ev.turnId, ev.provider);
   if (p.title !== undefined) tc.title = p.title === null ? undefined : p.title;
   if (p.kind !== undefined) tc.kind = p.kind === null ? undefined : p.kind;
   if (p.status !== undefined && p.status !== null) tc.status = p.status;
@@ -204,7 +208,7 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       break;
     case "tool_call_content_chunk": {
       const p = ev.payload;
-      const tc = getOrCreateToolCall(state, p.toolCallId, ev.turnId);
+      const tc = getOrCreateToolCall(state, p.toolCallId, ev.turnId, ev.provider);
       tc.content.push(p.content);
       break;
     }
