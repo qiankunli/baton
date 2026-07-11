@@ -2,7 +2,7 @@
 // 归一成同一套事件（plan_update / diff 内容块 / tool_call_content_chunk）。
 import { describe, expect, test } from "bun:test";
 
-import { ClaudeAdapter, claudeToolDiff, claudeToolTitle, todoWritePlan } from "../src/adapters/claude/adapter.ts";
+import { ClaudeAdapter, claudeApprovalOptions, claudeToolDiff, claudeToolTitle, todoWritePlan } from "../src/adapters/claude/adapter.ts";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
 
@@ -206,5 +206,18 @@ describe("codex: reasoning summary parts", () => {
       { kind: "agent_thought", messageId: "rs1:summary:0" },
       { kind: "agent_thought", messageId: "rs1:summary:1" },
     ]);
+  });
+});
+
+describe("claude: approval options", () => {
+  test("without SDK suggestions there is no always option (baton 不自造授权规则)", () => {
+    const options = claudeApprovalOptions(false);
+    expect(options.map((o) => o.kind)).toEqual(["allow_once", "reject_once"]);
+  });
+
+  test("with suggestions an allow_always option appears between allow and deny", () => {
+    const options = claudeApprovalOptions(true);
+    expect(options.map((o) => o.kind)).toEqual(["allow_once", "allow_always", "reject_once"]);
+    expect(new Set(options.map((o) => o.optionId)).size).toBe(options.length);
   });
 });
