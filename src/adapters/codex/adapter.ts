@@ -21,6 +21,17 @@ import type {
 import { unsupportedPromptBlocks } from "../types.ts";
 import { JsonRpcPeer } from "./jsonrpc.ts";
 
+/**
+ * 一次 turn/start 所属的 turn 状态（同 claude adapter 的 ClaudeTurn）：终态必须绑定
+ * 所属 turn。fast-submit 下 turn/start 响应早回，但老版本 app-server 会阻塞到 turn
+ * 结束才回——该响应/错误可能落在下一 turn 已 admission 之后，不能误杀新 turn。
+ */
+interface CodexTurn {
+  turnId: string;
+  /** 保证物理终态重复到达（响应与 turn/completed 通知都可能带终态）时只终结一次 */
+  finalized: boolean;
+}
+
 interface ThreadRuntime {
   child: ChildProcessWithoutNullStreams;
   peer: JsonRpcPeer;
@@ -28,8 +39,8 @@ interface ThreadRuntime {
   sink?: EventSink;
   /** 最近一次 submit 的 baton turn id：迟到通知（tokenUsage 等）也用它标注信封 */
   turnId?: string;
-  /** 当前被接受、尚未逻辑终结的 turn；finalized 保证物理终态重复到达时只终结一次 */
-  activeTurn?: { turnId: string; finalized: boolean };
+  /** 当前被接受、尚未逻辑终结的 turn */
+  activeTurn?: CodexTurn;
   codexTurnId?: string;
   /** 用户在 baton 中选择的模型；作为下一次 turn/start override。 */
   model?: string;
@@ -196,11 +207,11 @@ export class CodexAdapter implements AgentAdapter {
     // 活跃 turn 必须在此合成终态，否则 runtime 永远等不到 idle（design §4.1 终态保证）。
     child.on("close", (code) => {
       peer.close(`codex app-server exited (${code})`);
-      this.failActiveTurn(rt, `codex app-server exited (code ${code})`);
+      this.failTurn(rt, rt.activeTurn, `codex app-server exited (code ${code})`);
     });
     child.on("error", (error) => {
       peer.close(`codex app-server spawn error: ${error.message}`);
-      this.failActiveTurn(rt, `codex app-server error: ${error.message}`);
+      this.failTurn(rt, rt.activeTurn, `codex app-server error: ${error.message}`);
     });
     peer.onNotification((method, params) => this.handleNotification(rt, method, params));
     peer.onServerRequest((method, params) => this.handleServerRequest(rt, method, params));
@@ -256,8 +267,9 @@ export class CodexAdapter implements AgentAdapter {
       throw new Error(`codex adapter does not support prompt block type(s): ${unsupported.join(", ")}`);
     }
 
+    const turn: CodexTurn = { turnId: input.turnId, finalized: false };
     rt.turnId = input.turnId;
-    rt.activeTurn = { turnId: input.turnId, finalized: false };
+    rt.activeTurn = turn;
 
     this.emit(rt, {
       kind: "user_message",
@@ -277,15 +289,17 @@ export class CodexAdapter implements AgentAdapter {
         summary: "auto",
       })
       .then((resp) => {
-        const turn = (resp as { turn?: { id?: string; status?: string } }).turn;
-        if (turn?.id) rt.codexTurnId = String(turn.id);
-        const status = turn?.status;
+        const started = (resp as { turn?: { id?: string; status?: string } }).turn;
+        // 迟到响应（老版本阻塞到 turn 结束才回）可能落在下一 turn 已开始之后：
+        // 只在自己仍是 active turn 时才写共享的 codexTurnId
+        if (started?.id && rt.activeTurn === turn) rt.codexTurnId = String(started.id);
+        const status = started?.status;
         if (status && status !== "inProgress" && status !== "queued") {
-          this.finishTurn(rt, status);
+          this.finishTurn(rt, turn, status);
         }
       })
       .catch((err) => {
-        this.failActiveTurn(rt, err instanceof Error ? err.message : String(err));
+        this.failTurn(rt, turn, err instanceof Error ? err.message : String(err));
       });
     return { accepted: true };
   }
@@ -301,7 +315,7 @@ export class CodexAdapter implements AgentAdapter {
     if (!rt) return;
     this.threads.delete(ref.providerSessionId);
     // 宿主主动关闭：活跃 turn 读作 cancelled；先终结再 kill，child close 回调就不会再合成 failed
-    this.finishTurn(rt, "interrupted");
+    this.finishTurn(rt, rt.activeTurn, "interrupted");
     rt.child.kill();
   }
 
@@ -311,28 +325,39 @@ export class CodexAdapter implements AgentAdapter {
     return rt;
   }
 
-  private emit(rt: ThreadRuntime, ev: Parameters<EventSink>[0], raw?: unknown): void {
-    rt.sink?.({ ...ev, provider: this.provider, providerSessionId: rt.threadId, turnId: rt.turnId, raw });
+  /** 信封补齐。turn 终态类发射显式传所属 turn：迟到终态不能盖上共享 rt.turnId（已是最新 turn 的 id） */
+  private emit(rt: ThreadRuntime, ev: Parameters<EventSink>[0], raw?: unknown, turn?: CodexTurn): void {
+    rt.sink?.({ ...ev, provider: this.provider, providerSessionId: rt.threadId, turnId: turn?.turnId ?? rt.turnId, raw });
   }
 
-  /** 每个 turn 只发一次逻辑终态；turn/completed 通知、turn/start 响应终态、transport 失败谁先到都行 */
-  private finishTurn(rt: ThreadRuntime, turnStatus: string): void {
-    if (!rt.activeTurn || rt.activeTurn.finalized) return;
-    rt.activeTurn.finalized = true;
-    this.emit(rt, {
-      kind: "state_update",
-      provider: this.provider,
-      payload: { state: "idle", stopReason: stopReasonOf(turnStatus) },
-    });
-    rt.activeTurn = undefined;
-    rt.codexTurnId = undefined;
+  /**
+   * 每个 turn 只发一次逻辑终态；turn/completed 通知、turn/start 响应终态、transport 失败谁先到都行。
+   * 只允许终结传入的 turn（同 claude adapter）：上一 turn 的迟到终态不能误杀已开始的下一 turn。
+   */
+  private finishTurn(rt: ThreadRuntime, turn: CodexTurn | undefined, turnStatus: string): void {
+    if (!turn || turn.finalized) return;
+    turn.finalized = true;
+    this.emit(
+      rt,
+      {
+        kind: "state_update",
+        provider: this.provider,
+        payload: { state: "idle", stopReason: stopReasonOf(turnStatus) },
+      },
+      undefined,
+      turn,
+    );
+    if (rt.activeTurn === turn) {
+      rt.activeTurn = undefined;
+      rt.codexTurnId = undefined;
+    }
   }
 
   /** 错误路径终态：先留结构化 error，再合成 idle（design §4.9） */
-  private failActiveTurn(rt: ThreadRuntime, message: string): void {
-    if (!rt.activeTurn || rt.activeTurn.finalized) return;
-    this.emit(rt, { kind: "_baton_error_update", provider: this.provider, payload: { message } });
-    this.finishTurn(rt, "failed");
+  private failTurn(rt: ThreadRuntime, turn: CodexTurn | undefined, message: string): void {
+    if (!turn || turn.finalized) return;
+    this.emit(rt, { kind: "_baton_error_update", provider: this.provider, payload: { message } }, undefined, turn);
+    this.finishTurn(rt, turn, "failed");
   }
 
   private handleNotification(rt: ThreadRuntime, method: string, params: unknown): void {
@@ -497,7 +522,8 @@ export class CodexAdapter implements AgentAdapter {
       }
       case "turn/completed": {
         const turn = (p.turn ?? {}) as Record<string, unknown>;
-        this.finishTurn(rt, String(turn.status ?? "completed"));
+        // 通知流单连接有序：此刻的 activeTurn 就是该通知所属的 turn
+        this.finishTurn(rt, rt.activeTurn, String(turn.status ?? "completed"));
         break;
       }
       default:
