@@ -13,16 +13,29 @@ export interface ProviderSessionRef {
 /** adapter 产出的事件由宿主决定去向（append 到 Store、推给 TUI…） */
 export type EventSink = (ev: AnyNewEvent) => void;
 
-export interface StartOptions {
+export interface OpenOptions {
   cwd: string;
   env?: Record<string, string>;
   /** 已记录的原生 ProviderSession ID；adapter 应优先恢复，缺失时新建。 */
   resumeSessionId?: string;
 }
 
-export interface PromptOptions {
-  /** 宿主生成的 turn ID（t_ 前缀），本 turn 所有事件携带它；provider 侧的 turn id 进 raw */
+/**
+ * 一轮输入。ID 都由 runtime 分配（design §4.10.1）：turnId 在入队时分配（steer 的
+ * expectedTurnId 引用它），messageId 供 adapter 发 user_message upsert；provider 侧
+ * 各自的 turn/message id 只进 raw 或 adapter 内部映射，不进 runtime 契约。
+ */
+export interface PromptInput {
+  /** baton turn ID（t_ 前缀），本 turn 所有事件携带它 */
   turnId: string;
+  /** 用户消息的 baton message ID（m_ 前缀） */
+  messageId: string;
+  blocks: PromptBlock[];
+}
+
+/** submit 的回执：只代表 admission 通过，不代表 turn 完成（design §4.1） */
+export interface PromptReceipt {
+  accepted: true;
 }
 
 /**
@@ -56,23 +69,53 @@ export interface AdapterCapabilities {
   };
 }
 
+/**
+ * Adapter 生命周期（ACP v2 风格，design §4.1）：open 时绑定事件出口，submit 只确认接收，
+ * turn 进展与终结全部经 sink 的事件报告；runtime 以 state event 驱动 busy/idle，
+ * 不以任何 Promise 生命周期推断。
+ *
+ * 终态硬性约定：每个被 submit 接受的 turn，adapter 在**任何退出路径**（正常结束、
+ * wire fatal error、子进程退出、transport close）都必须恰好报告或合成一次
+ * `state_update(idle)`；错误路径先发 `_baton_error_update` 再发 idle。重复/迟到的
+ * 物理终态允许存在，由 runtime 按 baton turn id 幂等 finalize。
+ */
 export interface AgentAdapter {
   readonly provider: string;
   readonly capabilities: AdapterCapabilities;
-  start(opts: StartOptions): Promise<ProviderSessionRef>;
+  /** 建立（或恢复）provider session 并绑定事件出口；此后包括 provider 主动事件在内都经 sink 上报 */
+  open(opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef>;
   /**
-   * 发送一轮输入；resolve 于 turn 结束（idle）。流式进展经 sink 回传。
-   * 入参是闭合的 PromptBlock（非开放 ContentBlock）：不支持的 block 类型必须报
-   * 带类型的明确错误，禁止静默丢弃（design §4.2）。
+   * 提交一轮输入；resolve 仅代表 admission 通过。入参是闭合的 PromptBlock（非开放
+   * ContentBlock）：不支持的 block 类型必须在 admission 前报带类型的明确错误，
+   * 禁止静默丢弃（design §4.2）。
    */
-  prompt(
-    ref: ProviderSessionRef,
-    blocks: PromptBlock[],
-    sink: EventSink,
-    opts: PromptOptions,
-  ): Promise<void>;
+  submit(ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt>;
+  /** 请求中断当前 turn；确认以最终 `idle/cancelled` 事件为准，发出后仍接受在途 update */
   cancel(ref: ProviderSessionRef): Promise<void>;
   close(ref: ProviderSessionRef): Promise<void>;
+}
+
+/** admission 检查：返回 capabilities 未声明支持的 block 类型（text 恒支持） */
+export function unsupportedPromptBlocks(
+  blocks: PromptBlock[],
+  capabilities: AdapterCapabilities,
+): string[] {
+  const unsupported = new Set<string>();
+  for (const block of blocks) {
+    if (block.type === "text") continue;
+    const marker =
+      block.type === "image"
+        ? capabilities.prompt.image
+        : block.type === "audio"
+          ? capabilities.prompt.audio
+          : block.type === "resource"
+            ? capabilities.prompt.embeddedResource
+            : block.type === "resource_link"
+              ? capabilities.prompt.resourceLink
+              : undefined;
+    if (!marker) unsupported.add(block.type);
+  }
+  return [...unsupported];
 }
 
 export interface ModelOption {

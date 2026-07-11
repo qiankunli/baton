@@ -43,9 +43,9 @@ export interface ToolCallState {
   turnId?: string;
 }
 
-/** TUI 时间线条目：message / tool_call / plan 按首次出现排序 */
+/** TUI 时间线条目：message / tool_call / plan / notice 按首次出现排序 */
 export interface TimelineItem {
-  type: "message" | "tool_call" | "plan";
+  type: "message" | "tool_call" | "plan" | "notice";
   id: string;
 }
 
@@ -75,7 +75,10 @@ export interface SessionState {
   contextUsage?: ContextUsageUpdate;
   /** 最近一次结构化错误；willRetry 时 runState 仍应为 running（由事件源保证） */
   lastError?: ErrorUpdate & { seq: number };
-  /** 提示历史（append-only）；TUI 自行决定展示窗口 */
+  /**
+   * 提示历史（append-only），同时进 timeline（id 为 `n_<seq>`）：打断标记、
+   * provider warning 等属于会话流的一部分，要按发生位置内联展示。
+   */
   notices: Array<Notice & { seq: number }>;
   turnSummaries: TurnSummary[];
   lastSeq: number;
@@ -235,6 +238,7 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       break;
     case "_baton_notice":
       state.notices.push({ ...ev.payload, seq: ev.seq });
+      state.timeline.push({ type: "notice", id: `n_${ev.seq}` });
       break;
     case "_baton_turn_summary":
       state.turnSummaries.push(ev.payload);

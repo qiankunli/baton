@@ -2,14 +2,13 @@ import { describe, expect, test } from "bun:test";
 
 import { ClaudeAdapter } from "../src/adapters/claude/adapter.ts";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
-import type { AnyNewEvent } from "../src/events/types.ts";
 
 const approvalHandler = async () => ({ optionId: "deny" });
 
 describe("Claude model capability", () => {
   test("stores model for subsequent queries and exposes fallback catalog", async () => {
     const adapter = new ClaudeAdapter({ approvalHandler });
-    const ref = await adapter.start({ cwd: "/tmp" });
+    const ref = await adapter.open({ cwd: "/tmp" }, () => {});
 
     expect((await adapter.listModels(ref)).map((model) => model.id)).toContain("sonnet");
     await adapter.setModel(ref, "sonnet");
@@ -20,7 +19,7 @@ describe("Claude model capability", () => {
 
   test("records a native session id for resume", async () => {
     const adapter = new ClaudeAdapter({ approvalHandler });
-    const ref = await adapter.start({ cwd: "/tmp", resumeSessionId: "claude-session-1" });
+    const ref = await adapter.open({ cwd: "/tmp", resumeSessionId: "claude-session-1" }, () => {});
     expect(ref.resumed).toBe(true);
     expect(adapter.nativeSessionId(ref)).toBe("claude-session-1");
   });
@@ -50,7 +49,8 @@ describe("Codex model capability", () => {
 
     expect((await adapter.listModels(ref)).map((model) => model.id)).toEqual(["default", "gpt-5"]);
     await adapter.setModel(ref, "gpt-5");
-    await adapter.prompt(ref, [{ type: "text", text: "hello" }], (_event: AnyNewEvent) => {}, { turnId: "t_1" });
+    await adapter.submit(ref, { turnId: "t_1", messageId: "m_1", blocks: [{ type: "text", text: "hello" }] });
+    await Bun.sleep(0); // turn/start 在 submit 回执后异步发出，等微任务刷新
 
     expect(turnParams?.model).toBe("gpt-5");
   });
