@@ -51,11 +51,17 @@ if (!process.stdout.isTTY) {
   console.error("baton tui requires a real terminal (TTY)");
   process.exit(1);
 }
-const protocol = new BatonChatProtocol(store, config, opened);
+let renderer: Awaited<ReturnType<typeof createCliRenderer>> | undefined;
+const protocol = new BatonChatProtocol(store, config, opened, () => {
+  // OpenTUI owns raw mode and mouse tracking; restore both before process.exit,
+  // whose forced exit does not run OpenTUI's beforeExit cleanup handler.
+  renderer?.destroy();
+  process.exit(0);
+});
 // Ctrl+C 由 ChatShell 接管（分层语义），不走 renderer 的直接退出。
 // autoFocus=false：禁止鼠标点击把焦点从输入框抢走——点击 scrollbox 夺焦不触发 React
 // 重渲染，focused prop 拉不回来，这是"操作久了输入框失焦"的主因。
-const renderer = await createCliRenderer({ exitOnCtrlC: false, targetFps: 30, autoFocus: false });
+renderer = await createCliRenderer({ exitOnCtrlC: false, targetFps: 30, autoFocus: false });
 createRoot(renderer).render(
   <ChatShell
     protocol={protocol}
