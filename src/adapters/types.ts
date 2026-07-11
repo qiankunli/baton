@@ -1,7 +1,7 @@
 // Adapter 统一抽象："小核心 + 可选能力"（见 docs/design.md §5.1）。
 // 各家用原生协议接入，翻译成内部事件（AnyNewEvent）交给 sink；信封字段由 Store 补齐。
 
-import type { AnyNewEvent, ContentBlock, PermissionRequest } from "../events/types.ts";
+import type { AnyNewEvent, PermissionRequest, PromptBlock } from "../events/types.ts";
 
 export interface ProviderSessionRef {
   provider: string;
@@ -25,13 +25,49 @@ export interface PromptOptions {
   turnId: string;
 }
 
+/**
+ * 能力标记：用显式 marker object 而不是 TypeScript `{}`（`{}` 会接受几乎所有非 nullish 值），
+ * 也不用 boolean——object 给以后扩字段（如支持的 mimeType 列表）留空间。
+ */
+export interface CapabilityMarker {
+  supported: true;
+}
+
+/**
+ * 可展示的能力 descriptor（design §4.4）：声明"这个 adapter 支持哪些可选能力"，
+ * 供 runtime/UI 决策（如不支持 image 时 admission 报错、不展示 steer 选项）。
+ * 行为仍由可选接口承载（ModelConfigurable、后续的 Steerable/CommandDiscoverable/
+ * SessionConfigurable/Interactive）；契约测试保证"声明支持就必须实现对应接口"。
+ */
+export interface AdapterCapabilities {
+  prompt: {
+    image?: CapabilityMarker;
+    audio?: CapabilityMarker;
+    embeddedResource?: CapabilityMarker;
+    resourceLink?: CapabilityMarker;
+  };
+  steer?: CapabilityMarker;
+  commands?: CapabilityMarker;
+  config?: CapabilityMarker;
+  interactions?: {
+    permission?: CapabilityMarker;
+    question?: CapabilityMarker;
+    elicitation?: { supported: true; form?: CapabilityMarker; url?: CapabilityMarker };
+  };
+}
+
 export interface AgentAdapter {
   readonly provider: string;
+  readonly capabilities: AdapterCapabilities;
   start(opts: StartOptions): Promise<ProviderSessionRef>;
-  /** 发送一轮输入；resolve 于 turn 结束（idle）。流式进展经 sink 回传。 */
+  /**
+   * 发送一轮输入；resolve 于 turn 结束（idle）。流式进展经 sink 回传。
+   * 入参是闭合的 PromptBlock（非开放 ContentBlock）：不支持的 block 类型必须报
+   * 带类型的明确错误，禁止静默丢弃（design §4.2）。
+   */
   prompt(
     ref: ProviderSessionRef,
-    blocks: ContentBlock[],
+    blocks: PromptBlock[],
     sink: EventSink,
     opts: PromptOptions,
   ): Promise<void>;
@@ -66,7 +102,7 @@ export function isModelConfigurable(adapter: AgentAdapter): adapter is AgentAdap
 
 /** 可把 BatonSession 的缺失历史追加到 provider 自己的 model-visible history。 */
 export interface ContextSynchronizable {
-  syncContext(ref: ProviderSessionRef, blocks: ContentBlock[]): Promise<void>;
+  syncContext(ref: ProviderSessionRef, blocks: PromptBlock[]): Promise<void>;
 }
 
 export function isContextSynchronizable(

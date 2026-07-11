@@ -173,3 +173,82 @@ describe("emptySessionState", () => {
     expect(s.lastSeq).toBe(0);
   });
 });
+
+// Phase 1 新事件（design §4.8）：快照 vs 增量、append-only 的语义边界
+describe("snapshot vs delta semantics", () => {
+  test("available_commands_update replaces the whole snapshot — no merge, stale items gone", () => {
+    const state = reduceEvents([
+      ev("available_commands_update", {
+        commands: [{ name: "review" }, { name: "compact", description: "compact context" }],
+      }),
+      ev("available_commands_update", { commands: [{ name: "plan" }] }),
+    ]);
+    expect(state.availableCommands.map((c) => c.name)).toEqual(["plan"]);
+  });
+
+  test("config_option_update replaces the whole snapshot", () => {
+    const state = reduceEvents([
+      ev("config_option_update", {
+        options: [
+          { id: "model", type: "select", name: "Model", value: "a", options: [{ value: "a", name: "A" }] },
+          { id: "thought", type: "boolean", name: "Thoughts", value: true },
+        ],
+      }),
+      ev("config_option_update", {
+        options: [{ id: "model", type: "select", name: "Model", value: "b", options: [{ value: "b", name: "B" }] }],
+      }),
+    ]);
+    expect(state.configOptions).toHaveLength(1);
+    expect(state.configOptions[0]).toMatchObject({ id: "model", value: "b" });
+  });
+
+  test("usage_update accumulates (delta) while context_usage_update replaces (snapshot)", () => {
+    // 守住 design §4.8 的关键区分：旧 jsonl 的 usage delta replay 结果不变，
+    // context 快照后写覆盖先写。
+    const state = reduceEvents([
+      ev("usage_update", { inputTokens: 10, outputTokens: 5 }),
+      ev("context_usage_update", { contextUsed: 1000, contextSize: 200000 }),
+      ev("usage_update", { inputTokens: 3, outputTokens: 2 }),
+      ev("context_usage_update", { contextUsed: 1500, contextSize: 200000 }),
+    ]);
+    expect(state.usage.inputTokens).toBe(13);
+    expect(state.usage.outputTokens).toBe(7);
+    expect(state.contextUsage).toEqual({ contextUsed: 1500, contextSize: 200000 });
+  });
+
+  test("context_usage_update snapshot replaces omitted fields too — no field-level merge", () => {
+    const state = reduceEvents([
+      ev("context_usage_update", { contextUsed: 1000, cost: { amount: 1.5, currency: "USD" } }),
+      ev("context_usage_update", { contextUsed: 1200 }),
+    ]);
+    expect(state.contextUsage?.cost).toBeUndefined();
+  });
+});
+
+describe("error and notice events", () => {
+  test("_baton_error_update keeps the latest error with its seq", () => {
+    const state = reduceEvents([
+      ev("_baton_error_update", { message: "rate limited", retryable: true, willRetry: true }),
+      ev("_baton_error_update", { code: "auth", message: "token expired", retryable: false }),
+    ]);
+    expect(state.lastError).toMatchObject({ code: "auth", message: "token expired" });
+    expect(state.lastError!.seq).toBe(state.lastSeq);
+  });
+
+  test("retrying error does not flip runState by itself", () => {
+    const state = reduceEvents([
+      ev("state_update", { state: "running" }),
+      ev("_baton_error_update", { message: "retrying", willRetry: true }),
+    ]);
+    expect(state.runState).toBe("running");
+  });
+
+  test("_baton_notice appends in order", () => {
+    const state = reduceEvents([
+      ev("_baton_notice", { level: "warning", title: "model rerouted" }),
+      ev("_baton_notice", { level: "info", title: "auth ok", detail: "refreshed" }),
+    ]);
+    expect(state.notices.map((n) => n.title)).toEqual(["model rerouted", "auth ok"]);
+    expect(state.notices[1]!.seq).toBeGreaterThan(state.notices[0]!.seq);
+  });
+});

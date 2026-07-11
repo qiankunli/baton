@@ -3,11 +3,16 @@
 
 import type {
   AnyEventEnvelope,
+  AvailableCommand,
   ContentBlock,
+  ContextUsageUpdate,
+  ErrorUpdate,
   EventEnvelope,
   MessageRole,
+  Notice,
   PermissionRequest,
   PlanUpdate,
+  SessionConfigOption,
   SessionRunState,
   StopReason,
   ToolCallStatus,
@@ -62,6 +67,16 @@ export interface SessionState {
   plans: Map<string, PlanUpdate>;
   pendingPermissions: Map<string, PermissionRequest>;
   usage: UsageTotal;
+  /** provider command 完整快照：available_commands_update 整体替换，不做增量合并 */
+  availableCommands: AvailableCommand[];
+  /** session config 完整快照：config_option_update 整体替换（model 变化可联动其他选项） */
+  configOptions: SessionConfigOption[];
+  /** 当前 context 占用快照。与 usage（增量累加）语义不同：快照替换 */
+  contextUsage?: ContextUsageUpdate;
+  /** 最近一次结构化错误；willRetry 时 runState 仍应为 running（由事件源保证） */
+  lastError?: ErrorUpdate & { seq: number };
+  /** 提示历史（append-only）；TUI 自行决定展示窗口 */
+  notices: Array<Notice & { seq: number }>;
   turnSummaries: TurnSummary[];
   lastSeq: number;
 }
@@ -82,6 +97,9 @@ export function emptySessionState(): SessionState {
       reasoningTokens: 0,
       hasEstimated: false,
     },
+    availableCommands: [],
+    configOptions: [],
+    notices: [],
     turnSummaries: [],
     lastSeq: 0,
   };
@@ -202,6 +220,21 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
     }
     case "usage_update":
       accumulateUsage(state.usage, ev.payload);
+      break;
+    case "available_commands_update":
+      state.availableCommands = [...ev.payload.commands];
+      break;
+    case "config_option_update":
+      state.configOptions = [...ev.payload.options];
+      break;
+    case "context_usage_update":
+      state.contextUsage = { ...ev.payload };
+      break;
+    case "_baton_error_update":
+      state.lastError = { ...ev.payload, seq: ev.seq };
+      break;
+    case "_baton_notice":
+      state.notices.push({ ...ev.payload, seq: ev.seq });
       break;
     case "_baton_turn_summary":
       state.turnSummaries.push(ev.payload);
