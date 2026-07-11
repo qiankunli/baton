@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type {
+  AdapterCapabilities,
   AgentAdapter,
   EventSink,
   ModelOption,
@@ -17,6 +18,7 @@ import { BatonSessionRuntime } from "../src/session/runtime.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 class FakeAdapter implements AgentAdapter {
+  readonly capabilities: AdapterCapabilities = { prompt: {} };
   startOptions?: StartOptions;
   model: string | null = null;
   synced: string[] = [];

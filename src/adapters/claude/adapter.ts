@@ -5,9 +5,10 @@
 import { query, type Options, type PermissionResult, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 import { newId } from "../../events/ids.ts";
-import type { ContentBlock, DiffBlock, PermissionOption, PlanEntry } from "../../events/types.ts";
+import type { ContentBlock, DiffBlock, PermissionOption, PlanEntry, PromptBlock } from "../../events/types.ts";
 import { textOf } from "../../events/types.ts";
 import type {
+  AdapterCapabilities,
   AgentAdapter,
   ApprovalHandler,
   EventSink,
@@ -144,6 +145,9 @@ export interface ClaudeAdapterOptions {
 
 export class ClaudeAdapter implements AgentAdapter {
   readonly provider = "claude-code";
+  // 当前 adapter 最终只发送 text（design.md §3.1）；可选能力接口落地并验证后才声明
+  // 对应 marker——契约测试钉住"声明支持就必须实现对应接口"。
+  readonly capabilities: AdapterCapabilities = { prompt: {} };
   private sessions = new Map<string, ClaudeRuntime>();
 
   constructor(private options: ClaudeAdapterOptions) {}
@@ -189,7 +193,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async prompt(
     ref: ProviderSessionRef,
-    blocks: ContentBlock[],
+    blocks: PromptBlock[],
     sink: EventSink,
     opts: PromptOptions,
   ): Promise<void> {

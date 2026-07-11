@@ -40,6 +40,38 @@ export interface DiffBlock {
 
 export type ContentBlock = TextBlock | ImageBlock | DiffBlock | { type: string; [key: string]: unknown };
 
+// ---- prompt input blocks ----
+// 输入与输出刻意不共用开放的 ContentBlock（见 docs/provider-interaction-design.md §4.2）：
+// prompt 是 adapter 的入参契约，必须是可显式 admission 的闭合集合——不支持某 block 时
+// 报带类型的错误，而不是被 textOf() 之类静默降级；输出侧保持开放联合以容纳 provider 差异。
+// 词汇对齐 ACP/MCP content（text/image/audio/resource/resource_link）。
+
+// 以下三个用 type alias 而不是 interface：object literal type 有隐式 index signature，
+// 才能让 PromptBlock[] 赋给开放的 ContentBlock[]（user_message payload 持久化输入原文）。
+export type AudioBlock = {
+  type: "audio";
+  mimeType: string;
+  /** base64 音频数据 */
+  data: string;
+};
+
+/** 内容已内联的资源（对齐 MCP embedded resource）：text 与 blob 二选一 */
+export type EmbeddedResourceBlock = {
+  type: "resource";
+  resource: { uri: string; mimeType?: string; text?: string; blob?: string };
+};
+
+/** 只带引用、不内联内容的资源链接 */
+export type ResourceLinkBlock = {
+  type: "resource_link";
+  uri: string;
+  name: string;
+  mimeType?: string;
+  description?: string;
+};
+
+export type PromptBlock = TextBlock | ImageBlock | AudioBlock | EmbeddedResourceBlock | ResourceLinkBlock;
+
 export type MessageRole = "user" | "agent" | "thought";
 
 // ---- payloads ----
@@ -133,7 +165,75 @@ export interface PermissionResolved {
   optionId?: string;
 }
 
-/** 语义为增量：reducer 直接累加。adapter 拿到累计快照时须先差分再发。 */
+/** provider 声明的可用 slash command（形状对齐 ACP available command） */
+export interface AvailableCommand {
+  name: string;
+  description?: string;
+  input?: { hint: string };
+}
+
+/** 完整快照：每次整体替换当前 provider command 列表，不做增量合并（对齐 ACP） */
+export interface AvailableCommandsUpdate {
+  commands: AvailableCommand[];
+}
+
+export type ConfigValue = string | boolean;
+
+/** session 级配置项（model/mode/thought_level…），category 只影响 UI 摆放，不影响正确性 */
+export type SessionConfigOption =
+  | {
+      id: string;
+      type: "select";
+      name: string;
+      description?: string;
+      category?: string;
+      value: string;
+      options: Array<{ value: string; name: string; description?: string }>;
+    }
+  | {
+      id: string;
+      type: "boolean";
+      name: string;
+      description?: string;
+      category?: string;
+      value: boolean;
+    };
+
+/** 完整快照：model 变化可能联动 reasoning 等选项，整体替换避免 UI 残留旧项 */
+export interface ConfigOptionUpdate {
+  options: SessionConfigOption[];
+}
+
+/**
+ * 当前 context 占用/成本快照，对应 ACP v2 的 usage_update。
+ * 与 baton 的 `usage_update`（token 增量）刻意分名：已落盘事件的语义不可静默翻转，
+ * 旧 session.jsonl 的 delta replay 必须继续得到相同累计结果（design §4.8）。
+ */
+export interface ContextUsageUpdate {
+  contextUsed?: number;
+  contextSize?: number;
+  cost?: { amount: number; currency: string };
+}
+
+/**
+ * 结构化错误，不能只塞 stopReason。willRetry=true 表示 provider 仍在重试，
+ * 此时 session 不得被切 idle（design §4.9）。
+ */
+export interface ErrorUpdate {
+  code?: string;
+  message: string;
+  retryable?: boolean;
+  willRetry?: boolean;
+}
+
+/** 非错误提示（warning/deprecation/auth、配置提醒），不伪装成 agent message 进时间线 */
+export interface Notice {
+  level: "info" | "warning" | "error" | (string & {});
+  title: string;
+  detail?: string;
+}
+
+/** 语义为增量：reducer 直接累加。adapter 拿到累计快照时须先差分再发。快照语义见 ContextUsageUpdate。 */
 export interface UsageUpdate {
   inputTokens?: number;
   outputTokens?: number;
@@ -179,6 +279,11 @@ export type EventPayloadMap = {
   permission_request: PermissionRequest;
   permission_resolved: PermissionResolved;
   usage_update: UsageUpdate;
+  available_commands_update: AvailableCommandsUpdate;
+  config_option_update: ConfigOptionUpdate;
+  context_usage_update: ContextUsageUpdate;
+  _baton_error_update: ErrorUpdate;
+  _baton_notice: Notice;
   _baton_turn_summary: TurnSummary;
 };
 
@@ -216,7 +321,7 @@ export type NewEvent<K extends EventKind = EventKind> = Omit<
   "v" | "ts" | "seq" | "batonSessionId"
 >;
 
-export function textOf(blocks: ContentBlock[]): string {
+export function textOf(blocks: ReadonlyArray<ContentBlock | PromptBlock>): string {
   return blocks
     .filter((b): b is TextBlock => b.type === "text")
     .map((b) => b.text)

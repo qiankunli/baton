@@ -8,7 +8,7 @@ import {
 } from "../adapters/types.ts";
 import { buildProviderCatchUpContext } from "../context/mention.ts";
 import { newId } from "../events/ids.ts";
-import type { AnyEventEnvelope, ContentBlock } from "../events/types.ts";
+import type { AnyEventEnvelope, PromptBlock } from "../events/types.ts";
 import type { SessionHandle } from "../store/store.ts";
 
 interface ProviderSlot {
@@ -21,7 +21,7 @@ interface ProviderSlot {
 interface QueuedTurn {
   id: number;
   provider: string;
-  blocks: ContentBlock[];
+  blocks: PromptBlock[];
   onEvent?: (event: AnyEventEnvelope) => void;
   resolve: (outcome: SubmitOutcome) => void;
   reject: (error: unknown) => void;
@@ -30,7 +30,7 @@ interface QueuedTurn {
 export interface QueuedTurnSnapshot {
   id: number;
   provider: string;
-  blocks: ContentBlock[];
+  blocks: PromptBlock[];
 }
 
 export type SubmitOutcome = "completed" | "recalled";
@@ -75,7 +75,7 @@ export class BatonSessionRuntime {
 
   submit(
     provider: string,
-    blocks: ContentBlock[],
+    blocks: PromptBlock[],
     onEvent?: (event: AnyEventEnvelope) => void,
   ): Promise<SubmitOutcome> {
     return new Promise((resolve, reject) => {
@@ -176,7 +176,7 @@ export class BatonSessionRuntime {
       });
       let blocks = turn.blocks;
       if (catchUp) {
-        const syncBlock: ContentBlock = {
+        const syncBlock: PromptBlock = {
           type: "text",
           text: `<baton-sync>\n${catchUp.text}\n</baton-sync>`,
         };

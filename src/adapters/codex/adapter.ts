@@ -5,9 +5,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { newId } from "../../events/ids.ts";
-import type { ContentBlock, DiffBlock, PermissionOption, StopReason } from "../../events/types.ts";
+import type { ContentBlock, DiffBlock, PermissionOption, PromptBlock, StopReason } from "../../events/types.ts";
 import { textOf } from "../../events/types.ts";
 import type {
+  AdapterCapabilities,
   AgentAdapter,
   ApprovalHandler,
   EventSink,
@@ -167,6 +168,9 @@ export async function openCodexThread(
 
 export class CodexAdapter implements AgentAdapter {
   readonly provider = "codex";
+  // 当前 adapter 最终只发送 text（design.md §3.1）；可选能力接口落地并验证后才声明
+  // 对应 marker——契约测试钉住"声明支持就必须实现对应接口"。
+  readonly capabilities: AdapterCapabilities = { prompt: {} };
   private threads = new Map<string, ThreadRuntime>();
 
   constructor(private options: CodexAdapterOptions) {}
@@ -200,7 +204,7 @@ export class CodexAdapter implements AgentAdapter {
     return { provider: this.provider, providerSessionId: threadId, resumed: opened.resumed };
   }
 
-  async syncContext(ref: ProviderSessionRef, blocks: ContentBlock[]): Promise<void> {
+  async syncContext(ref: ProviderSessionRef, blocks: PromptBlock[]): Promise<void> {
     const rt = this.mustThread(ref);
     await rt.peer.request("thread/inject_items", {
       threadId: rt.threadId,
@@ -230,7 +234,7 @@ export class CodexAdapter implements AgentAdapter {
 
   async prompt(
     ref: ProviderSessionRef,
-    blocks: ContentBlock[],
+    blocks: PromptBlock[],
     sink: EventSink,
     opts: PromptOptions,
   ): Promise<void> {
