@@ -90,6 +90,7 @@ export class BatonChatProtocol implements ChatProtocol {
   private runtime: BatonSessionRuntime;
   private agent: ProviderName;
   private status: StatusMessage | null = null;
+  private commandOutput: TranscriptItem | null = null;
   private approvals: PendingApproval[] = [];
   private questions: PendingQuestion[] = [];
   private picker: PendingPicker | null = null;
@@ -129,6 +130,7 @@ export class BatonChatProtocol implements ChatProtocol {
   async submit(text: string): Promise<void> {
     const target = this.agent;
     this.status = null;
+    this.commandOutput = null;
     this.session.setPreviewIfEmpty(text);
     const { prompt } = expandMentions(this.store, text, this.config.mentionBudgetChars);
     if (this.runtime.isBusy || this.runtime.queueLength > 0) {
@@ -146,6 +148,7 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   async command(name: string, argument: string): Promise<void> {
+    if (name !== "status") this.commandOutput = null;
     switch (name as CommandName) {
       case "exit":
         return this.exit();
@@ -160,6 +163,13 @@ export class BatonChatProtocol implements ChatProtocol {
       case "sessions": {
         if (argument) throw new Error("/sessions takes no arguments");
         this.openSessionsPicker();
+        return;
+      }
+      case "status": {
+        if (argument) throw new Error("/status takes no arguments");
+        this.status = null;
+        this.commandOutput = this.sessionStatusItem();
+        this.changed();
         return;
       }
       case "provider": {
@@ -308,6 +318,7 @@ export class BatonChatProtocol implements ChatProtocol {
     this.session.releaseLock();
     this.session = next.session;
     this.state = next.session.loadState();
+    this.commandOutput = null;
     this.runtime = this.createRuntime();
     this.status = next.recovered
       ? { text: `Opened session ${next.session.id} (recovered an interrupted turn)`, tone: "info" }
@@ -327,6 +338,25 @@ export class BatonChatProtocol implements ChatProtocol {
     await this.runtime.setModel(target, model.id);
     this.status = { text: `${target} model: ${model.label} (takes effect next turn)`, tone: "info" };
     this.changed();
+  }
+
+  /** 控制命令输出只进入当前 view，不写 session.jsonl，避免污染可恢复的会话历史。 */
+  private sessionStatusItem(): TranscriptItem {
+    const meta = this.session.meta;
+    const active = this.runtime.activeProvider;
+    const selectedModel = this.runtime.currentModel(this.agent) ?? "default";
+    const providers = Object.keys(meta.providerSessions).join(", ") || "-";
+    const preview = meta.preview ?? meta.title ?? "(empty session)";
+    const text = [
+      `Session: ${meta.batonSessionId}`,
+      `Preview: ${preview}`,
+      `Directory: ${meta.cwd}`,
+      `Current: ${this.agent} - model ${selectedModel}`,
+      `Providers: ${providers}`,
+      `Turns: ${this.state.turnSummaries.length} - tokens in ${this.state.usage.inputTokens} / out ${this.state.usage.outputTokens}`,
+      `State: ${active ? `running (${active})` : "idle"} - queue ${this.runtime.queueLength}`,
+    ].join("\n");
+    return { type: "message", id: "_baton_status", role: "agent", author: "baton", text, format: "plain" };
   }
 
   /** /sessions 会话内切换浮层；行投影与启动 session picker 共用 sessionPickerOptions */
@@ -362,9 +392,11 @@ export class BatonChatProtocol implements ChatProtocol {
     const selectedModel = this.runtime.currentModel(this.agent) ?? "default";
     const selectedBusy = active === this.agent;
     return {
-      transcript: buildTranscript(v),
+      transcript: [...buildTranscript(v), ...(this.commandOutput ? [this.commandOutput] : [])],
       busy: active !== undefined,
-      runningNotices: active ? [`${active} thinking… (Esc to interrupt)`] : [],
+      runStatus: active
+        ? [{ id: `run:${active}`, author: providerAuthor(active), label: "thinking…", hint: "Esc to interrupt" }]
+        : [],
       queued: this.runtime.queuedTurns.map((turn) => ({
         id: String(turn.id),
         text: userVisibleText(textOf(turn.blocks)),

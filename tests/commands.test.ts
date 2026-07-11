@@ -9,13 +9,16 @@ describe("baton command registry", () => {
     expect(parseSlashCommand("/provider claude", COMMANDS)).toEqual({ name: "provider", argument: "claude" });
     expect(parseSlashCommand("/model sonnet", COMMANDS)).toEqual({ name: "model", argument: "sonnet" });
     expect(parseSlashCommand("/sessions", COMMANDS)).toEqual({ name: "sessions", argument: "" });
+    expect(parseSlashCommand("/status", COMMANDS)).toEqual({ name: "status", argument: "" });
     expect(parseSlashCommand("/new", COMMANDS)).toEqual({ name: "new", argument: "" });
   });
 
   test("accepts unique command prefixes", () => {
     expect(parseSlashCommand("/pro claude", COMMANDS)).toEqual({ name: "provider", argument: "claude" });
     expect(parseSlashCommand("/m sonnet", COMMANDS)).toEqual({ name: "model", argument: "sonnet" });
-    expect(parseSlashCommand("/s", COMMANDS)).toEqual({ name: "sessions", argument: "" });
+    expect(parseSlashCommand("/se", COMMANDS)).toEqual({ name: "sessions", argument: "" });
+    expect(parseSlashCommand("/st", COMMANDS)).toEqual({ name: "status", argument: "" });
+    expect(parseSlashCommand("/s", COMMANDS)).toBeNull();
   });
 
   test("does not retain old provider aliases or consume unknown slash prompts", () => {
