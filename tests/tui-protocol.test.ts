@@ -60,6 +60,31 @@ describe("BatonChatProtocol session preview", () => {
   });
 });
 
+describe("BatonChatProtocol status command", () => {
+  test("shows current session information without persisting command output", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-status-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      session.setPreviewIfEmpty("Implement status command");
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+      await protocol.command("status", "");
+      expect(protocol.getView().transcript.at(-1)).toMatchObject({
+        id: "_baton_status",
+        author: "baton",
+        text: expect.stringContaining(`Session: ${session.id}`),
+      });
+      expect(session.readEvents()).toHaveLength(0);
+      const internals = protocol as unknown as { runtime: { submit: () => Promise<"completed"> } };
+      internals.runtime.submit = async () => "completed";
+      await protocol.submit("continue");
+      expect(protocol.getView().transcript.some((item) => item.id === "_baton_status")).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("BatonChatProtocol transcript projection", () => {
   test("renders agent messages as Markdown with an explicit streaming boundary", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-markdown-"));
