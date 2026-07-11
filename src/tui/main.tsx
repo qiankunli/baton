@@ -17,7 +17,7 @@ import { ensureConfigFile, loadConfig } from "../config/config.ts";
 import { openBatonSession, type OpenBatonSessionResult } from "../session/open.ts";
 import { SessionStore } from "../store/store.ts";
 import { BatonChatProtocol, CHAT_COMMANDS } from "./protocol.ts";
-import { SessionSelectScreen } from "./session-select.tsx";
+import { SessionPickerScreen } from "./session-picker.tsx";
 import { batonTheme } from "./theme.ts";
 
 function argValue(flag: string): string | undefined {
@@ -100,12 +100,12 @@ if (openedAtStartup) {
 } else if (store.listSessions().length === 0) {
   startFresh(); // resume 无历史会话：与老的 --continue 语义一致，直接新开
 } else {
-  // 前置会话选择屏（对齐 codex resume/fork picker）：Enter 打开 / fork，
+  // session picker（对齐 codex resume/fork picker）：Enter 打开 / fork，
   // Esc = StartFresh，Ctrl+C = 退出；打开失败回显错误并停留在列表
   const intent = pickIntent as "resume" | "fork";
   const showPicker = (error?: string): void =>
     root.render(
-      <SessionSelectScreen
+      <SessionPickerScreen
         title={intent === "fork" ? "Fork a previous session" : "Resume a previous session"}
         actionLabel={intent}
         sessions={store.listSessions()}

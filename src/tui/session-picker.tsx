@@ -1,6 +1,9 @@
-// baton resume / fork 无 id 时的前置会话选择屏（对齐 codex CLI 的 resume/fork picker）：
-// 不预先打开任何会话，选中才 resume / fork——锁与 crash recovery 只发生在被选中的目标上。
-// 这是 baton 侧组件（它理解 SessionMeta）；渲染复用 opentui 的 <select>（自带 ↑↓/Enter）。
+// session picker：baton resume / fork 无 id 时的前置会话选择屏（词汇对齐 codex CLI 的
+// resume_picker）。不预先打开任何会话，选中才 resume / fork——锁与 crash recovery 只
+// 发生在被选中的目标上。这是 baton 侧组件（它理解 SessionMeta）；渲染复用 opentui 的
+// <select>（自带 ↑↓/Enter）。chat-tui 的 Picker 是"通用选项浮层"这个机制，与这里的
+// "选会话"业务概念不同层；将来会话内入口若与启动入口合流（codex 的 LaunchContext
+// 语义），统一收敛到本文件。
 // 键位对齐 codex：Enter 选中、Esc 新开会话（StartFresh）、Ctrl+C 退出。
 
 import { useKeyboard } from "@opentui/react";
@@ -10,7 +13,7 @@ import type { Theme } from "chat-tui";
 
 import type { SessionMeta } from "../store/store.ts";
 
-export interface SessionSelectProps {
+export interface SessionPickerProps {
   title: string;
   /** Enter 动作展示名（footer 提示）：resume / fork */
   actionLabel: string;
@@ -23,11 +26,16 @@ export interface SessionSelectProps {
   onExit: () => void;
 }
 
-export function sessionSelectOptions(
+/**
+ * SessionMeta → select 行的唯一投影，启动 picker 与 /sessions 浮层共用。
+ * currentSessionId 用于会话内入口标记当前会话（启动入口没有"当前"）。
+ */
+export function sessionPickerOptions(
   sessions: SessionMeta[],
+  opts: { currentSessionId?: string } = {},
 ): Array<{ name: string; description: string; value: string }> {
   return sessions.map((meta) => ({
-    name: meta.title ?? meta.batonSessionId,
+    name: `${meta.batonSessionId === opts.currentSessionId ? "● " : ""}${meta.title ?? meta.batonSessionId}`,
     description: `${meta.batonSessionId} · ${meta.cwd} · ${meta.updatedAt ?? meta.createdAt} · [${
       Object.keys(meta.providerSessions).join(",") || "-"
     }]`,
@@ -35,7 +43,7 @@ export function sessionSelectOptions(
   }));
 }
 
-export function SessionSelectScreen(props: SessionSelectProps): ReactNode {
+export function SessionPickerScreen(props: SessionPickerProps): ReactNode {
   const theme = props.theme;
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") props.onExit();
@@ -52,7 +60,7 @@ export function SessionSelectScreen(props: SessionSelectProps): ReactNode {
         <select
           focused
           style={{ flexGrow: 1 }}
-          options={sessionSelectOptions(props.sessions)}
+          options={sessionPickerOptions(props.sessions)}
           onSelect={(_index: number, option: { value?: unknown } | null) => {
             if (option) props.onPick(String(option.value));
           }}

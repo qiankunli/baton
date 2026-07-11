@@ -23,6 +23,7 @@ import { BatonSessionRuntime } from "../session/runtime.ts";
 import { applyEvent, emptySessionState, type SessionState, type ToolCallState } from "../store/reduce.ts";
 import type { SessionHandle, SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
+import { sessionPickerOptions } from "./session-picker.tsx";
 
 // 展示名同时是 theme.ts PROVIDER_COLORS 的着色 key，两处保持一致
 const PROVIDER_LABEL: Record<string, string> = { codex: "codex", "claude-code": "claude" };
@@ -323,11 +324,11 @@ export class BatonChatProtocol implements ChatProtocol {
     this.changed();
   }
 
-  /** /sessions 与启动 resume picker 共用：选中即切到既有会话 */
+  /** /sessions 会话内切换浮层；行投影与启动 session picker 共用 sessionPickerOptions */
   private openSessionsPicker(): void {
     this.openPicker({
       title: "Select BatonSession",
-      options: this.sessionPickerOptions(),
+      options: sessionPickerOptions(this.store.listSessions(), { currentSessionId: this.session.id }),
       onSelect: async (value) => {
         if (value === this.session.id) return;
         await this.switchSession(() =>
@@ -335,14 +336,6 @@ export class BatonChatProtocol implements ChatProtocol {
         );
       },
     });
-  }
-
-  private sessionPickerOptions(): Array<{ name: string; description: string; value: string }> {
-    return this.store.listSessions().map((meta) => ({
-      name: `${meta.batonSessionId === this.session.id ? "● " : ""}${meta.title ?? meta.batonSessionId}`,
-      description: `${meta.cwd} · ${meta.updatedAt ?? meta.createdAt}`,
-      value: meta.batonSessionId,
-    }));
   }
 
   private openPicker(picker: Omit<PendingPicker, "id">): void {

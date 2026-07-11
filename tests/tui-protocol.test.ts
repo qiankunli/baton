@@ -167,5 +167,5 @@ describe("toolTranscriptItem", () => {
   });
 });
 
-// 启动时的 resume/fork 会话选择已移到前置选择屏（src/tui/session-select.tsx，
-// 不经过 BatonChatProtocol）；/sessions 的会话内切换 picker 仍由 protocol 承载。
+// 启动时的 resume/fork 会话选择已移到 session picker（src/tui/session-picker.tsx，
+// 不经过 BatonChatProtocol）；/sessions 的会话内切换浮层仍由 protocol 承载。
