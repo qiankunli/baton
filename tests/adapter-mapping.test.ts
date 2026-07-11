@@ -2,7 +2,14 @@
 // 归一成同一套事件（plan_update / diff 内容块 / tool_call_content_chunk）。
 import { describe, expect, test } from "bun:test";
 
-import { ClaudeAdapter, claudeApprovalOptions, claudeToolDiff, claudeToolTitle, todoWritePlan } from "../src/adapters/claude/adapter.ts";
+import {
+  ClaudeAdapter,
+  claudeApprovalOptions,
+  claudeResultDiff,
+  claudeToolDiff,
+  claudeToolTitle,
+  todoWritePlan,
+} from "../src/adapters/claude/adapter.ts";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
 
@@ -74,18 +81,54 @@ describe("claude: edit tools → diff content", () => {
     expect(claudeToolTitle("Skill", { skill: "devloop:gcampr" })).toBe("Skill: devloop:gcampr");
   });
 
-  test("Edit carries modify diff with patch", () => {
+  test("Edit carries intent-only modify diff (real patch arrives via tool_use_result)", () => {
     const diff = claudeToolDiff("Edit", { file_path: "/a/b.ts", old_string: "old", new_string: "new" });
     expect(diff).toEqual({
       type: "diff",
       changes: [{ operation: "modify", path: "/a/b.ts" }],
-      patch: "--- /a/b.ts\n- old\n+ new",
     });
   });
 
   test("Write is add; Bash has no diff", () => {
     expect(claudeToolDiff("Write", { file_path: "/a/new.ts", content: "x" })?.changes[0]!.operation).toBe("add");
     expect(claudeToolDiff("Bash", { command: "ls" })).toBeNull();
+  });
+
+  test("claudeResultDiff synthesizes a unified patch from structuredPatch", () => {
+    const diff = claudeResultDiff({
+      filePath: "/a/b.ts",
+      oldString: "old",
+      newString: "new",
+      originalFile: "const x = 1;\nold\n",
+      structuredPatch: [
+        { oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, lines: [" const x = 1;", "-old", "+new"] },
+      ],
+      userModified: false,
+    });
+    expect(diff).toEqual({
+      type: "diff",
+      changes: [{ operation: "modify", path: "/a/b.ts" }],
+      patch: "--- /a/b.ts\n+++ /a/b.ts\n@@ -1,2 +1,2 @@\n const x = 1;\n-old\n+new",
+    });
+  });
+
+  test("claudeResultDiff maps Write create to add with /dev/null header", () => {
+    const diff = claudeResultDiff({
+      type: "create",
+      filePath: "/a/new.ts",
+      content: "x\ny",
+      structuredPatch: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 2, lines: ["+x", "+y"] }],
+    });
+    expect(diff?.changes).toEqual([{ operation: "add", path: "/a/new.ts" }]);
+    expect(diff?.patch).toBe("--- /dev/null\n+++ /a/new.ts\n@@ -0,0 +1,2 @@\n+x\n+y");
+  });
+
+  test("claudeResultDiff rejects unknown shapes instead of guessing", () => {
+    expect(claudeResultDiff(undefined)).toBeNull();
+    expect(claudeResultDiff("The file has been updated")).toBeNull();
+    expect(claudeResultDiff({ filePath: "/a.ts", structuredPatch: [] })).toBeNull();
+    // hunk 字段不合形状（私有格式漂移）→ 整体降级，不产出半合法 patch
+    expect(claudeResultDiff({ filePath: "/a.ts", structuredPatch: [{ oldStart: "1", lines: ["+x"] }] })).toBeNull();
   });
 
   test("tool_use emits tool_call_update with diff block", () => {
@@ -114,6 +157,32 @@ describe("claude: edit tools → diff content", () => {
       toolCallId: "tu2",
       content: { type: "text", text: "command output\n" },
     });
+  });
+
+  test("edit tool_use_result backfills the real patch and suppresses duplicate text output", () => {
+    const { events, feed } = claudeHarness();
+    feed({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "tu3", content: "The file /a.ts has been updated.\n" }] },
+      tool_use_result: {
+        filePath: "/a.ts",
+        structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-old", "+new"] }],
+      },
+    });
+    const tc = events.find((e) => e.kind === "tool_call_update");
+    expect(tc?.payload).toMatchObject({
+      toolCallId: "tu3",
+      status: "completed",
+      content: [
+        {
+          type: "diff",
+          changes: [{ operation: "modify", path: "/a.ts" }],
+          patch: "--- /a.ts\n+++ /a.ts\n@@ -1,1 +1,1 @@\n-old\n+new",
+        },
+      ],
+    });
+    // diff 即输出：编辑结果的说明文本与 patch 重复，不再追加文本块
+    expect(events.find((e) => e.kind === "tool_call_content_chunk")).toBeUndefined();
   });
 });
 

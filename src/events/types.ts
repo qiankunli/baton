@@ -31,6 +31,11 @@ export interface DiffChange {
 /**
  * 文件改动内容块（tool_call 的 content 里使用），形状对齐 ACP v2 diff content：
  * changes 供结构化渲染（文件树/统计），patch 是可选的可渲染文本。
+ *
+ * 契约：patch 若存在必须是标准 unified diff（含 `---`/`+++`/`@@` 头）——渲染层的
+ * 行号与 split 视图信任这一点，adapter 负责在自己层内把各家私有格式转成标准 patch，
+ * 拼不出合法 patch 时宁可只发 changes（渲染层退化为 op+path 标题行）。
+ * 约定 patch 与 changes[0] 对应：adapter 按单文件发块，多文件改动发多个 DiffBlock。
  */
 export interface DiffBlock {
   type: "diff";

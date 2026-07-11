@@ -145,8 +145,8 @@ describe("toolTranscriptItem", () => {
     });
   });
 
-  test("preserves patch and path for native diff rendering", () => {
-    const patch = "@@ -1 +1 @@\n-old\n+new";
+  test("maps diff blocks to op-tagged chat-tui diff content", () => {
+    const patch = "--- src/index.ts\n+++ src/index.ts\n@@ -1 +1 @@\n-old\n+new";
     expect(
       toolTranscriptItem({
         toolCallId: "tc_edit",
@@ -162,8 +162,28 @@ describe("toolTranscriptItem", () => {
       kind: "tool",
       title: "edit src/index.ts",
       status: "completed",
-      content: [{ type: "diff", patch, path: "src/index.ts" }],
+      content: [{ type: "diff", op: "modify", path: "src/index.ts", oldPath: undefined, patch }],
     });
+  });
+
+  test("patchless diff still yields an op-tagged block; open operations normalize", () => {
+    const item = toolTranscriptItem({
+      toolCallId: "tc_patch",
+      title: "apply patch",
+      kind: "edit",
+      status: "completed",
+      content: [
+        { type: "diff", changes: [{ operation: "add", path: "a.ts" }] },
+        { type: "diff", changes: [{ operation: "update", path: "b.ts" }] },
+        { type: "diff", changes: [{ operation: "rename", path: "d.ts", oldPath: "c.ts" }] },
+      ],
+      locations: [],
+    });
+    expect(item.content).toEqual([
+      { type: "diff", op: "add", path: "a.ts", oldPath: undefined, patch: undefined },
+      { type: "diff", op: "modify", path: "b.ts", oldPath: undefined, patch: undefined },
+      { type: "diff", op: "move", path: "d.ts", oldPath: "c.ts", patch: undefined },
+    ]);
   });
 });
 
