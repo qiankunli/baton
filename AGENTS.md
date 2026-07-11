@@ -2,12 +2,14 @@
 
 ## 项目定位与边界
 
-baton 是一个 terminal-native 的统一 coding agent 会话：在一个 TUI 里切换不同 coding agent，让它们共享上下文，解决更换 agent 时手工搬运历史的痛点。Claude Code 和 Codex 是首批内置 provider，不是封闭支持列表；差异化在"上下文打通"，不是"又一个并行会话管理器"。
+baton 是一个 terminal-native 的统一 coding agent 会话：用户始终在自己拥有的 BatonSession 中工作，在一个 TUI 里切换不同 coding agent，而不需要随 provider 一起切换或搬运会话历史。它要消除“人充当 agent 之间传话筒”的工作——反复复制产出、解释上下文、手写交接文档。Claude Code 和 Codex 是首批内置 provider，不是封闭支持列表；差异化在“上下文打通”，不是“又一个并行会话管理器”，开发时要警惕滑回后者。
 
 第一阶段只聚焦两件事：
 
 1. **交互体验**：尽量保留单独使用 coding agent 时的输入、补全、命令、流式输出、工具调用和审批体验，baton 主要增加 `/provider` 用于切换 agent。
 2. **数据打通**：BatonSession 是用户拥有的持久会话，也是跨 provider 的统一逻辑历史；只要 BatonSession 仍在，任一 provider 都应能恢复所需上下文。同一次会话内切换 provider，以及关闭后重新打开同一 BatonSession 再切换 provider，都应自然续聊，无需用户手工复制上下文或显式 `@` 当前会话。
+
+v1 明确不做 agent 互相委派、worktree / 并发写文件隔离、多人多设备云端协作、遥测上报与账号体系。它们并非永远不做，而是不应挤占第一阶段“单一逻辑会话中的原生交互与上下文接力”；多 agent 同 cwd 时只提示文件冲突风险。
 
 后续演进有三个方向：
 
@@ -68,10 +70,13 @@ baton/
 
 ## 关键约定
 
+- **BatonSession 与 ProviderSession 不是同一层对象**：前者是用户拥有、跨 provider、可持久恢复的逻辑会话；后者只是某个 provider 的私有执行状态。所有 turn 在 BatonSession 内全局串行，切换 provider 不会分裂出多条并发逻辑历史。
+- **事件流是统一历史的合并真相源，UI 是投影**：`session.jsonl` 记录可重放事件，TUI 状态由 reduce 重建；`meta.json` 保存定位与恢复元数据，不替代事件历史。ProviderSession 原生 resume 是加速路径，不是正确性的前提。
 - 各家 agent 的原生 session 文件（`~/.claude/projects/**`、`~/.codex/sessions/**`）**只读不写**，原因见 `docs/design.md`。
 - 内部事件模型对齐 ACP v2 词汇表；wire 协议用各家原生协议，不强求 ACP。
+- provider 中间过程按“最大公约数 + raw 保真”归一：Adapter 统一思考、工具、文件改动、命令输出、计划等展示与存储形状，粒度差异留在事件信封 `raw` 中；渲染层与存储层不出现 provider 分支。
 - provider 是开放扩展点：当前先以 Claude Code / Codex 打样；新增 provider 应通过 registry + AgentAdapter 能力接入，不把 provider 分支下沉到 BatonSession core。
-- baton 自己的 session.jsonl 承载 BatonSession 的统一逻辑历史；各家原生 ProviderSession 只是 provider 私有执行状态与恢复加速，不是 BatonSession 存续或跨 provider 恢复的前提。
+- **凭证零持有**：provider 进程继承用户环境与 HOME，复用各家 CLI 已有登录态；baton 不复制、托管或另建账号凭证体系。
 - 同一 BatonSession 内的 provider 接力由 baton 自动完成；`@` 只承担跨 BatonSession / turn / 产物的显式引用。
 - session / turn / message 的 ID 必须稳定可外部引用；fork 复制的前缀与源**共享对象 ID**（同一段逻辑历史，git-branch 语义），跨会话引用 turn/message 时以 `bs_ + 对象 ID` 限定消歧，why 见 `docs/resume-fork.md`。
 - `/provider` 是 baton 额外提供的 agent 切换入口；其余命令与引用在能力允许时保持 provider 原生语义，由 baton/Adapter 显式映射，不做不可控的文本透传。
