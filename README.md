@@ -8,6 +8,21 @@ baton is a terminal-native coding-agent session. A BatonSession remains the same
 
 Provider-native sessions are resume optimizations; BatonSession history remains available even when a native session cannot be resumed.
 
+## Philosophy
+
+The most common shape of multi-agent work today is a human acting as a context courier: copying one agent's output to another, re-explaining background, hand-writing handoff documents. baton wants context to be **an asset the user owns**, not a by-product locked inside a single tool.
+
+Two fundamentals are in place today:
+
+- **Context portability**: a BatonSession is a durable, unified history owned by the user that outlives any single provider. Switching agents requires no context carrying; provider-native sessions only accelerate resume and are never a prerequisite for the history to survive.
+- **Native experience**: baton preserves each agent's own input, completion, streaming, tool-call, and approval experience as much as possible, adding only a few commands of its own (such as `/provider`).
+
+On top of these, three directions are on the roadmap (**none implemented yet**):
+
+- **Multi-provider collaboration**: from relaying within one session toward dispatching the same task to multiple providers in parallel, with results merged back into one unified history. The near-term path is draft sessions — when a new idea strikes mid-task, fork a draft session (optionally on a different provider) to explore in parallel without interrupting the mainline.
+- **Context intake**: the mainline is not a raw transcript of everything but the canonical history the user endorses. After a draft session produces results, the user decides whether to merge its conclusions into the mainline or discard them; discarding is not deletion — drafts stay durable and referenceable.
+- **Event-driven long-running loops**: listen to external events such as pushed commits or merged PRs and wake the corresponding session to continue its work, so agents are no longer confined to an interactive terminal.
+
 ## Features
 
 - Use Claude Code and Codex from the same terminal interface
@@ -20,33 +35,29 @@ Provider-native sessions are resume optimizations; BatonSession history remains 
 - Reuse local Claude Code and Codex credentials without storing them in baton
 - Use a headless REPL to debug agent integrations
 
-## Requirements
+## Installation & configuration
 
-- [Bun](https://bun.sh/)
-- At least one supported agent installed and authenticated:
-  - [Codex CLI](https://github.com/openai/codex)
-  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)
-
-## Local installation
+Requirements: [Bun](https://bun.sh/), plus at least one supported agent installed and authenticated ([Codex CLI](https://github.com/openai/codex) / [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)).
 
 ```bash
 git clone https://github.com/qiankunli/baton.git
 cd baton
 bun install
-bun link
+bun link   # `baton` becomes available globally; or skip linking and use `bun run tui`
 ```
 
-Then start baton directly:
+On first run, baton creates `~/.baton/config.yaml`:
 
-```bash
-baton
+```yaml
+defaultAgent: codex
+codexCommand:
+  - codex
+  - app-server
+mentionBudgetChars: 4096
+showThoughts: true
 ```
 
-You can also run it from the repository without linking:
-
-```bash
-bun run tui
-```
+If Claude Code uses a custom executable, set `claudeExecutable` in the configuration or override it temporarily with an environment variable (`BATON_CLAUDE_BIN=/path/to/claude baton`). Configuration precedence: environment variables > `config.yaml` > defaults.
 
 ## Usage
 
@@ -86,27 +97,6 @@ Reference an ID returned by `baton sessions` in your prompt:
 ```
 
 baton reads the referenced session's compact summary and passes it to the active provider as context.
-
-## Configuration
-
-On first run, baton creates `~/.baton/config.yaml`:
-
-```yaml
-defaultAgent: codex
-codexCommand:
-  - codex
-  - app-server
-mentionBudgetChars: 4096
-showThoughts: true
-```
-
-If Claude Code uses a custom executable, set `claudeExecutable` in the configuration or override it temporarily with an environment variable:
-
-```bash
-BATON_CLAUDE_BIN=/path/to/claude baton
-```
-
-Configuration precedence: environment variables > `config.yaml` > defaults.
 
 ## Data storage
 
