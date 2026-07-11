@@ -106,6 +106,15 @@ function fileChangeDiff(item: Record<string, unknown>): DiffBlock {
   };
 }
 
+/** completed item 是工具输出的自愈点：即使 outputDelta 缺失，也能回填完整命令结果。 */
+function completedToolContent(itemType: string, item: Record<string, unknown>): ContentBlock[] | undefined {
+  if (itemType === "fileChange") return [fileChangeDiff(item)];
+  if (itemType === "commandExecution" && typeof item.aggregatedOutput === "string") {
+    return item.aggregatedOutput ? [{ type: "text", text: item.aggregatedOutput }] : [];
+  }
+  return undefined;
+}
+
 function stopReasonOf(turnStatus: string): StopReason {
   switch (turnStatus) {
     case "completed":
@@ -401,8 +410,13 @@ export class CodexAdapter implements AgentAdapter {
                     : String(item.status ?? "") === "failed"
                       ? "failed"
                       : "completed",
-                // 文件改动统一成 diff 内容块（最大公约数规范，见 design §5.2）
-                content: itemType === "fileChange" ? [fileChangeDiff(item)] : undefined,
+                // completed 携带的完整结果覆盖流式 chunk，兼作 outputDelta 丢失时的自愈点。
+                content:
+                  method === "item/completed"
+                    ? completedToolContent(itemType, item)
+                    : itemType === "fileChange"
+                      ? [fileChangeDiff(item)]
+                      : undefined,
                 rawInput: method === "item/started" ? item : undefined,
                 rawOutput: method === "item/completed" ? item : undefined,
               },

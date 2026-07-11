@@ -242,12 +242,17 @@ export class SessionHandle {
    * 幂等：同一 turnId 已有 summary 时直接返回已有的，不重复追加。
    */
   summarizeTurn(turnId: string): TurnSummary {
+    return this.summarizeTurnEvent(turnId).payload;
+  }
+
+  /** 与 summarizeTurn 相同，但返回 envelope，供 live reducer 消费实际落盘事件。 */
+  summarizeTurnEvent(turnId: string): EventEnvelope<"_baton_turn_summary"> {
     const events = this.readEvents();
     const existing = events.find(
       (e): e is EventEnvelope<"_baton_turn_summary"> =>
         e.kind === "_baton_turn_summary" && e.payload.turnId === turnId,
     );
-    if (existing) return existing.payload;
+    if (existing) return existing;
 
     const turnEvents = events.filter((e) => e.turnId === turnId);
     if (turnEvents.length === 0) {
@@ -287,9 +292,9 @@ export class SessionHandle {
       endedAt: turnEvents[turnEvents.length - 1]?.ts,
     };
     const provider = turnEvents[0]?.provider ?? "baton";
-    this.append({ kind: "_baton_turn_summary", payload: summary, provider, turnId });
+    const event = this.append({ kind: "_baton_turn_summary", payload: summary, provider, turnId }) as EventEnvelope<"_baton_turn_summary">;
     this.updateMeta({ updatedAt: summary.endedAt ?? new Date().toISOString() });
-    return summary;
+    return event;
   }
 }
 
