@@ -8,16 +8,17 @@ import type {
   Candidate,
   CommandSpec,
   StatusMessage,
+  TranscriptBlockContent,
   TranscriptItem,
 } from "chat-tui";
 
 import { COMMANDS, parseProvider, PROVIDERS, type CommandName, type ProviderName } from "../commands/registry.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
-import { textOf, type PermissionRequest } from "../events/types.ts";
+import { textOf, type DiffBlock, type PermissionRequest } from "../events/types.ts";
 import { createProviderAdapter, providerSessionKey } from "../providers/registry.ts";
 import { BatonSessionRuntime } from "../session/runtime.ts";
-import { applyEvent, emptySessionState, type SessionState } from "../store/reduce.ts";
+import { applyEvent, emptySessionState, type SessionState, type ToolCallState } from "../store/reduce.ts";
 import type { SessionHandle, SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
 
@@ -349,7 +350,47 @@ function outputPreview(lines: string[], limit = 5): string[] {
   return [...lines.slice(0, edge), `… +${lines.length - edge * 2} lines`, ...lines.slice(-edge)];
 }
 
-/** SessionState → chat-tui 展示形状。diff/输出块在这里压成行，块语义不出 baton。 */
+function commandOf(tc: ToolCallState, fallback: string): string {
+  const input = tc.rawInput as Record<string, unknown> | undefined;
+  return typeof input?.command === "string" ? input.command : fallback;
+}
+
+/** 工具状态 → chat-tui 展示块；命令源码和 diff 保持结构化，避免组件层猜字符串。 */
+export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, { type: "block" }> {
+  const status = normalizeToolStatus(tc.status);
+  const rawTitle = tc.title ?? tc.toolCallId;
+  const content: TranscriptBlockContent[] = [];
+
+  if (tc.kind === "execute") {
+    content.push({ type: "code", code: commandOf(tc, rawTitle), language: "bash" });
+  }
+
+  const detailLines: string[] = [];
+  for (const block of tc.content) {
+    if (block.type !== "diff") continue;
+    const diff = block as DiffBlock;
+    if (diff.patch) {
+      content.push({ type: "diff", patch: diff.patch, path: diff.changes[0]?.path });
+    } else {
+      for (const change of diff.changes) detailLines.push(`± ${change.operation} ${change.path}`);
+    }
+  }
+
+  const outputLines = outputPreview(textOf(tc.content).split("\n").filter(Boolean));
+  const lines = [...detailLines, ...outputLines];
+  if (lines.length > 0) content.push({ type: "lines", lines });
+
+  return {
+    type: "block",
+    id: tc.toolCallId,
+    kind: "tool",
+    title: tc.kind === "execute" ? (status === "in_progress" ? "Running" : "Ran") : rawTitle,
+    status,
+    content: content.length > 0 ? content : undefined,
+  };
+}
+
+/** SessionState → chat-tui 展示形状。provider 内容在这里收敛为通用 code/diff/lines，块语义不出 baton。 */
 function buildTranscript(state: SessionState): TranscriptItem[] {
   const items: TranscriptItem[] = [];
   const noticesById = new Map(state.notices.map((notice) => [`n_${notice.seq}`, notice]));
@@ -402,30 +443,7 @@ function buildTranscript(state: SessionState): TranscriptItem[] {
     if (entry.type === "tool_call") {
       const tc = state.toolCalls.get(entry.id);
       if (!tc) continue;
-      const detailLines: string[] = [];
-      for (const block of tc.content) {
-        if (block.type === "diff") {
-          for (const change of (block as { changes: Array<{ operation: string; path: string }> }).changes) {
-            detailLines.push(`± ${change.operation} ${change.path}`);
-          }
-        }
-      }
-      const status = normalizeToolStatus(tc.status);
-      const rawTitle = tc.title ?? entry.id;
-      const title =
-        tc.kind === "execute"
-          ? `${status === "completed" ? "Ran" : status === "failed" ? "Failed" : "Running"} ${rawTitle}`
-          : rawTitle;
-      const outputLines = outputPreview(textOf(tc.content).split("\n").filter(Boolean));
-      const contentLines = [...detailLines, ...outputLines];
-      items.push({
-        type: "block",
-        id: entry.id,
-        kind: "tool",
-        title,
-        status,
-        content: contentLines.length > 0 ? { type: "lines", lines: contentLines } : undefined,
-      });
+      items.push(toolTranscriptItem(tc));
       continue;
     }
     const plan = state.plans.get(entry.id);
