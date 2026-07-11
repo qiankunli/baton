@@ -97,6 +97,66 @@ export function todoWritePlan(input: Record<string, unknown>): PlanEntry[] {
   }));
 }
 
+/** Task 工具族（新版 Claude Code 以 TaskCreate/TaskUpdate 替代 TodoWrite）登记的待落账操作 */
+export type TaskToolOp =
+  | { op: "create"; subject: string }
+  | { op: "update"; taskId: string; subject?: string; status?: string };
+
+/** Task 工具族的任务表条目；表跨 turn 持久（harness 的任务列表本身跨 turn） */
+export interface TaskEntry {
+  subject: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+/** tool_use 入参 → Task 操作；非 Task 写操作（含只读的 TaskList/TaskGet）返回 null */
+export function taskToolOp(toolName: string, input: Record<string, unknown>): TaskToolOp | null {
+  if (toolName === "TaskCreate") return { op: "create", subject: String(input.subject ?? "") };
+  if (toolName === "TaskUpdate" && input.taskId !== undefined) {
+    return {
+      op: "update",
+      taskId: String(input.taskId),
+      ...(typeof input.subject === "string" ? { subject: input.subject } : {}),
+      ...(typeof input.status === "string" ? { status: input.status } : {}),
+    };
+  }
+  return null;
+}
+
+/**
+ * Task 操作在 tool_result 成功后才落账：TaskCreate 的 taskId 只出现在结果文本
+ * （"Task #1 created successfully: ..."）里，TaskUpdate 也可能失败；入参阶段只登记不改表。
+ */
+export function applyTaskOp(
+  tasks: Map<string, TaskEntry>,
+  op: TaskToolOp,
+  resultText: string,
+  fallbackId: string,
+): void {
+  if (op.op === "create") {
+    const id = /task #([\w-]+)/i.exec(resultText)?.[1];
+    tasks.set(id ?? fallbackId, { subject: op.subject, status: "pending" });
+    return;
+  }
+  if (op.status === "deleted") {
+    tasks.delete(op.taskId);
+    return;
+  }
+  // upsert：resume 场景下任务可能建于 baton 观察不到的历史，缺 subject 时以 id 兜底
+  const prev = tasks.get(op.taskId);
+  tasks.set(op.taskId, {
+    subject: op.subject ?? prev?.subject ?? `Task #${op.taskId}`,
+    status:
+      op.status === "in_progress" || op.status === "completed" || op.status === "pending"
+        ? op.status
+        : (prev?.status ?? "pending"),
+  });
+}
+
+/** 任务表整表投影成 plan entries（Map 迭代序 = 创建序） */
+export function taskPlanEntries(tasks: Map<string, TaskEntry>): PlanEntry[] {
+  return [...tasks.values()].map((t) => ({ content: t.subject, priority: "medium", status: t.status }));
+}
+
 /**
  * 编辑类工具入参 → 意图 diff（只有 op+path，不合成 patch）；非编辑类返回 null。
  * 不从 old_string/new_string 拼 patch：拼出来的不是合法 unified diff（无 +++/@@，
@@ -220,6 +280,10 @@ interface ClaudeRuntime {
   models?: ModelOption[];
   /** 已归一成 plan_update 的 tool_use id：其 tool_result 也要跳过，避免时间线出现重复工具卡 */
   suppressedToolIds: Set<string>;
+  /** Task 工具族归一的任务表（跨 turn 持久）：每次成功落账后整表投影成 plan_update */
+  tasks: Map<string, TaskEntry>;
+  /** tool_use 已登记、等待 tool_result 落账的 Task 操作（key: tool_use_id） */
+  pendingTaskOps: Map<string, TaskToolOp>;
 }
 
 const CLAUDE_FALLBACK_MODELS: ModelOption[] = [
@@ -265,6 +329,8 @@ export class ClaudeAdapter implements AgentAdapter {
       sink,
       claudeSessionId: opts.resumeSessionId,
       suppressedToolIds: new Set(),
+      tasks: new Map(),
+      pendingTaskOps: new Map(),
     });
     return { provider: this.provider, providerSessionId: id, resumed: Boolean(opts.resumeSessionId) };
   }
@@ -563,6 +629,14 @@ export class ClaudeAdapter implements AgentAdapter {
             });
             continue;
           }
+          // Task 工具族（TodoWrite 的替代品）同样归一成 plan_update；但 TaskCreate 的
+          // taskId 只在结果文本里、TaskUpdate 也可能失败，这里只登记，落账在 tool_result
+          const taskOp = taskToolOp(toolName, input);
+          if (taskOp) {
+            rt.suppressedToolIds.add(String(b.id));
+            rt.pendingTaskOps.set(String(b.id), taskOp);
+            continue;
+          }
           const diff = claudeToolDiff(toolName, input);
           emit({
             kind: "tool_call_update",
@@ -589,6 +663,24 @@ export class ClaudeAdapter implements AgentAdapter {
         const resultDiff = toolResultCount === 1 ? claudeResultDiff(msg.tool_use_result) : null;
         for (const b of blocks) {
           if (b.type !== "tool_result") continue;
+          // Task 操作落账：成功结果先应用到任务表，再整表投影成 plan_update（整体替换语义）
+          const taskOp = rt.pendingTaskOps.get(String(b.tool_use_id));
+          if (taskOp) {
+            rt.pendingTaskOps.delete(String(b.tool_use_id));
+            if (!b.is_error) {
+              const text = claudeToolResultBlocks(b.content)
+                .map((block) => (block.type === "text" ? block.text : ""))
+                .join("");
+              applyTaskOp(rt.tasks, taskOp, text, String(b.tool_use_id));
+              emit({
+                kind: "plan_update",
+                provider: this.provider,
+                // planId per-turn，与 TodoWrite 一致：卡片锚定当前 turn，本 turn 内原地 mark
+                payload: { planId: `pl_${turn.turnId}`, entries: taskPlanEntries(rt.tasks) },
+                raw: msg,
+              });
+            }
+          }
           // 已归一成 plan_update 的调用不再出工具卡（首见 upsert 会凭空造出一张）
           if (rt.suppressedToolIds.has(String(b.tool_use_id))) continue;
           emit({

@@ -3,11 +3,14 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  applyTaskOp,
   ClaudeAdapter,
   claudeApprovalOptions,
   claudeResultDiff,
   claudeToolDiff,
   claudeToolTitle,
+  type TaskEntry,
+  taskToolOp,
   todoWritePlan,
 } from "../src/adapters/claude/adapter.ts";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
@@ -18,7 +21,13 @@ const approvalHandler = async () => ({ optionId: "deny" });
 function claudeHarness(): { events: AnyNewEvent[]; feed: (msg: unknown) => void } {
   const adapter = new ClaudeAdapter({ approvalHandler });
   const events: AnyNewEvent[] = [];
-  const rt = { cwd: "/tmp", suppressedToolIds: new Set<string>(), claudeSessionId: "sess1" };
+  const rt = {
+    cwd: "/tmp",
+    suppressedToolIds: new Set<string>(),
+    claudeSessionId: "sess1",
+    tasks: new Map(),
+    pendingTaskOps: new Map(),
+  };
   const turn = { turnId: "t1", finalized: false, cancelRequested: false };
   const feed = (msg: unknown) =>
     (
@@ -76,6 +85,70 @@ describe("claude: TodoWrite → plan_update", () => {
 
   test("todoWritePlan tolerates unknown status", () => {
     expect(todoWritePlan({ todos: [{ content: "x", status: "weird" }] })[0]!.status).toBe("pending");
+  });
+});
+
+describe("claude: Task 工具族 → plan_update", () => {
+  const toolUse = (id: string, name: string, input: unknown) => ({
+    type: "assistant",
+    parent_tool_use_id: null,
+    message: { content: [{ type: "tool_use", id, name, input }] },
+  });
+  const toolResult = (id: string, content: unknown, isError = false) => ({
+    type: "user",
+    message: { content: [{ type: "tool_result", tool_use_id: id, content, is_error: isError }] },
+  });
+
+  test("TaskCreate/TaskUpdate settle on tool_result and project the whole table", () => {
+    const { events, feed } = claudeHarness();
+    feed(toolUse("tu1", "TaskCreate", { subject: "确认演示范围", description: "d" }));
+    // taskId 只在结果文本里：tool_use 阶段只登记，不出工具卡也不发 plan_update
+    expect(events.filter((e) => e.kind === "plan_update" || e.kind === "tool_call_update")).toHaveLength(0);
+
+    feed(toolResult("tu1", "Task #1 created successfully: 确认演示范围"));
+    let plans = events.filter((e) => e.kind === "plan_update");
+    expect(plans).toHaveLength(1);
+    expect((plans.at(-1)!.payload as { planId: string }).planId).toBe("pl_t1");
+    expect((plans.at(-1)!.payload as { entries: unknown[] }).entries).toEqual([
+      { content: "确认演示范围", priority: "medium", status: "pending" },
+    ]);
+
+    feed(toolUse("tu2", "TaskUpdate", { taskId: "1", status: "in_progress" }));
+    feed(toolResult("tu2", "Updated task #1 status"));
+    plans = events.filter((e) => e.kind === "plan_update");
+    expect((plans.at(-1)!.payload as { entries: unknown[] }).entries).toEqual([
+      { content: "确认演示范围", priority: "medium", status: "in_progress" },
+    ]);
+    // 全程不出 Task 工具卡
+    expect(events.filter((e) => e.kind === "tool_call_update")).toHaveLength(0);
+  });
+
+  test("failed result does not touch the table; deleted removes the entry", () => {
+    const tasks = new Map<string, TaskEntry>();
+    applyTaskOp(tasks, { op: "create", subject: "a" }, "Task #1 created successfully: a", "fb1");
+    applyTaskOp(tasks, { op: "update", taskId: "1", status: "deleted" }, "Deleted task #1", "fb2");
+    expect(tasks.size).toBe(0);
+
+    const { events, feed } = claudeHarness();
+    feed(toolUse("tu1", "TaskUpdate", { taskId: "9", status: "completed" }));
+    feed(toolResult("tu1", "no such task", true));
+    expect(events.filter((e) => e.kind === "plan_update")).toHaveLength(0);
+  });
+
+  test("applyTaskOp upserts unknown taskId and falls back when result text has no id", () => {
+    const tasks = new Map<string, TaskEntry>();
+    // resume 场景：任务建于 baton 观察不到的历史，update 直接 upsert
+    applyTaskOp(tasks, { op: "update", taskId: "7", status: "in_progress" }, "Updated task #7 status", "fb1");
+    expect(tasks.get("7")).toEqual({ subject: "Task #7", status: "in_progress" });
+    // 结果文本解析不出 id 时退回 tool_use_id，任务不丢
+    applyTaskOp(tasks, { op: "create", subject: "b" }, "created", "tu9");
+    expect(tasks.get("tu9")).toEqual({ subject: "b", status: "pending" });
+  });
+
+  test("taskToolOp ignores read-only task tools", () => {
+    expect(taskToolOp("TaskList", {})).toBeNull();
+    expect(taskToolOp("TaskGet", { taskId: "1" })).toBeNull();
+    expect(taskToolOp("Bash", { command: "ls" })).toBeNull();
   });
 });
 
