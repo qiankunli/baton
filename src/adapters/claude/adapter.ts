@@ -125,6 +125,22 @@ function claudeToolResultBlocks(result: unknown): ContentBlock[] {
   });
 }
 
+/**
+ * 一条 runQuery 消费循环所属的 turn 状态。终态标记、cancel 标记与流式 messageId
+ * 必须绑定在 turn 对象上而不是共享 runtime 上：上一 turn 的消息流在 result 消息之后
+ * 才真正 close，其"流耗尽兜底 finishTurn"与 finally 清理可能落在下一 turn 已经开始
+ * 之后（steer 排队时毫秒级衔接）——读写共享字段会把新 turn 误终结成空回答。
+ */
+interface ClaudeTurn {
+  turnId: string;
+  /** 保证任何退出路径（result 消息 / 流异常 / 流结束无 result）只发一次终态（design §4.1） */
+  finalized: boolean;
+  /** 用户主动中断时，SDK 会以 error result 结束消息流；该错误应归一成 cancelled。 */
+  cancelRequested: boolean;
+  /** 当前正在流式输出的 assistant 消息的内部 messageId（chunk 与最终 upsert 共用） */
+  streamMessageId?: string;
+}
+
 interface ClaudeRuntime {
   cwd: string;
   env?: Record<string, string>;
@@ -133,15 +149,8 @@ interface ClaudeRuntime {
   /** SDK 的 session_id，首个 turn 的 init 消息里拿到；resume 靠它 */
   claudeSessionId?: string;
   activeQuery?: Query;
-  /**
-   * 当前被接受、尚未逻辑终结的 turn。finalized 保证任何退出路径（result 消息 /
-   * 流异常 / 流结束无 result）只发一次终态（design §4.1）。
-   */
-  activeTurn?: { turnId: string; finalized: boolean };
-  /** 用户主动中断时，SDK 会以 error result 结束消息流；该错误应归一成 cancelled。 */
-  cancelRequested: boolean;
-  /** 当前正在流式输出的 assistant 消息的内部 messageId（chunk 与最终 upsert 共用） */
-  streamMessageId?: string;
+  /** 当前被接受、尚未逻辑终结的 turn */
+  activeTurn?: ClaudeTurn;
   /** 用户在 baton 中选择的模型；只在下一次 query 创建时生效。 */
   model?: string;
   models?: ModelOption[];
@@ -190,7 +199,6 @@ export class ClaudeAdapter implements AgentAdapter {
       env: opts.env,
       sink,
       claudeSessionId: opts.resumeSessionId,
-      cancelRequested: false,
       suppressedToolIds: new Set(),
     });
     return { provider: this.provider, providerSessionId: id, resumed: Boolean(opts.resumeSessionId) };
@@ -233,19 +241,21 @@ export class ClaudeAdapter implements AgentAdapter {
       throw new Error(`claude-code adapter does not support prompt block type(s): ${unsupported.join(", ")}`);
     }
 
-    rt.activeTurn = { turnId: input.turnId, finalized: false };
-    rt.cancelRequested = false;
-    const emit: EventSink = (ev) => this.emit(rt, ev);
+    const turn: ClaudeTurn = { turnId: input.turnId, finalized: false, cancelRequested: false };
+    rt.activeTurn = turn;
+    // emit 显式绑定本 turn：上一 turn 的流收尾与本 turn 并发时（steer 场景），
+    // 各自的事件必须盖各自的 turnId，不能在发射时刻读共享的 rt.activeTurn
+    const emit: EventSink = (ev) => this.emit(rt, ev, turn);
 
     emit({ kind: "user_message", provider: this.provider, payload: { messageId: input.messageId, content: input.blocks } });
     emit({ kind: "state_update", provider: this.provider, payload: { state: "running" } });
 
     // 后台消费 SDK 消息流；submit 本身立即回执（design §4.1）
-    void this.runQuery(rt, emit, input);
+    void this.runQuery(rt, emit, input, turn);
     return { accepted: true };
   }
 
-  private async runQuery(rt: ClaudeRuntime, emit: EventSink, input: PromptInput): Promise<void> {
+  private async runQuery(rt: ClaudeRuntime, emit: EventSink, input: PromptInput, turn: ClaudeTurn): Promise<void> {
     const executable = this.options.executablePath ?? process.env.BATON_CLAUDE_BIN;
     const sdkOptions: Options = {
       cwd: rt.cwd,
@@ -257,8 +267,9 @@ export class ClaudeAdapter implements AgentAdapter {
       canUseTool: (toolName, toolInput, meta) => this.handleCanUseTool(emit, toolName, toolInput, meta),
     };
 
+    let q: Query | undefined;
     try {
-      const q = query({ prompt: textOf(input.blocks), options: sdkOptions });
+      q = query({ prompt: textOf(input.blocks), options: sdkOptions });
       rt.activeQuery = q;
       void q
         .initializationResult()
@@ -267,55 +278,57 @@ export class ClaudeAdapter implements AgentAdapter {
         })
         .catch(() => {});
       for await (const msg of q) {
-        this.handleMessage(rt, emit, msg);
+        this.handleMessage(rt, emit, msg, turn);
       }
       // 流正常耗尽但没有 result 消息（SDK 异常路径）：仍要保证恰好一次终态
-      this.finishTurn(rt, emit, rt.cancelRequested ? "cancelled" : "end_turn");
+      this.finishTurn(rt, emit, turn, turn.cancelRequested ? "cancelled" : "end_turn");
     } catch (error) {
-      if (rt.cancelRequested) {
-        this.finishTurn(rt, emit, "cancelled");
+      if (turn.cancelRequested) {
+        this.finishTurn(rt, emit, turn, "cancelled");
       } else {
         emit({
           kind: "_baton_error_update",
           provider: this.provider,
           payload: { message: error instanceof Error ? error.message : String(error) },
         });
-        this.finishTurn(rt, emit, "error");
+        this.finishTurn(rt, emit, turn, "error");
       }
     } finally {
-      rt.activeQuery = undefined;
-      rt.cancelRequested = false;
-      rt.streamMessageId = undefined;
+      // 只清自己注册的 query：本 finally 可能在下一 turn 已把 activeQuery 换掉后才跑
+      if (rt.activeQuery === q) rt.activeQuery = undefined;
     }
   }
 
-  /** 每个 turn 只发一次逻辑终态；result 消息、异常、流异常结束都收敛到这里 */
-  private finishTurn(rt: ClaudeRuntime, emit: EventSink, stopReason: string, raw?: unknown): void {
-    if (!rt.activeTurn || rt.activeTurn.finalized) return;
-    rt.activeTurn.finalized = true;
+  /**
+   * 每个 turn 只发一次逻辑终态；result 消息、异常、流异常结束都收敛到这里。
+   * 只允许终结传入的那个 turn：上一 turn 的流耗尽兜底不能误杀已经开始的下一 turn。
+   */
+  private finishTurn(rt: ClaudeRuntime, emit: EventSink, turn: ClaudeTurn, stopReason: string, raw?: unknown): void {
+    if (turn.finalized) return;
+    turn.finalized = true;
     emit({
       kind: "state_update",
       provider: this.provider,
       payload: { state: "idle", stopReason },
       ...(raw !== undefined ? { raw } : {}),
     });
-    rt.activeTurn = undefined;
+    if (rt.activeTurn === turn) rt.activeTurn = undefined;
   }
 
-  /** 信封补齐：open 绑定的 sink + 当前 turnId；跨 turn 的事件不带 turnId */
-  private emit(rt: ClaudeRuntime, ev: Parameters<EventSink>[0]): void {
+  /** 信封补齐：open 绑定的 sink + 所属 turnId。turn 内发射必须显式传 turn；跨 turn 的事件不带 turnId */
+  private emit(rt: ClaudeRuntime, ev: Parameters<EventSink>[0], turn?: ClaudeTurn): void {
     rt.sink({
       ...ev,
       provider: this.provider,
       providerSessionId: rt.claudeSessionId,
-      turnId: rt.activeTurn?.turnId,
+      turnId: (turn ?? rt.activeTurn)?.turnId,
     });
   }
 
   async cancel(ref: ProviderSessionRef): Promise<void> {
     const rt = this.sessions.get(ref.providerSessionId);
     if (!rt?.activeQuery) return;
-    rt.cancelRequested = true;
+    if (rt.activeTurn) rt.activeTurn.cancelRequested = true;
     // interrupt 与消息流会被 SDK 同时结束；最终 idle/cancelled 由 runQuery 的消费路径收口。
     await rt.activeQuery.interrupt().catch(() => {});
   }
@@ -324,10 +337,11 @@ export class ClaudeAdapter implements AgentAdapter {
     const rt = this.sessions.get(ref.providerSessionId);
     if (!rt) return;
     this.sessions.delete(ref.providerSessionId);
-    rt.cancelRequested = true;
+    const turn = rt.activeTurn;
+    if (turn) turn.cancelRequested = true;
     await rt.activeQuery?.interrupt().catch(() => {});
     // 宿主主动 close 时若仍有活跃 turn，合成终态，不留"已接受未终结"的悬挂状态
-    this.finishTurn(rt, (ev) => this.emit(rt, ev), "cancelled");
+    if (turn) this.finishTurn(rt, (ev) => this.emit(rt, ev, turn), turn, "cancelled");
   }
 
   private mustSession(ref: ProviderSessionRef): ClaudeRuntime {
@@ -364,7 +378,7 @@ export class ClaudeAdapter implements AgentAdapter {
     return { behavior: "deny", message: "denied by baton user" };
   }
 
-  private handleMessage(rt: ClaudeRuntime, emit: EventSink, msg: SDKMessage): void {
+  private handleMessage(rt: ClaudeRuntime, emit: EventSink, msg: SDKMessage, turn: ClaudeTurn): void {
     switch (msg.type) {
       case "system":
         if (msg.subtype === "init") rt.claudeSessionId = msg.session_id;
@@ -374,9 +388,9 @@ export class ClaudeAdapter implements AgentAdapter {
         if (msg.parent_tool_use_id) break;
         const event = msg.event as { type: string; delta?: { type: string; text?: string; thinking?: string } };
         if (event.type === "message_start") {
-          rt.streamMessageId = newId("m");
+          turn.streamMessageId = newId("m");
         } else if (event.type === "content_block_delta" && event.delta) {
-          const messageId = rt.streamMessageId ?? (rt.streamMessageId = newId("m"));
+          const messageId = turn.streamMessageId ?? (turn.streamMessageId = newId("m"));
           if (event.delta.type === "text_delta" && event.delta.text) {
             emit({
               kind: "agent_message_chunk",
@@ -403,8 +417,8 @@ export class ClaudeAdapter implements AgentAdapter {
           .join("");
         if (texts && !msg.parent_tool_use_id) {
           // 全文 upsert 覆盖 chunk 累积（同一 messageId），之后开新消息
-          const messageId = rt.streamMessageId ?? newId("m");
-          rt.streamMessageId = undefined;
+          const messageId = turn.streamMessageId ?? newId("m");
+          turn.streamMessageId = undefined;
           emit({
             kind: "agent_message",
             provider: this.provider,
@@ -487,7 +501,7 @@ export class ClaudeAdapter implements AgentAdapter {
             raw: msg,
           });
         }
-        this.finishTurn(rt, emit, msg.subtype === "success" ? "end_turn" : msg.subtype, msg);
+        this.finishTurn(rt, emit, turn, msg.subtype === "success" ? "end_turn" : msg.subtype, msg);
         break;
       }
       default:
