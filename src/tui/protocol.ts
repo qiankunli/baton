@@ -23,6 +23,7 @@ import { BatonSessionRuntime } from "../session/runtime.ts";
 import { applyEvent, emptySessionState, type SessionState, type ToolCallState } from "../store/reduce.ts";
 import type { SessionHandle, SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
+import { sessionPickerOptions } from "./session-picker.tsx";
 
 // 展示名同时是 theme.ts PROVIDER_COLORS 的着色 key，两处保持一致
 const PROVIDER_LABEL: Record<string, string> = { codex: "codex", "claude-code": "claude" };
@@ -198,36 +199,6 @@ export class BatonChatProtocol implements ChatProtocol {
     }
   }
 
-  /**
-   * 启动时会话选择（`baton resume` / `baton fork` 不带 id，对齐 codex CLI 的 picker
-   * 默认语义）。TUI 已照常打开 cwd 最近会话作为默认候选，picker 叠在其 transcript
-   * 之上；Esc 关闭即留在该会话——resume 语义不变，fork 不产生副本。
-   * 显式 id / --last / 非 TTY 在 bin.ts 直通，不进这里。
-   */
-  openStartupPicker(intent: "resume" | "fork"): void {
-    if (this.store.listSessions().length <= 1) return; // 没有其它会话可选，弹层无意义
-    if (intent === "resume") {
-      this.openSessionsPicker();
-      return;
-    }
-    this.openPicker({
-      title: "Select session to fork",
-      options: this.sessionPickerOptions(),
-      // fork 落盘发生在选中之后：选错或 Esc 都不会留下多余的会话副本
-      onSelect: async (value) => {
-        let childId = "";
-        await this.switchSession(() => {
-          const child = this.store.forkSession(value);
-          childId = child.id;
-          // 经唯一打开入口走锁 + crash recovery：源会话若正在运行，复制来的半截 turn 需补 summary
-          return openBatonSession(this.store, { cwd: child.meta.cwd, sessionId: child.id });
-        });
-        this.status = { text: `Forked ${value} → ${childId}`, tone: "info" };
-        this.changed();
-      },
-    });
-  }
-
   cancel(): void {
     void this.runtime.cancelActive();
   }
@@ -353,11 +324,11 @@ export class BatonChatProtocol implements ChatProtocol {
     this.changed();
   }
 
-  /** /sessions 与启动 resume picker 共用：选中即切到既有会话 */
+  /** /sessions 会话内切换浮层；行投影与启动 session picker 共用 sessionPickerOptions */
   private openSessionsPicker(): void {
     this.openPicker({
       title: "Select BatonSession",
-      options: this.sessionPickerOptions(),
+      options: sessionPickerOptions(this.store.listSessions(), { currentSessionId: this.session.id }),
       onSelect: async (value) => {
         if (value === this.session.id) return;
         await this.switchSession(() =>
@@ -365,14 +336,6 @@ export class BatonChatProtocol implements ChatProtocol {
         );
       },
     });
-  }
-
-  private sessionPickerOptions(): Array<{ name: string; description: string; value: string }> {
-    return this.store.listSessions().map((meta) => ({
-      name: `${meta.batonSessionId === this.session.id ? "● " : ""}${meta.title ?? meta.batonSessionId}`,
-      description: `${meta.cwd} · ${meta.updatedAt ?? meta.createdAt}`,
-      value: meta.batonSessionId,
-    }));
   }
 
   private openPicker(picker: Omit<PendingPicker, "id">): void {
