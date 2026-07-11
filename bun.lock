@@ -8,7 +8,7 @@
         "@anthropic-ai/claude-agent-sdk": "^0.3.205",
         "@opentui/core": "^0.4.3",
         "@opentui/react": "^0.4.3",
-        "chat-tui": "github:qiankunli/chat-tui#54c3d150cc6f984743e9d3627fcfe94616d4de67",
+        "chat-tui": "github:qiankunli/chat-tui#726c78970d06ac95fba0e350bc7dccb5d4c7ab67",
         "react": "^19.2.7",
         "yaml": "^2.9.0",
       },
@@ -94,7 +94,7 @@
 
     "call-bound": ["call-bound@1.0.4", "https://registry.npmmirror.com/call-bound/-/call-bound-1.0.4.tgz", { "dependencies": { "call-bind-apply-helpers": "^1.0.2", "get-intrinsic": "^1.3.0" } }, "sha512-+ys997U96po4Kx/ABpBCqhA9EuxJaQWDQg7295H4hBphv3IZg0boBKuwYpt4YXp6MZ5AmZQnU/tyMTlRpaSejg=="],
 
-    "chat-tui": ["chat-tui@github:qiankunli/chat-tui#54c3d15", { "peerDependencies": { "@opentui/core": "^0.4.3", "@opentui/react": "^0.4.3", "react": "^19.0.0" } }, "qiankunli-chat-tui-54c3d15", "sha512-bBkB3MLwoCEO3nX0VipZyFOBB5TWuxJeJqPG905C6Eczt5MVDZIOUi4w6sNWDf/r8Z2r/0oqMg4WAFMhkCdHzw=="],
+    "chat-tui": ["chat-tui@github:qiankunli/chat-tui#726c789", { "peerDependencies": { "@opentui/core": "^0.4.3", "@opentui/react": "^0.4.3", "react": "^19.0.0" } }, "qiankunli-chat-tui-726c789", "sha512-7lfkfMhmSwL5CpeDO/TI0M740ntwZNJ+w8SqIVI22GTdlwqN6tYx3n6qAVf+ZETamEg5JrvKWm7EfMSP7EOmOQ=="],
 
     "content-disposition": ["content-disposition@1.1.0", "https://registry.npmmirror.com/content-disposition/-/content-disposition-1.1.0.tgz", {}, "sha512-5jRCH9Z/+DRP7rkvY83B+yGIGX96OYdJmzngqnw2SBSxqCFPd0w2km3s5iawpGX8krnwSGmF0FW5Nhr0Hfai3g=="],
 
