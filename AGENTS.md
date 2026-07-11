@@ -81,6 +81,16 @@ baton/
 - session / turn / message 的 ID 必须稳定可外部引用；fork 复制的前缀与源**共享对象 ID**（同一段逻辑历史，git-branch 语义），跨会话引用 turn/message 时以 `bs_ + 对象 ID` 限定消歧，why 见 `docs/resume-fork.md`。
 - `/provider` 是 baton 额外提供的 agent 切换入口；其余命令与引用在能力允许时保持 provider 原生语义，由 baton/Adapter 显式映射，不做不可控的文本透传。
 
+界面按信息的**时态与寿命**分层：越是“现在时”的信息越靠下、越固定，不随历史滚动。这是 baton projection 与页面装配的产品语义；chat-tui 只负责按展示结构渲染。
+
+```text
+Transcript        可滚动历史（过去时；plan 块暂留这里）
+[Current Plan]    预留的 turn 级长寿命状态
+Run Status        固定运行状态区（thinking / compacting / retrying）
+Composer          输入框，命令 / 引用 / 审批浮层贴近它
+Footer            常驻状态栏（usage、队列、cwd）
+```
+
 ## References
 
 - `docs/design.md` — 完整设计与竞品定位
