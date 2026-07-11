@@ -204,7 +204,8 @@ export class BatonSessionRuntime {
         },
         { turnId },
       );
-      session.summarizeTurn(turnId);
+      const summaryEvent = session.summarizeTurnEvent(turnId);
+      turn.onEvent?.(summaryEvent);
       slot.freshNative = false;
       session.setProviderSession(key, {
         ...session.meta.providerSessions[key],

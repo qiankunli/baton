@@ -98,9 +98,22 @@ describe("claude: edit tools → diff content", () => {
     const content = (tc!.payload as { content: Array<{ type: string }> }).content;
     expect(content[0]!.type).toBe("diff");
   });
+
+  test("tool_result appends displayable output without replacing existing content", () => {
+    const { events, feed } = claudeHarness();
+    feed({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: "tu2", content: "command output\n" }] },
+    });
+    const chunk = events.find((e) => e.kind === "tool_call_content_chunk");
+    expect(chunk?.payload).toEqual({
+      toolCallId: "tu2",
+      content: { type: "text", text: "command output\n" },
+    });
+  });
 });
 
-describe("codex: fileChange → diff content, outputDelta → content chunk", () => {
+describe("codex: tool output mapping", () => {
   test("fileChange item maps changes and joins patch", () => {
     const { events, notify } = codexHarness();
     notify("item/completed", {
@@ -133,6 +146,25 @@ describe("codex: fileChange → diff content, outputDelta → content chunk", ()
     expect(chunk).toBeDefined();
     expect((chunk!.payload as { toolCallId: string }).toolCallId).toBe("cmd1");
     expect((chunk!.payload as { content: { text: string } }).content.text).toBe("line1\n");
+  });
+
+  test("commandExecution completed backfills the full aggregated output", () => {
+    const { events, notify } = codexHarness();
+    notify("item/completed", {
+      threadId: "th1",
+      turnId: "ct1",
+      item: {
+        type: "commandExecution",
+        id: "cmd1",
+        status: "completed",
+        command: "printf hello",
+        aggregatedOutput: "hello\n",
+      },
+    });
+    const update = events.find((e) => e.kind === "tool_call_update");
+    expect((update!.payload as { content: Array<{ type: string; text: string }> }).content).toEqual([
+      { type: "text", text: "hello\n" },
+    ]);
   });
 });
 

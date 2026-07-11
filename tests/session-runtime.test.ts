@@ -11,7 +11,7 @@ import type {
   ProviderSessionRef,
   StartOptions,
 } from "../src/adapters/types.ts";
-import type { ContentBlock } from "../src/events/types.ts";
+import type { AnyEventEnvelope, ContentBlock } from "../src/events/types.ts";
 import { textOf } from "../src/events/types.ts";
 import { BatonSessionRuntime } from "../src/session/runtime.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
@@ -142,6 +142,20 @@ describe("BatonSessionRuntime", () => {
     expect(session.meta.providerSessions["example-provider"]?.providerSessionId).toBe(
       "example-provider-native",
     );
+  });
+
+  test("publishes the persisted turn summary to live consumers", async () => {
+    const adapter = new FakeAdapter("codex");
+    const events: AnyEventEnvelope[] = [];
+    const runtime = new BatonSessionRuntime({
+      session,
+      mentionBudgetChars: 4096,
+      createAdapter: () => adapter,
+    });
+
+    await runtime.submit("codex", [{ type: "text", text: "hello" }], (event) => events.push(event));
+
+    expect(events.filter((event) => event.kind === "_baton_turn_summary")).toHaveLength(1);
   });
 
   test("serializes turns across providers into one BatonSession timeline", async () => {

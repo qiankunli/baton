@@ -90,12 +90,25 @@ export function claudeToolDiff(toolName: string, input: Record<string, unknown>)
   }
 }
 
+function claudeToolResultBlocks(result: unknown): ContentBlock[] {
+  if (typeof result === "string") return result ? [{ type: "text", text: result }] : [];
+  if (!Array.isArray(result)) return [];
+  return result.flatMap((raw) => {
+    const block = raw as Record<string, unknown>;
+    return block.type === "text" && typeof block.text === "string"
+      ? [{ type: "text", text: block.text }]
+      : [];
+  });
+}
+
 interface ClaudeRuntime {
   cwd: string;
   env?: Record<string, string>;
   /** SDK 的 session_id，首个 turn 的 init 消息里拿到；resume 靠它 */
   claudeSessionId?: string;
   activeQuery?: Query;
+  /** 用户主动中断时，SDK 会以 error result 结束消息流；该错误应归一成 cancelled。 */
+  cancelRequested: boolean;
   /** 当前正在流式输出的 assistant 消息的内部 messageId（chunk 与最终 upsert 共用） */
   streamMessageId?: string;
   /** 用户在 baton 中选择的模型；只在下一次 query 创建时生效。 */
@@ -142,6 +155,7 @@ export class ClaudeAdapter implements AgentAdapter {
       cwd: opts.cwd,
       env: opts.env,
       claudeSessionId: opts.resumeSessionId,
+      cancelRequested: false,
       suppressedToolIds: new Set(),
     });
     return { provider: this.provider, providerSessionId: id, resumed: Boolean(opts.resumeSessionId) };
@@ -201,6 +215,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     const q = query({ prompt: textOf(blocks), options: sdkOptions });
     rt.activeQuery = q;
+    rt.cancelRequested = false;
     void q
       .initializationResult()
       .then((result) => {
@@ -211,14 +226,26 @@ export class ClaudeAdapter implements AgentAdapter {
       for await (const msg of q) {
         this.handleMessage(rt, emit, msg);
       }
+    } catch (error) {
+      if (!rt.cancelRequested) throw error;
+      emit({
+        kind: "state_update",
+        provider: this.provider,
+        payload: { state: "idle", stopReason: "cancelled" },
+      });
     } finally {
       rt.activeQuery = undefined;
+      rt.cancelRequested = false;
       rt.streamMessageId = undefined;
     }
   }
 
   async cancel(ref: ProviderSessionRef): Promise<void> {
-    await this.sessions.get(ref.providerSessionId)?.activeQuery?.interrupt();
+    const rt = this.sessions.get(ref.providerSessionId);
+    if (!rt?.activeQuery) return;
+    rt.cancelRequested = true;
+    // interrupt 与消息流会被 SDK 同时结束；最终状态由 prompt() 的消费路径收口。
+    await rt.activeQuery.interrupt().catch(() => {});
   }
 
   async close(ref: ProviderSessionRef): Promise<void> {
@@ -353,6 +380,14 @@ export class ClaudeAdapter implements AgentAdapter {
             },
             raw: msg,
           });
+          for (const output of claudeToolResultBlocks(b.content)) {
+            emit({
+              kind: "tool_call_content_chunk",
+              provider: this.provider,
+              payload: { toolCallId: String(b.tool_use_id), content: output },
+              raw: msg,
+            });
+          }
         }
         break;
       }
