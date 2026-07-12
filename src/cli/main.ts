@@ -108,9 +108,9 @@ async function main(): Promise<void> {
       continue;
     }
 
-    // @bs_xxx 急切展开：把被引用会话的紧凑摘要拼进 prompt（design §5.6）
+    // @bs_xxx 急切展开：把被引用会话的上下文拼进 prompt（design §5.6；投影方式按有无共同历史自动选择）
     session.setPreviewIfEmpty(line);
-    const { prompt, mentions } = expandMentions(store, line, config.mentionBudgetChars);
+    const { prompt, mentions } = expandMentions(store, line, config.mentionBudgetChars, session.id);
     if (mentions.length) stdout.write(`(injected context summaries from ${mentions.length} session(s))\n`);
 
     const turnId = newId("t");
