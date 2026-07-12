@@ -48,7 +48,8 @@ type TurnRole = "driven" | "observed";
  *   排队中的 turn 留在 queue（无事件可路由），被 recall 的永不入账。
  * - （无）→ observed/active：`state_update(running, origin:"provider")` 开界登记，不进队列。
  * - active → finalized：`state_update(idle)` 按 envelope.turnId 命中；或 cancel 宽限期
- *   到期 / driven admission 失败时合成。此后记录保留在内存作幂等判定依据（会话级规模）。
+ *   到期 / driven admission 失败时合成。此后记录保留在内存作幂等判定依据（会话级规模），
+ *   但经 retire 瘦身——幂等判定只需 turnId+status，重负载字段不随 turn 数线性累积。
  */
 interface TurnRecord {
   turnId: string;
@@ -59,9 +60,9 @@ interface TurnRecord {
   status: "active" | "finalized";
   startedAt: number;
   stopReason?: StopReason;
-  /** driven 专属：入队原件（canSteer/steer 需要用户侧 provider 名） */
+  /** driven 专属：入队原件（canSteer/steer 需要用户侧 provider 名）。finalize 后由 retire 释放 */
   turn?: QueuedTurn;
-  /** driven 专属：finalize 时 resolve，释放 drain 循环推进队列 */
+  /** driven 专属：finalize 时 resolve，释放 drain 循环推进队列。finalize 后由 retire 释放 */
   release?: () => void;
   cancelGraceTimer?: ReturnType<typeof setTimeout>;
 }
@@ -452,7 +453,10 @@ export class BatonSessionRuntime {
     } catch (error) {
       // admission/启动失败：本 turn 没有（也不会再有）事件流，直接终结记录并上抛
       const record = this.turns.get(turn.turnId);
-      if (record) record.status = "finalized";
+      if (record) {
+        record.status = "finalized";
+        this.retire(record);
+      }
       if (this.activeDrivenTurnId === turn.turnId) this.activeDrivenTurnId = undefined;
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`BatonSession ${this.options.session.id} · ${turn.provider}: ${detail}`, {
@@ -510,7 +514,6 @@ export class BatonSessionRuntime {
     if (!record || record.status === "finalized") return;
     record.status = "finalized";
     record.stopReason = stopReason;
-    if (record.cancelGraceTimer) clearTimeout(record.cancelGraceTimer);
 
     const session = this.options.session;
 
@@ -532,7 +535,21 @@ export class BatonSessionRuntime {
       if (this.activeDrivenTurnId === turnId) this.activeDrivenTurnId = undefined;
       record.release?.();
     }
+    this.retire(record);
     this.changed();
+  }
+
+  /**
+   * finalized 记录瘦身：迟到终态的幂等判定只需 turnId+status，其余重负载必须释放——
+   * turn 持有入队原件 PromptBlock[]（@ 展开注入后单条可达几十 KB），release 是闭包。
+   * 长会话 / 长期 loop 下若随 finalized 记录整体保留，内存会按 turn 数线性增长。
+   * 必须在 release?.() 之后调用（release 本身是要释放的字段之一）。
+   */
+  private retire(record: TurnRecord): void {
+    if (record.cancelGraceTimer) clearTimeout(record.cancelGraceTimer);
+    record.cancelGraceTimer = undefined;
+    record.turn = undefined;
+    record.release = undefined;
   }
 
   /**

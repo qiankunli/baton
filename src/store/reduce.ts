@@ -70,13 +70,15 @@ export interface ActiveTurnState {
   provider?: string;
   /** 缺省 user=driven turn；provider=agent 自发的 observed turn（design §5.10） */
   origin: "user" | "provider";
+  /** 本 turn 当前非 idle 态（running / requires_action）：保真透传，不折叠成 running */
+  state: Exclude<SessionRunState, "idle">;
   startedAt?: number;
   /** per-turn 运行阶段（compacting…）：null phase 或本 turn idle 清除（阶段不跨 turn） */
   phase?: { phase: string; title?: string };
 }
 
 export interface SessionState {
-  /** 派生值：activeTurns 非空 ⇒ running。保留字段兼容既有消费面，真相源是 activeTurns */
+  /** 派生值：activeTurns 空 ⇒ idle；任一 requires_action ⇒ requires_action；否则 running。保留字段兼容既有消费面，真相源是 activeTurns */
   runState: SessionRunState;
   lastStopReason?: StopReason;
   /**
@@ -231,18 +233,27 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
           state.activeTurns.clear();
         }
       } else if (ev.turnId) {
-        // running（含 requires_action 等非 idle 态）：turn 在场。startedAt/origin
-        // 以首个 running 为准，重复 running（reconnect 重放）不重置起点。
+        // 非 idle 态（running / requires_action）：turn 在场。startedAt/origin
+        // 以首个 running 为准，重复 running（reconnect 重放）不重置起点；
+        // state 保真透传并随后续事件更新（requires_action ↔ running 可来回迁移）。
         const existing = state.activeTurns.get(ev.turnId);
         state.activeTurns.set(ev.turnId, {
           turnId: ev.turnId,
           provider: ev.provider ?? existing?.provider,
           origin: p.origin ?? existing?.origin ?? "user",
+          state: p.state,
           startedAt: existing?.startedAt ?? (ev.ts ? Date.parse(ev.ts) || undefined : undefined),
           phase: existing?.phase,
         });
       }
-      state.runState = state.activeTurns.size > 0 ? "running" : "idle";
+      // 会话级聚合：任一 turn requires_action 即上浮——它意味着"没有用户动作会话
+      // 无法完整推进"，比 running 更需要用户注意；全部收口才回 idle。
+      state.runState =
+        state.activeTurns.size === 0
+          ? "idle"
+          : [...state.activeTurns.values()].some((turn) => turn.state === "requires_action")
+            ? "requires_action"
+            : "running";
       break;
     }
     case "user_message":
