@@ -53,7 +53,8 @@ baton/
 │   │   ├── reduce.ts        # 事件流 reduce 成会话状态（TUI 渲染与崩溃恢复的来源）
 │   │   └── store.ts         # session.jsonl 追加/读取 + meta.json + turn-summary 生成
 │   ├── cli/
-│   │   ├── bin.ts           # 统一命令入口（package.json bin）：baton / repl / resume / fork / sessions
+│   │   ├── launcher.cjs     # npm bin 薄启动器：调用包内 runtime，不要求用户预装 Bun
+│   │   ├── bin.ts           # 统一命令入口：baton / repl / resume / fork / sessions
 │   │   └── main.ts          # headless REPL：bun run repl -- [--agent codex|claude] [--cwd <dir>]
 │   └── tui/                 # UI 组件层来自 chat-tui（github.com/qiankunli/chat-tui，git 依赖）
 │       ├── main.tsx         # 入口：参数解析 + ChatShell 装配
@@ -77,6 +78,7 @@ baton/
 - provider 中间过程按“最大公约数 + raw 保真”归一：Adapter 统一思考、工具、文件改动、命令输出、计划等展示与存储形状，粒度差异留在事件信封 `raw` 中；渲染层与存储层不出现 provider 分支。
 - provider 是开放扩展点：当前先以 Claude Code / Codex 打样；新增 provider 应通过 registry + AgentAdapter 能力接入，不把 provider 分支下沉到 BatonSession core。
 - **凭证零持有**：provider 进程继承用户环境与 HOME，复用各家 CLI 已有登录态；baton 不复制、托管或另建账号凭证体系。
+- **用户安装与开发运行时分离**：普通用户统一通过 npm 安装，包内 launcher 自带所需 runtime，不暴露 Bun 前置条件；仓库开发仍使用 Bun，避免为分发方式改写开发工具链。
 - 同一 BatonSession 内的 provider 接力由 baton 自动完成；`@` 只承担跨 BatonSession / turn / 产物的显式引用。
 - session / turn / message 的 ID 必须稳定可外部引用；fork 复制的前缀与源**共享对象 ID**（同一段逻辑历史，git-branch 语义），跨会话引用 turn/message 时以 `bs_ + 对象 ID` 限定消歧，why 见 `docs/resume-fork.md`。
 - `/provider` 是 baton 额外提供的 agent 切换入口；其余命令与引用在能力允许时保持 provider 原生语义，由 baton/Adapter 显式映射，不做不可控的文本透传。

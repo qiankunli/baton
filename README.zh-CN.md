@@ -37,13 +37,16 @@ baton 是一个 terminal-native 的统一 coding agent 会话，受 [tutti](http
 
 ## 安装与配置
 
-环境要求：[Bun](https://bun.sh/)，以及已安装并登录至少一个受支持的 agent（[Codex CLI](https://github.com/openai/codex) / [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)）。
+使用 npm 安装 baton。此外需要安装并登录至少一个受支持的 agent（[Codex CLI](https://github.com/openai/codex) / [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)）。
 
 ```bash
-git clone https://github.com/qiankunli/baton.git
-cd baton
-bun install
-bun link   # 之后全局可用 `baton`；也可不 link，用 `bun run tui` 在仓库内运行
+npm install -g @qiankunli/baton
+```
+
+也可以不做全局安装，直接运行一次：
+
+```bash
+npx @qiankunli/baton
 ```
 
 首次运行会生成 `~/.baton/config.yaml`：

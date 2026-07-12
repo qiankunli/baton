@@ -37,13 +37,16 @@ On top of these, three directions are on the roadmap (**none implemented yet**):
 
 ## Installation & configuration
 
-Requirements: [Bun](https://bun.sh/), plus at least one supported agent installed and authenticated ([Codex CLI](https://github.com/openai/codex) / [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)).
+Install baton with npm. You also need at least one supported agent installed and authenticated ([Codex CLI](https://github.com/openai/codex) / [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)).
 
 ```bash
-git clone https://github.com/qiankunli/baton.git
-cd baton
-bun install
-bun link   # `baton` becomes available globally; or skip linking and use `bun run tui`
+npm install -g @qiankunli/baton
+```
+
+Or run it once without a global install:
+
+```bash
+npx @qiankunli/baton
 ```
 
 On first run, baton creates `~/.baton/config.yaml`:
