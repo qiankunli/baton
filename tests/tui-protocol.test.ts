@@ -364,3 +364,101 @@ describe("runStatusLabel", () => {
     expect(runStatusLabel({ ...base, lastError: err, lastSeq: 6 })).toBe("thinking…");
   });
 });
+
+describe("BatonChatProtocol steer submit", () => {
+  function protocolWith(root: string) {
+    const store = new SessionStore(root);
+    const session = store.createSession({ cwd: "/repo" });
+    return new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+  }
+
+  test("busy + steerable: Enter steers instead of queueing", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-steer-"));
+    try {
+      const protocol = protocolWith(root);
+      const calls: string[] = [];
+      const internals = protocol as unknown as {
+        runtime: {
+          queueLength: number;
+          canSteer: (provider: string) => boolean;
+          steer: (provider: string, blocks: unknown) => Promise<{ effective: string }>;
+          submit: () => Promise<"completed">;
+        };
+      };
+      internals.runtime.canSteer = () => true;
+      internals.runtime.steer = async () => {
+        calls.push("steer");
+        return { effective: "steer" };
+      };
+      internals.runtime.submit = async () => {
+        calls.push("submit");
+        return "completed";
+      };
+
+      await protocol.submit("prefer approach B");
+      expect(calls).toEqual(["steer"]);
+      expect(protocol.getView().status?.text).toContain("steering");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejected steer degrades honestly: status says follow-up, not steer", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-steer-degrade-"));
+    try {
+      const protocol = protocolWith(root);
+      const internals = protocol as unknown as {
+        runtime: {
+          canSteer: (provider: string) => boolean;
+          steer: () => Promise<{ effective: string; outcome: Promise<string> }>;
+        };
+      };
+      let resolveOutcome: ((value: string) => void) | undefined;
+      const outcome = new Promise<string>((resolve) => {
+        resolveOutcome = resolve;
+      });
+      internals.runtime.canSteer = () => true;
+      internals.runtime.steer = async () => ({ effective: "follow_up", outcome });
+
+      const submitted = protocol.submit("prefer approach B");
+      await Bun.sleep(1); // 让 protocol 走到降级状态提示、停在等待 outcome 处
+      const degraded = protocol.getView().status?.text;
+      expect(degraded).toContain("queued as follow-up");
+      expect(degraded).not.toContain("steering");
+      resolveOutcome?.("completed");
+      await submitted;
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("queued follow-ups suppress steer: order intent wins over injection", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-steer-queue-"));
+    try {
+      const protocol = protocolWith(root);
+      const calls: string[] = [];
+      const internals = protocol as unknown as {
+        runtime: {
+          queueLength: number;
+          isBusy: boolean;
+          canSteer: (provider: string) => boolean;
+          submit: () => Promise<"completed">;
+        };
+      };
+      Object.defineProperty(internals.runtime, "queueLength", { get: () => 1 });
+      Object.defineProperty(internals.runtime, "isBusy", { get: () => true });
+      internals.runtime.canSteer = () => {
+        throw new Error("canSteer must not decide when follow-ups are already queued");
+      };
+      internals.runtime.submit = async () => {
+        calls.push("submit");
+        return "completed";
+      };
+
+      await protocol.submit("after those");
+      expect(calls).toEqual(["submit"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

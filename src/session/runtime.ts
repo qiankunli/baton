@@ -2,9 +2,11 @@ import {
   isContextSynchronizable,
   isModelConfigurable,
   isNativeSessionIdentifiable,
+  isSteerable,
   type AgentAdapter,
   type ModelOption,
   type ProviderSessionRef,
+  type SteerReceipt,
 } from "../adapters/types.ts";
 import { buildProviderCatchUpContext } from "../context/mention.ts";
 import { newId } from "../events/ids.ts";
@@ -48,6 +50,16 @@ export interface QueuedTurnSnapshot {
 }
 
 export type SubmitOutcome = "completed" | "recalled";
+
+/**
+ * steer 请求的调度结果（design §3.7：requested 与 effective 分开呈现）：
+ * - `steer`：已注入当前 turn 的下一个安全边界，不产生新 turn；
+ * - `follow_up`：不可 steer 或 provider 拒绝，已显式降级入队；outcome 与 submit
+ *   的回执同语义（turn 完成/被撤回时 resolve），UI 不得把降级结果仍标成 steer。
+ */
+export type SteerOutcome =
+  | { effective: "steer" }
+  | { effective: "follow_up"; outcome: Promise<SubmitOutcome> };
 
 export interface BatonSessionRuntimeOptions {
   session: SessionHandle;
@@ -130,6 +142,53 @@ export class BatonSessionRuntime {
       this.changed();
       void this.drain();
     });
+  }
+
+  /**
+   * 当前输入能否 steer 到活跃 turn：有未终结的 driven turn、provider 匹配、
+   * adapter 声明并实现了 steer。UI 据此决定 busy 时的默认 delivery 与选项展示。
+   * observed turn（provider 自发）不接受 steer——baton 不拥有其生命周期。
+   */
+  canSteer(provider: string): boolean {
+    const active = this.active;
+    if (!active || active.finalized) return false;
+    if (active.turn.provider !== provider) return false;
+    if (!active.slot.ref) return false;
+    return Boolean(active.slot.adapter.capabilities.steer) && isSteerable(active.slot.adapter);
+  }
+
+  /**
+   * 把输入注入当前 turn 的下一个安全边界（design §4.3）。不可 steer、provider 拒绝
+   * （expectedTurnId 过期 / review turn）或 wire 故障时，一律显式降级为 follow-up
+   * 入队——永不静默丢失输入，也不把降级结果伪装成 steer（effective 如实上报）。
+   */
+  async steer(provider: string, blocks: PromptBlock[]): Promise<SteerOutcome> {
+    const active = this.active;
+    if (!active || !this.canSteer(provider) || !active.slot.ref) {
+      return { effective: "follow_up", outcome: this.submit(provider, blocks) };
+    }
+    const adapter = active.slot.adapter;
+    if (!isSteerable(adapter)) {
+      return { effective: "follow_up", outcome: this.submit(provider, blocks) };
+    }
+    let receipt: SteerReceipt;
+    try {
+      receipt = await adapter.steer(
+        active.slot.ref,
+        // steer 消息归属被注入的 turn；messageId 照常由 runtime 分配（design §4.10.1）
+        { turnId: active.turn.turnId, messageId: newId("m"), blocks },
+        active.turn.turnId,
+      );
+    } catch {
+      // wire 故障视同拒绝：降级路径会经 submit 的正常错误通道暴露 transport 问题，
+      // 这里不吞掉输入本身
+      receipt = { effective: "rejected" };
+    }
+    if (receipt.effective !== "steer") {
+      return { effective: "follow_up", outcome: this.submit(provider, blocks) };
+    }
+    this.changed();
+    return { effective: "steer" };
   }
 
   /** 只允许撤回尚未开始执行的最新 turn；已被 drain 取走的 active turn 不在此列。 */

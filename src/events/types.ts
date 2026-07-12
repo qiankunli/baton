@@ -102,6 +102,18 @@ export interface MessageUpsert {
   content?: ContentBlock[] | null;
 }
 
+/**
+ * 用户输入的实际（effective）投递方式：steer = 中途注入了当前 turn 的安全边界。
+ * 开放联合 forward-compat；缺省视为 prompt（旧事件兼容）。requested delivery 不落盘——
+ * steer 被拒降级成 follow-up 时，落盘的是降级后的事实（design §3.7：不能仍标成 steer）。
+ */
+export type SubmitDelivery = "prompt" | "steer" | "follow_up" | (string & {});
+
+/** user_message 专属 upsert：比通用 MessageUpsert 多 delivery 标记 */
+export interface UserMessageUpsert extends MessageUpsert {
+  delivery?: SubmitDelivery;
+}
+
 /** chunk 永远是追加语义；role 由事件 kind 决定（user_/agent_/agent_thought_ 前缀） */
 export interface MessageChunk {
   messageId: string;
@@ -316,7 +328,7 @@ export interface TurnSummary {
 
 export type EventPayloadMap = {
   state_update: StateUpdate;
-  user_message: MessageUpsert;
+  user_message: UserMessageUpsert;
   user_message_chunk: MessageChunk;
   agent_message: MessageUpsert;
   agent_message_chunk: MessageChunk;
