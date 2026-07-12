@@ -70,6 +70,8 @@ const openedAtStartup: OpenBatonSessionResult | undefined = pickIntent
 // autoFocus=false：禁止鼠标点击把焦点从输入框抢走——点击 scrollbox 夺焦不触发 React
 // 重渲染，focused prop 拉不回来，这是"操作久了输入框失焦"的主因。
 const renderer = await createCliRenderer({ exitOnCtrlC: false, targetFps: 30, autoFocus: false });
+// OpenTUI 默认透明背景不会擦除变空的 cell，滚动/重排后会残留上一帧字符。
+renderer.setBackgroundColor(batonTheme.overlayBackground ?? "#24283b");
 const root = createRoot(renderer);
 const quit = () => {
   // OpenTUI owns raw mode and mouse tracking; restore both before process.exit,
