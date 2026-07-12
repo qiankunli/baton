@@ -78,7 +78,7 @@ export interface ActiveTurnState {
 }
 
 export interface SessionState {
-  /** 派生值：activeTurns 空 ⇒ idle；任一 requires_action ⇒ requires_action；否则 running。保留字段兼容既有消费面，真相源是 activeTurns */
+  /** 派生值（每个事件后由 deriveRunState 重算）：pending blocking request 或任一 turn requires_action ⇒ requires_action；activeTurns 空 ⇒ idle；否则 running。保留字段兼容既有消费面 */
   runState: SessionRunState;
   lastStopReason?: StopReason;
   /**
@@ -92,8 +92,9 @@ export interface SessionState {
   messages: Map<string, MessageState>;
   toolCalls: Map<string, ToolCallState>;
   plans: Map<string, PlanUpdate>;
-  pendingPermissions: Map<string, PermissionRequest>;
-  pendingQuestions: Map<string, QuestionRequest>;
+  /** 附带 envelope turnId（payload 本身不含）：request → 所属 turn 的 requires_action 派生需要归属关系 */
+  pendingPermissions: Map<string, PermissionRequest & { turnId?: string }>;
+  pendingQuestions: Map<string, QuestionRequest & { turnId?: string }>;
   usage: UsageTotal;
   /** provider command 完整快照：available_commands_update 整体替换，不做增量合并 */
   availableCommands: AvailableCommand[];
@@ -215,6 +216,27 @@ function applyToolCallUpdate(state: SessionState, ev: EventEnvelope<"tool_call_u
   if (p.rawOutput !== undefined) tc.rawOutput = p.rawOutput;
 }
 
+/** 该 turn 是否还有未决的 blocking request（审批/提问）——per-turn requires_action 的派生依据 */
+function hasPendingBlocking(state: SessionState, turnId: string): boolean {
+  for (const req of state.pendingPermissions.values()) if (req.turnId === turnId) return true;
+  for (const req of state.pendingQuestions.values()) if (req.turnId === turnId) return true;
+  return false;
+}
+
+/**
+ * 会话级 runState 派生（provider-interaction-design：存在 pending blocking request 时
+ * projection 必须产出 requires_action）。requires_action 比 running 优先上浮——它意味着
+ * "没有用户动作会话无法完整推进"；直接看两个 pending 集合，未能归属到 turn 的 request
+ * （缺 turnId 的旧事件）也不会漏。每个事件后重算：派生纯函数，正确性不依赖事件顺序。
+ */
+function deriveRunState(state: SessionState): SessionRunState {
+  if (state.pendingPermissions.size > 0 || state.pendingQuestions.size > 0) return "requires_action";
+  if (state.activeTurns.size === 0) return "idle";
+  return [...state.activeTurns.values()].some((turn) => turn.state === "requires_action")
+    ? "requires_action"
+    : "running";
+}
+
 export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionState {
   state.lastSeq = ev.seq;
   switch (ev.kind) {
@@ -235,25 +257,18 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       } else if (ev.turnId) {
         // 非 idle 态（running / requires_action）：turn 在场。startedAt/origin
         // 以首个 running 为准，重复 running（reconnect 重放）不重置起点；
-        // state 保真透传并随后续事件更新（requires_action ↔ running 可来回迁移）。
+        // state 保真透传（requires_action ↔ running 可来回迁移），但 pending blocking
+        // request 在场时钉在 requires_action——重放的 running 不得掩盖未决审批卡片。
         const existing = state.activeTurns.get(ev.turnId);
         state.activeTurns.set(ev.turnId, {
           turnId: ev.turnId,
           provider: ev.provider ?? existing?.provider,
           origin: p.origin ?? existing?.origin ?? "user",
-          state: p.state,
+          state: hasPendingBlocking(state, ev.turnId) ? "requires_action" : p.state,
           startedAt: existing?.startedAt ?? (ev.ts ? Date.parse(ev.ts) || undefined : undefined),
           phase: existing?.phase,
         });
       }
-      // 会话级聚合：任一 turn requires_action 即上浮——它意味着"没有用户动作会话
-      // 无法完整推进"，比 running 更需要用户注意；全部收口才回 idle。
-      state.runState =
-        state.activeTurns.size === 0
-          ? "idle"
-          : [...state.activeTurns.values()].some((turn) => turn.state === "requires_action")
-            ? "requires_action"
-            : "running";
       break;
     }
     case "user_message":
@@ -281,23 +296,33 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       state.plans.set(p.planId, { planId: p.planId, entries: [...p.entries] });
       break;
     }
+    // request/resolved 驱动 per-turn requires_action ↔ running：不变量收在 reducer，
+    // 不要求 adapter 自觉配对 state_update（事件流是唯一真相源；design §4.1）。
+    // 原生 state_update(requires_action) 仍然有效——覆盖登录、设备确认等没有结构化
+    // request 的场景（provider-interaction-design：反向不强制成立）。
     case "permission_request": {
       const p = ev.payload;
-      state.pendingPermissions.set(p.requestId, p);
+      state.pendingPermissions.set(p.requestId, { ...p, turnId: ev.turnId });
+      flagRequiresAction(state, ev.turnId);
       break;
     }
     case "permission_resolved": {
       const p = ev.payload;
+      const turnId = state.pendingPermissions.get(p.requestId)?.turnId;
       state.pendingPermissions.delete(p.requestId);
+      unflagRequiresAction(state, turnId);
       break;
     }
     case "question_request": {
       const p = ev.payload;
-      state.pendingQuestions.set(p.requestId, p);
+      state.pendingQuestions.set(p.requestId, { ...p, turnId: ev.turnId });
+      flagRequiresAction(state, ev.turnId);
       break;
     }
     case "question_resolved": {
+      const turnId = state.pendingQuestions.get(ev.payload.requestId)?.turnId;
       state.pendingQuestions.delete(ev.payload.requestId);
+      unflagRequiresAction(state, turnId);
       break;
     }
     case "usage_update":
@@ -335,7 +360,27 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       break;
     }
   }
+  // 派生值统一在出口重算（纯函数、代价 O(activeTurns)）：单点维护不变量，
+  // 不用每个 case 记得更新
+  state.runState = deriveRunState(state);
   return state;
+}
+
+/** request 到场：所属 turn 派生为 requires_action（blocking request 挂起该 turn） */
+function flagRequiresAction(state: SessionState, turnId: string | undefined): void {
+  const turn = turnId ? state.activeTurns.get(turnId) : undefined;
+  if (turn) turn.state = "requires_action";
+}
+
+/**
+ * request 收口：仅当该 turn 已无其他 pending blocking request 时恢复 running——
+ * 同 turn 并发多个审批时，应答一个不能提前撤掉 requires_action。
+ */
+function unflagRequiresAction(state: SessionState, turnId: string | undefined): void {
+  const turn = turnId ? state.activeTurns.get(turnId) : undefined;
+  if (turn && turn.state === "requires_action" && !hasPendingBlocking(state, turnId!)) {
+    turn.state = "running";
+  }
 }
 
 function accumulateUsage(total: UsageTotal, u: UsageUpdate): void {
