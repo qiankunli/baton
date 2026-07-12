@@ -85,6 +85,12 @@ export interface StateUpdate {
   state: SessionRunState;
   /** 仅在 idle 且结束了活跃工作时携带 */
   stopReason?: StopReason;
+  /**
+   * running 的发起方。缺省 = baton 驱动的 driven turn（用户 submit 经队列串行执行）；
+   * "provider" = agent 自发开界的 observed turn（如 Claude Code 后台任务唤醒）——
+   * baton 不控制其开始，只划界、记账、投影，不进 turn 队列。
+   */
+  origin?: "provider";
 }
 
 /**

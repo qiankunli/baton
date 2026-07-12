@@ -82,6 +82,13 @@ export interface SessionState {
   /** 当前运行阶段（compacting…）：null phase 事件清除；idle 也清除（阶段不跨 turn） */
   runPhase?: { phase: string; title?: string; provider?: string };
   /**
+   * 最近一次 running 的归属：provider / 发起方 / 起点时刻；idle 清除。
+   * origin=provider 表示 agent 自发的 observed turn（不经 runtime 队列），
+   * TUI 据此在没有 driven turn 时也能呈现运行态。单槽语义（最后一次 running 赢），
+   * 多路并发运行态留给将来的多 agent 呈现需求。
+   */
+  activeRun?: { provider?: string; origin: "user" | "provider"; startedAt?: number };
+  /**
    * 提示历史（append-only），同时进 timeline（id 为 `n_<seq>`）：打断标记、
    * provider warning 等属于会话流的一部分，要按发生位置内联展示。
    */
@@ -194,7 +201,16 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       state.runState = p.state;
       if (p.stopReason !== undefined) state.lastStopReason = p.stopReason;
       // idle 兜底清除运行阶段：adapter 异常退出可能来不及发 phase:null
-      if (p.state === "idle") state.runPhase = undefined;
+      if (p.state === "idle") {
+        state.runPhase = undefined;
+        state.activeRun = undefined;
+      } else if (p.state === "running") {
+        state.activeRun = {
+          provider: ev.provider,
+          origin: p.origin ?? "user",
+          startedAt: ev.ts ? Date.parse(ev.ts) || undefined : undefined,
+        };
+      }
       break;
     }
     case "user_message":

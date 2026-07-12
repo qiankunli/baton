@@ -70,8 +70,8 @@ baton/
 
 ## 关键约定
 
-- **BatonSession 与 ProviderSession 不是同一层对象**：前者是用户拥有、跨 provider、可持久恢复的逻辑会话；后者只是某个 provider 的私有执行状态。所有 turn 在 BatonSession 内全局串行，切换 provider 不会分裂出多条并发逻辑历史。
-- **事件流是统一历史的合并真相源，UI 是投影**：`session.jsonl` 记录可重放事件，TUI 状态由 reduce 重建；`meta.json` 保存定位与恢复元数据，不替代事件历史。ProviderSession 原生 resume 是加速路径，不是正确性的前提。
+- **BatonSession 与 ProviderSession 不是同一层对象**：前者是用户拥有、跨 provider、可持久恢复的逻辑会话；后者只是某个 provider 的私有执行状态。driven turn（用户 submit）在 BatonSession 内全局串行，切换 provider 不会分裂出多条并发逻辑历史；provider 自发的 observed turn（如后台任务唤醒）与队列正交，baton 只划界记账不调度，见 `docs/design.md` 5.10。
+- **事件流是统一历史的合并真相源，UI 是投影**：`session.jsonl` 记录可重放事件，TUI 状态由 reduce 重建——live 投影经 `SessionHandle.subscribe` 订阅事件流，与 resume 同一条 reduce 路径，不允许旁路投影通道（曾因 per-turn 回调这条第二通道静默丢掉 observed turn 的回复）；`meta.json` 保存定位与恢复元数据，不替代事件历史。ProviderSession 原生 resume 是加速路径，不是正确性的前提。
 - 各家 agent 的原生 session 文件（`~/.claude/projects/**`、`~/.codex/sessions/**`）**只读不写**，原因见 `docs/design.md`。
 - 内部事件模型对齐 ACP v2 词汇表；wire 协议用各家原生协议，不强求 ACP。
 - provider 中间过程按“最大公约数 + raw 保真”归一：Adapter 统一思考、工具、文件改动、命令输出、计划等展示与存储形状，粒度差异留在事件信封 `raw` 中；渲染层与存储层不出现 provider 分支。

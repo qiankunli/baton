@@ -22,7 +22,7 @@ import { textOf, type DiffBlock, type PermissionRequest, type QuestionRequest } 
 import { createProviderAdapter, providerSessionKey } from "../providers/registry.ts";
 import { openBatonSession } from "../session/open.ts";
 import { BatonSessionRuntime } from "../session/runtime.ts";
-import { applyEvent, emptySessionState, type SessionState, type ToolCallState } from "../store/reduce.ts";
+import { applyEvent, type SessionState, type ToolCallState } from "../store/reduce.ts";
 import type { SessionHandle, SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
 import { sessionPickerOptions, type SessionPickerMode } from "./session-picker.tsx";
@@ -109,6 +109,7 @@ export class BatonChatProtocol implements ChatProtocol {
   private nextOverlayId = 1;
   private listeners = new Set<() => void>();
   private view: ChatViewState;
+  private unsubscribeSession: () => void;
 
   constructor(
     private readonly store: SessionStore,
@@ -117,13 +118,24 @@ export class BatonChatProtocol implements ChatProtocol {
     private readonly quit: () => void,
   ) {
     this.session = opened.session;
-    this.state = opened.resumed ? opened.session.loadState() : emptySessionState();
     this.agent = config.defaultAgent;
     if (opened.recovered) {
       this.status = { text: "Recovered an interrupted turn from a previous baton run", tone: "info" };
     }
     this.runtime = this.createRuntime();
+    // 投影单通道：live 与 resume 走同一条 reduce 路径（loadState 补历史 + subscribe 跟增量），
+    // 不从 per-turn 回调取事件——provider 自发回合（observed turn）没有对应的 submit 调用。
+    this.state = this.session.loadState();
+    this.unsubscribeSession = this.subscribeSession(this.session);
     this.view = this.buildView();
+  }
+
+  /** 接入事件流增量投影；调用前 state 必须已 loadState 到当前水位 */
+  private subscribeSession(session: SessionHandle): () => void {
+    return session.subscribe((envelope) => {
+      applyEvent(this.state, envelope);
+      this.changed();
+    });
   }
 
   // ===== 输出：baton → TUI =====
@@ -149,10 +161,7 @@ export class BatonChatProtocol implements ChatProtocol {
       this.status = { text: `${target} turn queued`, tone: "info" };
     }
     this.changed();
-    const outcome = await this.runtime.submit(target, [{ type: "text", text: prompt }], (envelope) => {
-      applyEvent(this.state, envelope);
-      this.changed();
-    });
+    const outcome = await this.runtime.submit(target, [{ type: "text", text: prompt }]);
     if (outcome === "completed" && this.status?.tone !== "error") {
       this.status = null;
       this.changed();
@@ -239,6 +248,7 @@ export class BatonChatProtocol implements ChatProtocol {
     this.status = { text: "Exiting…", tone: "info" };
     this.changed();
     await this.runtime.close();
+    this.unsubscribeSession();
     this.session.releaseLock();
     this.quit();
   }
@@ -331,11 +341,13 @@ export class BatonChatProtocol implements ChatProtocol {
     }
     const next = open();
     await this.runtime.close();
+    this.unsubscribeSession();
     this.session.releaseLock();
     this.session = next.session;
-    this.state = next.session.loadState();
     this.commandOutput = null;
     this.runtime = this.createRuntime();
+    this.state = next.session.loadState();
+    this.unsubscribeSession = this.subscribeSession(next.session);
     this.status = next.recovered
       ? { text: `Opened session ${next.session.id} (recovered an interrupted turn)`, tone: "info" }
       : { text: `Opened session ${next.session.id}`, tone: "info" };
@@ -434,6 +446,18 @@ export class BatonChatProtocol implements ChatProtocol {
         hint: "Esc to interrupt",
       });
     }
+    // observed turn（provider 自发回合，如后台任务唤醒）：没有 driven turn 时也要呈现
+    // 运行态，否则 agent 在"静默"状态下说话。无 hint——Esc 中断的是 runtime 队列里的
+    // driven turn，管不到 provider 自己发起的回合（v1 不支持打断 observed turn）。
+    const observedRun = active === undefined && v.activeRun?.origin === "provider" ? v.activeRun : undefined;
+    if (observedRun) {
+      runStatus.push({
+        id: "run:observed",
+        author: providerAuthor(observedRun.provider),
+        label: `${runStatusLabel(v)} · background`,
+        startedAt: observedRun.startedAt,
+      });
+    }
     // pinned plan：最新 plan 的"进行中"投影——仅在有未完成项时下发；
     // 全部完成即停发，pin 区随之消失（全量 plan 始终留在 transcript 里可回看）
     const lastPlan = [...v.plans.values()].at(-1);
@@ -444,7 +468,7 @@ export class BatonChatProtocol implements ChatProtocol {
     const planActive = planEntries.some((entry) => entry.status !== "completed");
     return {
       transcript: [...buildTranscript(v), ...(this.commandOutput ? [this.commandOutput] : [])],
-      busy: active !== undefined,
+      busy: active !== undefined || observedRun !== undefined,
       runStatus,
       plan: planActive ? planEntries : undefined,
       queued: this.runtime.queuedTurns.map((turn) => ({

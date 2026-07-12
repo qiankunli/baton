@@ -148,18 +148,21 @@ describe("BatonSessionRuntime", () => {
     );
   });
 
-  test("publishes the persisted turn summary to live consumers", async () => {
+  test("publishes the persisted turn summary to event-stream subscribers", async () => {
     const adapter = new FakeAdapter("codex");
     const events: AnyEventEnvelope[] = [];
+    // 投影单通道：消费者订阅事件流（append 即广播），不从 submit 的回调取事件
+    session.subscribe((event) => events.push(event));
     const runtime = new BatonSessionRuntime({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => adapter,
     });
 
-    await runtime.submit("codex", [{ type: "text", text: "hello" }], (event) => events.push(event));
+    await runtime.submit("codex", [{ type: "text", text: "hello" }]);
 
     expect(events.filter((event) => event.kind === "_baton_turn_summary")).toHaveLength(1);
+    expect(events.filter((event) => event.kind === "agent_message")).toHaveLength(1);
   });
 
   test("serializes turns across providers into one BatonSession timeline", async () => {

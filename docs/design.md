@@ -257,6 +257,17 @@ Footer            常驻状态栏（usage、队列计数、plan 进度摘要、c
 
 排队中的 turn 由 BatonSessionRuntime 单点持有，TUI 只在 composer 上方读取快照展示，避免界面状态与真实执行队列分叉。尚未开始的消息立即可见，并可在空 composer 时用 ↑ 按 LIFO 撤回编辑；正常执行仍按 FIFO，turn 被 runtime 取走开始执行后才进入持久事件流，不再允许撤回。
 
+### 5.10 Provider 自发回合（observed turn）与投影单通道
+
+**理念**：turn 的存在不以用户请求为前提。agent 可以在没有用户输入时自己开口——Claude Code 的后台任务（Agent tool）完成后 harness 会自动唤醒模型继续输出，未来还有 cron、外部事件驱动的 loop。因此 turn = 一段有始有终的 agent 活动，"谁发起"是 turn 的属性，不是存在条件：
+
+- **driven turn**：baton 发起（用户 submit），入队、全局串行、finalize 推进队列；
+- **observed turn**：provider 自发。adapter 检测到终态后同一消息流上的新活动，铸造新 turnId 并以 `state_update(running, origin:"provider")` 开界、idle 收界；runtime 只划界、记账（turn summary + 同步水位）、投影，不进队列——用户此刻仍可正常 submit。
+
+**投影单通道**：UI 状态 = `loadState()`（补历史）+ `SessionHandle.subscribe`（跟增量），live 与 resume 是同一条 reduce 路径。事件一经 append 即广播，投影正确性不依赖"是否有活跃 turn"。不允许旁路投影通道（per-turn 回调曾是第二条通道，导致 observed turn 的事件"只持久化、不投影"——UI 静默丢失后台唤醒的回复，重开会话才能看到）。该不变量由 `tests/provider-initiated-turn.test.ts` 的参数化契约测试钉住。
+
+**为什么 observed turn 不进队列**：队列的语义是"用户输入的执行顺序"；observed turn 在 baton 看到它时已经在跑，调度它没有意义，阻塞用户输入更是倒置。全局串行约定据此收窄为：**driven turn 全局串行，observed turn 与其正交**（多路运行态的呈现是 TUI 的事，见 5.9 Agent Status 附加行）。v1 不支持打断 observed turn（Esc 只作用于 driven turn），也不把它的唤醒来源建模成事件——留给"事件驱动 loop"方向一并设计。
+
 ## 6. 里程碑
 
 | 阶段 | 内容 | 验收 |
