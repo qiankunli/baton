@@ -4,8 +4,12 @@ import {
   isNativeSessionIdentifiable,
   isSteerable,
   type AgentAdapter,
+  type ApprovalDecision,
+  type ApprovalHandler,
   type ModelOption,
   type ProviderSessionRef,
+  type QuestionDecision,
+  type QuestionHandler,
   type SteerReceipt,
 } from "../adapters/types.ts";
 import { buildProviderCatchUpContext } from "../context/mention.ts";
@@ -81,10 +85,16 @@ export type SteerOutcome =
   | { effective: "steer" }
   | { effective: "follow_up"; outcome: Promise<SubmitOutcome> };
 
+/** runtime 注入给 adapter 构造器的交互回调（见 InteractionHandlers 的注入点 ensureProvider） */
+export interface InteractionHandlers {
+  approvalHandler: ApprovalHandler;
+  questionHandler: QuestionHandler;
+}
+
 export interface BatonSessionRuntimeOptions {
   session: SessionHandle;
   mentionBudgetChars: number;
-  createAdapter(provider: string): AgentAdapter;
+  createAdapter(provider: string, handlers: InteractionHandlers): AgentAdapter;
   providerSessionKey?(provider: string): string;
   onStateChange?: () => void;
   /**
@@ -130,8 +140,51 @@ export class BatonSessionRuntime {
   private readonly turns = new Map<string, TurnRecord>();
   /** 队列策略指针：当前唯一 driven turn（本轮 driven ≤ 1；见类 docstring） */
   private activeDrivenTurnId?: string;
+  /**
+   * 未决交互的应答通道：requestId → resolver。**只有应答通道，没有状态**——
+   * pending 交互的真相源是事件流（adapter 先 emit permission_request 再 await 回调，
+   * UI 从 reduced state 投影），内存只保留唤醒 adapter 的 resolve 函数。
+   * 崩溃后新进程没有 resolver，open 时的 crash recovery 会对 reduced pending
+   * 一律补 resolved(cancelled)，两侧语义自洽。
+   */
+  private readonly pendingApprovals = new Map<string, (d: ApprovalDecision) => void>();
+  private readonly pendingQuestions = new Map<string, (d: QuestionDecision) => void>();
 
   constructor(private readonly options: BatonSessionRuntimeOptions) {}
+
+  /** 注入给 adapter 的审批回调：注册 resolver 后挂起，等宿主经 resolvePermission 应答 */
+  readonly approvalHandler: ApprovalHandler = (request) =>
+    new Promise((resolve) => {
+      this.pendingApprovals.set(request.requestId, resolve);
+      this.changed();
+    });
+
+  readonly questionHandler: QuestionHandler = (request) =>
+    new Promise((resolve) => {
+      this.pendingQuestions.set(request.requestId, resolve);
+      this.changed();
+    });
+
+  /**
+   * 宿主应答一个未决审批。false = requestId 不在挂起集合（已被应答、或事件流里的
+   * pending 来自已死进程且无 resolver）——UI 据此提示 stale 而不是静默吞掉。
+   * 事件留痕（permission_resolved）由被唤醒的 adapter 负责，这里不落事件。
+   */
+  resolvePermission(requestId: string, decision: ApprovalDecision): boolean {
+    const resolve = this.pendingApprovals.get(requestId);
+    if (!resolve) return false;
+    this.pendingApprovals.delete(requestId);
+    resolve(decision);
+    return true;
+  }
+
+  resolveQuestion(requestId: string, decision: QuestionDecision): boolean {
+    const resolve = this.pendingQuestions.get(requestId);
+    if (!resolve) return false;
+    this.pendingQuestions.delete(requestId);
+    resolve(decision);
+    return true;
+  }
 
   /** 当前未终结的 driven turn 记录；无或已终结时 undefined */
   private activeDriven(): TurnRecord | undefined {
@@ -142,6 +195,11 @@ export class BatonSessionRuntime {
 
   get activeProvider(): string | undefined {
     return this.processingProvider;
+  }
+
+  /** 当前 driven turn 的 baton turn id；TUI 据此做 per-turn 投影（运行阶段等） */
+  get activeTurnId(): string | undefined {
+    return this.activeDriven()?.turnId;
   }
 
   /** 当前 turn 的起跑时刻（epoch ms）；elapsed 跳秒由 TUI 组件自理，这里只给起点 */
@@ -347,6 +405,10 @@ export class BatonSessionRuntime {
         budgetChars: this.options.mentionBudgetChars,
       });
       let blocks = turn.blocks;
+      // 水位（syncedSeq）只在注入时前进到本批 throughSeq（并发正确性的关键：
+      // throughSeq 固定在注入时点，turn 运行期间其它 provider 落盘的事件 seq 必然
+      // 大于它，下一次注入自然回补；finalize 推尾水位则会永久越过它们）。
+      let prependedCatchUp: typeof catchUp = null;
       if (catchUp) {
         const syncBlock: PromptBlock = {
           type: "text",
@@ -362,16 +424,30 @@ export class BatonSessionRuntime {
           });
           slot.freshNative = false;
         } else {
+          // prepend 注入随本 turn 的 submit 送达；水位在 admission 通过后才推进
           blocks = [syncBlock, { type: "text", text: "\n\n" }, ...blocks];
+          prependedCatchUp = catchUp;
         }
       }
 
-      // submit 只确认 admission；完成以 finalizeTurn 收到 idle 终态为准
+      // submit 只确认 admission；完成以 finalize 收到 idle 终态为准
       await slot.adapter.submit(slot.ref, {
         turnId: turn.turnId,
         messageId: turn.messageId,
         blocks,
       });
+      if (prependedCatchUp) {
+        // admission 通过 ⇒ prepend 的 sync 块已进入 provider 输入：视为同步到 throughSeq。
+        // admission 失败走 catch 上抛，水位不动，下次重新注入。
+        session.setProviderSession(key, {
+          ...session.meta.providerSessions[key],
+          provider: key,
+          providerSessionId:
+            session.meta.providerSessions[key]?.providerSessionId ?? this.nativeSessionId(slot),
+          syncedSeq: prependedCatchUp.throughSeq,
+        });
+        slot.freshNative = false;
+      }
       await released;
     } catch (error) {
       // admission/启动失败：本 turn 没有（也不会再有）事件流，直接终结记录并上抛
@@ -450,7 +526,7 @@ export class BatonSessionRuntime {
 
     session.summarizeTurnEvent(turnId);
     if (record.role === "driven") record.slot.freshNative = false;
-    this.syncProviderWatermark(record.slot);
+    this.backfillProviderSessionId(record.slot);
 
     if (record.role === "driven") {
       if (this.activeDrivenTurnId === turnId) this.activeDrivenTurnId = undefined;
@@ -459,15 +535,21 @@ export class BatonSessionRuntime {
     this.changed();
   }
 
-  /** turn 收界后的共用元数据同步：原生 session id 回填 + syncedSeq 水位推进 */
-  private syncProviderWatermark(slot: ProviderSlot): void {
+  /**
+   * turn 收界后的元数据回填：原生 session id 首轮结束才拿得到（claude）。
+   * 刻意**不**推进 syncedSeq——水位只在注入时前进（见 runTurn）：finalize 推尾水位
+   * 会越过并发期间其它 provider 落盘、尚未注入本 provider 的事件，形成永久同步洞。
+   */
+  private backfillProviderSessionId(slot: ProviderSlot): void {
     const session = this.options.session;
     const key = slot.adapter.provider;
+    const existing = session.meta.providerSessions[key];
+    const nativeId = this.nativeSessionId(slot) ?? existing?.providerSessionId;
+    if (nativeId === existing?.providerSessionId) return; // 无变化不写盘
     session.setProviderSession(key, {
-      ...session.meta.providerSessions[key],
+      ...existing,
       provider: key,
-      providerSessionId: this.nativeSessionId(slot) ?? session.meta.providerSessions[key]?.providerSessionId,
-      syncedSeq: session.readEvents().at(-1)?.seq,
+      providerSessionId: nativeId,
     });
   }
 
@@ -491,7 +573,10 @@ export class BatonSessionRuntime {
   private async ensureProvider(provider: string): Promise<ProviderSlot> {
     let slot = this.slots.get(provider);
     if (!slot) {
-      const adapter = this.options.createAdapter(provider);
+      const adapter = this.options.createAdapter(provider, {
+        approvalHandler: this.approvalHandler,
+        questionHandler: this.questionHandler,
+      });
       const created: ProviderSlot = { adapter, freshNative: true };
       slot = created;
       this.slots.set(provider, created);

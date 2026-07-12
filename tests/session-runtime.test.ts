@@ -15,7 +15,7 @@ import type {
 } from "../src/adapters/types.ts";
 import type { AnyEventEnvelope, PromptBlock } from "../src/events/types.ts";
 import { textOf } from "../src/events/types.ts";
-import { BatonSessionRuntime } from "../src/session/runtime.ts";
+import { BatonSessionRuntime, type InteractionHandlers } from "../src/session/runtime.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 class FakeAdapter implements AgentAdapter {
@@ -266,5 +266,92 @@ describe("BatonSessionRuntime", () => {
     expect(codex.synced[0]).toContain("new claude work");
     expect(codex.synced[0]).not.toContain("old codex work");
     expect(session.meta.providerSessions.codex?.providerSessionId).toBe("codex-native");
+  });
+});
+
+// ---- 交互 resolver 注册表：adapter 的 await 点由 resolvePermission/resolveQuestion 唤醒 ----
+// 事件留痕（request/resolved）由 adapter 负责；runtime 只持有 requestId → resolver 通道。
+
+describe("interaction resolver registry", () => {
+  /** 先审批、后提问、再收口的交互式 fake adapter；handlers 由 runtime 经 createAdapter 注入 */
+  class InteractiveAdapter implements AgentAdapter {
+    readonly provider = "codex";
+    readonly capabilities: AdapterCapabilities = { prompt: {} };
+    sink?: EventSink;
+
+    constructor(private readonly handlers: InteractionHandlers) {}
+
+    async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+      this.sink = sink;
+      return { provider: this.provider, providerSessionId: "ia-ref", resumed: false };
+    }
+
+    async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+      const emit = (ev: Parameters<EventSink>[0]) => this.sink?.({ ...ev, turnId: input.turnId });
+      emit({ kind: "state_update", provider: this.provider, payload: { state: "running" } });
+      void (async () => {
+        const request = {
+          requestId: "ar_1",
+          title: "Run command?",
+          options: [{ optionId: "allow", name: "Allow", kind: "allow_once" as const }],
+        };
+        emit({ kind: "permission_request", provider: this.provider, payload: request });
+        const decision = await this.handlers.approvalHandler(request);
+        emit({
+          kind: "permission_resolved",
+          provider: this.provider,
+          payload: { requestId: "ar_1", outcome: "selected", optionId: decision.optionId },
+        });
+
+        const question = {
+          requestId: "qr_1",
+          questions: [{ questionId: "q1", header: "Scope", question: "Which scope?" }],
+        };
+        emit({ kind: "question_request", provider: this.provider, payload: question });
+        const answers = await this.handlers.questionHandler(question);
+        emit({
+          kind: "question_resolved",
+          provider: this.provider,
+          payload: { requestId: "qr_1", outcome: "answered", answers: answers.answers },
+        });
+
+        emit({ kind: "state_update", provider: this.provider, payload: { state: "idle", stopReason: "end_turn" } });
+      })();
+      return { accepted: true };
+    }
+
+    async cancel(_ref: ProviderSessionRef): Promise<void> {}
+    async close(_ref: ProviderSessionRef): Promise<void> {}
+  }
+
+  test("resolve wakes the adapter exactly once; unknown/stale ids report false", async () => {
+    const runtime = new BatonSessionRuntime({
+      session,
+      mentionBudgetChars: 4096,
+      createAdapter: (_name, handlers) => new InteractiveAdapter(handlers),
+    });
+
+    const turn = runtime.submit("codex", [{ type: "text", text: "do it" }]);
+    await Bun.sleep(5); // permission_request 已落盘、resolver 已注册
+
+    expect(runtime.resolvePermission("ar_unknown", { optionId: "allow" })).toBe(false);
+    expect(runtime.resolvePermission("ar_1", { optionId: "allow" })).toBe(true);
+    expect(runtime.resolvePermission("ar_1", { optionId: "allow" })).toBe(false); // resolver 一次性
+
+    await Bun.sleep(5); // question_request 已落盘
+    expect(runtime.resolveQuestion("qr_1", { answers: { q1: ["prod"] } })).toBe(true);
+    await turn;
+
+    const events = session.readEvents();
+    expect(
+      events.find((ev) => ev.kind === "permission_resolved")?.payload,
+    ).toMatchObject({ requestId: "ar_1", outcome: "selected", optionId: "allow" });
+    expect(
+      events.find((ev) => ev.kind === "question_resolved")?.payload,
+    ).toMatchObject({ requestId: "qr_1", outcome: "answered", answers: { q1: ["prod"] } });
+    // 事件流收支平衡：pending 投影最终为空
+    const state = session.loadState();
+    expect(state.pendingPermissions.size).toBe(0);
+    expect(state.pendingQuestions.size).toBe(0);
   });
 });

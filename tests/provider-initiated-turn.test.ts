@@ -86,7 +86,8 @@ describe("observed turn presentation", () => {
     });
     let view = protocol.getView();
     expect(view.busy).toBe(true);
-    const line = view.runStatus?.find((item) => item.id === "run:observed");
+    // per-turn 行：每个 observed turn 一行，id 携带 turnId
+    const line = view.runStatus?.find((item) => item.id === "run:observed:t_obs");
     expect(line).toBeDefined();
     expect(line?.author).toBe("claude");
     expect(line?.label).toContain("background");
@@ -101,7 +102,35 @@ describe("observed turn presentation", () => {
     });
     view = protocol.getView();
     expect(view.busy).toBe(false);
-    expect(view.runStatus?.some((item) => item.id === "run:observed")).toBe(false);
+    expect(view.runStatus?.some((item) => item.id.startsWith("run:observed"))).toBe(false);
+    await protocol.exit();
+  });
+
+  test("concurrent observed turns each get their own run-status line", async () => {
+    const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+    for (const turnId of ["t_obs1", "t_obs2"]) {
+      session.append({
+        kind: "state_update",
+        provider: "claude-code",
+        turnId,
+        payload: { state: "running", origin: "provider" },
+      });
+    }
+    let view = protocol.getView();
+    expect(view.busy).toBe(true);
+    expect(view.runStatus?.filter((item) => item.id.startsWith("run:observed:"))).toHaveLength(2);
+
+    // 一个收口不影响另一个（单槽时代任何 idle 都会全局清空）
+    session.append({
+      kind: "state_update",
+      provider: "claude-code",
+      turnId: "t_obs1",
+      payload: { state: "idle", stopReason: "end_turn" },
+    });
+    view = protocol.getView();
+    expect(view.busy).toBe(true);
+    expect(view.runStatus?.filter((item) => item.id.startsWith("run:observed:"))).toHaveLength(1);
+    expect(view.runStatus?.some((item) => item.id === "run:observed:t_obs2")).toBe(true);
     await protocol.exit();
   });
 });

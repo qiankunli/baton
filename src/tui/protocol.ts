@@ -18,28 +18,19 @@ import type {
 import { COMMANDS, parseProvider, PROVIDERS, type CommandName, type ProviderName } from "../commands/registry.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
-import {
-  textOf,
-  type DiffBlock,
-  type PermissionRequest,
-  type PromptBlock,
-  type QuestionRequest,
-} from "../events/types.ts";
-import { createProviderAdapter, providerSessionKey } from "../providers/registry.ts";
+import { textOf, type DiffBlock, type PromptBlock } from "../events/types.ts";
+import { createProviderAdapter, providerSessionKey, providerShortName } from "../providers/registry.ts";
 import { openBatonSession } from "../session/open.ts";
 import { BatonSessionRuntime } from "../session/runtime.ts";
-import { applyEvent, type SessionState, type ToolCallState } from "../store/reduce.ts";
+import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from "../store/reduce.ts";
 import type { SessionHandle, SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
 import { sessionPickerOptions, type SessionPickerMode } from "./session-picker.tsx";
 
-// 展示名同时是 theme.ts PROVIDER_COLORS 的着色 key，两处保持一致
-const PROVIDER_LABEL: Record<string, string> = { codex: "codex", "claude-code": "claude" };
-
-/** provider → 时间线 author 展示名；未知 provider 原样展示。着色由 theme.agentColorFor 按该名字统一处理。 */
+/** provider（id 或 wire key）→ 时间线 author 展示名；归一与着色 key 统一走 registry。 */
 function providerAuthor(provider: string | undefined): string | undefined {
   if (!provider) return undefined;
-  return PROVIDER_LABEL[provider] ?? provider;
+  return providerShortName(provider);
 }
 
 export const CHAT_COMMANDS: readonly CommandSpec[] = COMMANDS;
@@ -52,9 +43,17 @@ export function userVisibleText(text: string): string {
  * Run status 文案合成（design §5.9）：运行阶段（compacting…）覆盖默认 thinking；
  * willRetry 错误仅当它是最新事件时显示 retrying——其后一旦有任何事件即视为已恢复，
  * 避免"重试成功后 retrying 挂到 turn 结束"。
+ * phase 按 turn 取（并发 turn 各有各的阶段）；turnId 缺省时退化为任一带 phase 的 turn。
  */
-export function runStatusLabel(state: Pick<SessionState, "runPhase" | "lastError" | "lastSeq">): string {
-  if (state.runPhase) return state.runPhase.title ?? `${state.runPhase.phase}…`;
+export function runStatusLabel(
+  state: Pick<SessionState, "activeTurns" | "lastError" | "lastSeq">,
+  turnId?: string,
+): string {
+  const phase =
+    turnId !== undefined
+      ? state.activeTurns.get(turnId)?.phase
+      : [...state.activeTurns.values()].find((turn) => turn.phase)?.phase;
+  if (phase) return phase.title ?? `${phase.phase}…`;
   if (state.lastError?.willRetry && state.lastError.seq === state.lastSeq) return "retrying…";
   return "thinking…";
 }
@@ -83,18 +82,6 @@ export function thoughtDisplayBlocks(text: string): ThoughtDisplayBlock[] {
     });
 }
 
-interface PendingApproval {
-  id: string;
-  request: PermissionRequest;
-  resolve: (d: { optionId: string }) => void;
-}
-
-interface PendingQuestion {
-  id: string;
-  request: QuestionRequest;
-  resolve: (d: { answers: Record<string, string[]> }) => void;
-}
-
 interface PendingPicker {
   id: string;
   title: string;
@@ -109,8 +96,6 @@ export class BatonChatProtocol implements ChatProtocol {
   private agent: ProviderName;
   private status: StatusMessage | null = null;
   private commandOutput: TranscriptItem | null = null;
-  private approvals: PendingApproval[] = [];
-  private questions: PendingQuestion[] = [];
   private picker: PendingPicker | null = null;
   private nextOverlayId = 1;
   private listeners = new Set<() => void>();
@@ -297,20 +282,24 @@ export class BatonChatProtocol implements ChatProtocol {
     })();
   }
 
+  /**
+   * 审批卡片应答 → runtime 的 resolver 注册表（id 即事件流里的 requestId）。
+   * 卡片消失不在这里发生：被唤醒的 adapter 发 permission_resolved 落盘，
+   * reduced pending 删除后视图自然更新——UI 只消费事件流投影，不维护第二份状态。
+   */
   resolveApproval(id: string, optionId: string): void {
-    const index = this.approvals.findIndex((approval) => approval.id === id);
-    if (index < 0) return;
-    const [approval] = this.approvals.splice(index, 1);
-    approval!.resolve({ optionId });
-    this.changed();
+    if (!this.runtime.resolvePermission(id, { optionId })) {
+      // 无 resolver：请求已被应答，或是崩溃残留（新进程没有等待中的 adapter）
+      this.status = { text: "approval request is no longer pending", tone: "info" };
+      this.changed();
+    }
   }
 
   resolveQuestion(id: string, answers: QuestionAnswers): void {
-    const index = this.questions.findIndex((question) => question.id === id);
-    if (index < 0) return;
-    const [question] = this.questions.splice(index, 1);
-    question!.resolve({ answers });
-    this.changed();
+    if (!this.runtime.resolveQuestion(id, { answers })) {
+      this.status = { text: "question is no longer pending", tone: "info" };
+      this.changed();
+    }
   }
 
   recallQueued(): { text: string } | null {
@@ -329,29 +318,13 @@ export class BatonChatProtocol implements ChatProtocol {
 
   // ===== 内部 =====
 
-  /** adapter 的审批回调：挂进队列，由 TUI 的审批卡片经 resolveApproval 应答 */
-  private approvalHandler = (request: PermissionRequest): Promise<{ optionId: string }> =>
-    new Promise((resolve) => {
-      this.approvals.push({ id: `ap_${this.nextOverlayId++}`, request, resolve });
-      this.changed();
-    });
-
-  private questionHandler = (request: QuestionRequest): Promise<{ answers: Record<string, string[]> }> =>
-    new Promise((resolve) => {
-      this.questions.push({ id: `qu_${this.nextOverlayId++}`, request, resolve });
-      this.changed();
-    });
-
   private createRuntime(): BatonSessionRuntime {
     return new BatonSessionRuntime({
       session: this.session,
       mentionBudgetChars: this.config.mentionBudgetChars,
-      createAdapter: (name) =>
-        createProviderAdapter(name as ProviderName, {
-          approvalHandler: this.approvalHandler,
-          questionHandler: this.questionHandler,
-          config: this.config,
-        }),
+      // 交互回调由 runtime 提供（resolver 注册表）：protocol 不再持有交互状态
+      createAdapter: (name, handlers) =>
+        createProviderAdapter(name as ProviderName, { ...handlers, config: this.config }),
       providerSessionKey: (name) => providerSessionKey(name as ProviderName),
       onStateChange: () => this.changed(),
     });
@@ -446,20 +419,23 @@ export class BatonChatProtocol implements ChatProtocol {
   private buildView(): ChatViewState {
     const v = this.state;
     const active = this.runtime.activeProvider;
-    const approval = this.approvals[0];
-    const question = this.questions[0];
+    // pending 交互从事件流投影（Map 保插入序，取最早的一个）；id 即 requestId，
+    // 应答经 runtime 的 resolver 注册表回到 adapter 的 await 点
+    const approval = v.pendingPermissions.values().next().value;
+    const question = v.pendingQuestions.values().next().value;
     const selectedModel = this.runtime.currentModel(this.agent) ?? "default";
     const selectedBusy = active === this.agent;
     // Agent Status（贴 composer 顶部）：主行=当前输入目标（provider · model）常驻，
     // 运行相位（语义合成在 baton：phase/retry/thinking）仅 busy 时附加；跳秒由组件按 startedAt 自理。
     // 输入目标 ≠ 正在运行的 provider 时（运行中切了 /provider），运行者单独一行——
     // 未来 provider 上报的子 agent 状态也走附加行（best-effort），行形状已就绪。
+    const activeTurnId = this.runtime.activeTurnId;
     const runStatus: RunStatusItem[] = [
       selectedBusy
         ? {
             id: `agent:${this.agent}`,
             author: providerAuthor(this.agent),
-            label: `${selectedModel} · ${runStatusLabel(v)}`,
+            label: `${selectedModel} · ${runStatusLabel(v, activeTurnId)}`,
             startedAt: this.runtime.activeStartedAt,
             hint: "Esc to interrupt",
           }
@@ -469,24 +445,25 @@ export class BatonChatProtocol implements ChatProtocol {
       runStatus.push({
         id: `run:${active}`,
         author: providerAuthor(active),
-        label: runStatusLabel(v),
+        label: runStatusLabel(v, activeTurnId),
         startedAt: this.runtime.activeStartedAt,
         hint: "Esc to interrupt",
       });
     }
-    // observed turn（provider 自发回合，如后台任务唤醒）：没有 driven turn 时也要呈现
-    // 运行态，否则 agent 在"静默"状态下说话。无 hint——Esc 中断的是 runtime 队列里的
-    // driven turn，管不到 provider 自己发起的回合（v1 不支持打断 observed turn）。
-    const observedRun = active === undefined && v.activeRun?.origin === "provider" ? v.activeRun : undefined;
-    if (observedRun) {
+    // observed turn（provider 自发回合，如后台任务唤醒）：每个各占一行——driven turn
+    // 运行时并发的后台回合同样要呈现，否则 agent 在"静默"状态下说话。无 hint——Esc
+    // 中断的是 runtime 队列里的 driven turn，管不到 provider 自己发起的回合
+    // （v1 不支持打断 observed turn）。
+    const observedRuns = [...v.activeTurns.values()].filter((turn) => turn.origin === "provider");
+    for (const run of observedRuns) {
       runStatus.push({
-        id: "run:observed",
-        author: providerAuthor(observedRun.provider),
-        label: `${runStatusLabel(v)} · background`,
-        startedAt: observedRun.startedAt,
+        id: `run:observed:${run.turnId}`,
+        author: providerAuthor(run.provider),
+        label: `${runStatusLabel(v, run.turnId)} · background`,
+        startedAt: run.startedAt,
       });
     }
-    const busy = active !== undefined || observedRun !== undefined;
+    const busy = active !== undefined || observedRuns.length > 0;
     // plan 互补显示（design §5.9）：同一时刻只出现在一个地方——进行中归 pin（现在时），
     // 盖棺归 transcript（过去时）。pin 显示期间 transcript 不渲染该 plan 卡（避免同屏两份、
     // 且过去时区域不该有实时改写的块）；全部完成 pin 停发，终态卡在 timeline 原位出现供回看。
@@ -513,12 +490,12 @@ export class BatonChatProtocol implements ChatProtocol {
         ? { id: this.picker.id, title: this.picker.title, options: this.picker.options }
         : null,
       approval: approval
-        ? { id: approval.id, title: approval.request.title, options: approval.request.options }
+        ? { id: approval.requestId, title: approval.title, options: approval.options }
         : null,
       question: question
         ? {
-            id: question.id,
-            questions: question.request.questions.map((prompt) => ({
+            id: question.requestId,
+            questions: question.questions.map((prompt) => ({
               id: prompt.questionId,
               header: prompt.header,
               question: prompt.question,
@@ -641,7 +618,7 @@ function buildTranscript(state: SessionState, pinnedPlanId?: string): Transcript
       if (msg.role === "thought") {
         const turnCompleted = state.turnSummaries.some((summary) => summary.turnId === msg.turnId);
         const status =
-          msg.streamStatus === "completed" || turnCompleted || state.runState !== "running"
+          msg.streamStatus === "completed" || turnCompleted || !isTurnRunning(state, msg.turnId)
             ? "completed"
             : "in_progress";
         for (const [index, block] of thoughtDisplayBlocks(textOf(msg.content)).entries()) {
@@ -667,7 +644,8 @@ function buildTranscript(state: SessionState, pinnedPlanId?: string): Transcript
         ...(msg.role === "agent"
           ? {
               format: "markdown" as const,
-              streaming: msg.streamStatus === "in_progress" && state.runState === "running",
+              // 流式指示按消息所属 turn 判：并发 turn 下别人收口不打断自己的流
+              streaming: msg.streamStatus === "in_progress" && isTurnRunning(state, msg.turnId),
             }
           : { format: "plain" as const }),
       });

@@ -90,7 +90,7 @@ describe("BatonChatProtocol view projection", () => {
     state: {
       plans: Map<string, { planId: string; entries: Array<{ content: string; status: string }> }>;
       timeline: Array<{ type: string; id: string }>;
-      activeRun?: { provider?: string; origin: "user" | "provider"; startedAt?: number };
+      activeTurns: Map<string, { turnId: string; provider?: string; origin: "user" | "provider"; startedAt?: number }>;
     };
     changed: () => void;
   };
@@ -133,7 +133,7 @@ describe("BatonChatProtocol view projection", () => {
       });
       internals.state.timeline.push({ type: "plan", id: "p1" });
       // pin 是"现在时"层：需有回合在运行（observed run 也算）
-      internals.state.activeRun = { provider: "claude-code", origin: "provider" };
+      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "claude-code", origin: "provider" });
       internals.changed();
       expect(protocol.getView().plan).toEqual([
         { content: "step one", status: "completed" },
@@ -144,14 +144,14 @@ describe("BatonChatProtocol view projection", () => {
       expect(planInTranscript()).toBe(false);
 
       // idle 且未完成：pin 卸下（搁置即过去时）——否则状态更新缺失/中途放弃时 pin 永驻
-      internals.state.activeRun = undefined;
+      internals.state.activeTurns.clear();
       internals.changed();
       expect(protocol.getView().plan).toBeUndefined();
       expect(protocol.getView().footer).not.toContain("plan:");
       expect(planInTranscript()).toBe(true);
 
       // 回合重新开跑：未完成 plan 重新上 pin，transcript 卡随之撤下
-      internals.state.activeRun = { provider: "claude-code", origin: "provider" };
+      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "claude-code", origin: "provider" });
       internals.changed();
       expect(protocol.getView().plan).toHaveLength(2);
       expect(planInTranscript()).toBe(false);
@@ -344,17 +344,28 @@ describe("toolTranscriptItem", () => {
 // 不经过 BatonChatProtocol）；/sessions 的会话内切换浮层仍由 protocol 承载。
 
 describe("runStatusLabel", () => {
-  const base = { runPhase: undefined, lastError: undefined, lastSeq: 5 };
+  const base = { activeTurns: new Map(), lastError: undefined, lastSeq: 5 };
+  const withPhase = (turnId: string, phase: { phase: string; title?: string }) => ({
+    ...base,
+    activeTurns: new Map([[turnId, { turnId, origin: "user" as const, phase }]]),
+  });
 
   test("defaults to thinking", () => {
     expect(runStatusLabel(base)).toBe("thinking…");
   });
 
   test("phase overrides thinking; title wins over generic phase text", () => {
-    expect(runStatusLabel({ ...base, runPhase: { phase: "compacting", title: "Compacting context…" } })).toBe(
+    expect(runStatusLabel(withPhase("t1", { phase: "compacting", title: "Compacting context…" }), "t1")).toBe(
       "Compacting context…",
     );
-    expect(runStatusLabel({ ...base, runPhase: { phase: "warming" } })).toBe("warming…");
+    expect(runStatusLabel(withPhase("t1", { phase: "warming" }), "t1")).toBe("warming…");
+  });
+
+  test("phase is per-turn: another turn's phase does not leak", () => {
+    const state = withPhase("t1", { phase: "compacting" });
+    expect(runStatusLabel(state, "t2")).toBe("thinking…");
+    // turnId 缺省时退化为任一带 phase 的 turn
+    expect(runStatusLabel(state)).toBe("compacting…");
   });
 
   test("willRetry shows retrying only while the error is the latest event", () => {
@@ -362,6 +373,79 @@ describe("runStatusLabel", () => {
     expect(runStatusLabel({ ...base, lastError: err })).toBe("retrying…");
     // 其后有任何事件（lastSeq 前进）即视为已恢复
     expect(runStatusLabel({ ...base, lastError: err, lastSeq: 6 })).toBe("thinking…");
+  });
+});
+
+describe("interaction eventization: pending projects from the event stream", () => {
+  const APPROVAL_OPTIONS = [
+    { optionId: "allow", name: "Allow", kind: "allow_once" as const },
+    { optionId: "deny", name: "Deny", kind: "reject_once" as const },
+  ];
+
+  test("approval card follows permission_request/resolved events; stale answer is a hint, not a crash", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-interaction-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+
+      // 事件流是 pending 交互的唯一真相源：request 落盘即出卡片，id = requestId
+      session.append({
+        kind: "permission_request",
+        provider: "claude-code",
+        turnId: "t1",
+        payload: { requestId: "ar_1", title: "Write file?", options: APPROVAL_OPTIONS },
+      });
+      let view = protocol.getView();
+      expect(view.approval).toMatchObject({ id: "ar_1", title: "Write file?" });
+
+      // 无 live resolver（如崩溃残留）：应答提示 stale，不静默吞掉
+      protocol.resolveApproval("ar_1", "allow");
+      view = protocol.getView();
+      expect(view.approval).not.toBeNull(); // 卡片消失只由 resolved 事件驱动
+      expect(view.status?.text).toContain("no longer pending");
+
+      // resolved 落盘 → 卡片消失
+      session.append({
+        kind: "permission_resolved",
+        provider: "baton",
+        payload: { requestId: "ar_1", outcome: "cancelled" },
+      });
+      expect(protocol.getView().approval).toBeNull();
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("question card follows question_request/resolved events", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-question-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+
+      session.append({
+        kind: "question_request",
+        provider: "codex",
+        turnId: "t1",
+        payload: {
+          requestId: "qr_1",
+          questions: [{ questionId: "q1", header: "Scope", question: "Which scope?" }],
+        },
+      });
+      expect(protocol.getView().question).toMatchObject({ id: "qr_1" });
+
+      session.append({
+        kind: "question_resolved",
+        provider: "baton",
+        payload: { requestId: "qr_1", outcome: "cancelled" },
+      });
+      expect(protocol.getView().question).toBeNull();
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

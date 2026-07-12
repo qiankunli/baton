@@ -101,6 +101,8 @@ export function sessionPreview(text: string): string | undefined {
 function explicitSessionTitle(meta: SessionMeta): string | undefined {
   const title = meta.title?.trim();
   if (!title) return undefined;
+  // 冻结的 legacy 集合：匹配的是历史版本写入的自动标题，刻意不从 provider registry
+  // 派生——将来新增 provider 不会产生这种标题，跟随 registry 反而会误伤同名用户标题。
   const generated = ["chat", "codex", "claude", "claude-code"].flatMap((agent) => {
     const base = `${agent} @ ${meta.cwd}`;
     return [base, `${base} (fork)`];
@@ -512,7 +514,9 @@ export class SessionHandle {
 
     const summary: TurnSummary = {
       turnId,
-      stopReason: state.lastStopReason as StopReason | undefined,
+      // per-turn 取值：输入虽已按 turnId 过滤，但显式按 turn 取让它对"过滤集混入
+      // 他人终态"的任何未来变化免疫（无 turnId 的迟到终态只会进 lastStopReason）
+      stopReason: (state.stopReasons.get(turnId) ?? state.lastStopReason) as StopReason | undefined,
       userText: userText || undefined,
       agentText: agentText || undefined,
       toolCalls,

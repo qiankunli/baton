@@ -3,15 +3,16 @@
 
 import { defaultTheme, type Theme } from "chat-tui";
 
+import { PROVIDER_REGISTRY } from "../providers/registry.ts";
+
 /**
- * 已知 provider 的固定认色（key 是 protocol.ts PROVIDER_LABEL 之后的展示名，
- * 两处需保持一致）。固定而不是哈希分配：用户会形成"橙=claude"的肌肉记忆，
- * 颜色不应随名字或池子调整而漂移。取色避开 user 蓝 / error 红 / success 绿。
+ * 已知 provider 的固定认色，从 registry 派生（shortName 即 author 展示名 =
+ * 着色 key，单一来源，不再靠注释约定两处一致）。取色约束见 ProviderDefinition.color
+ * 的注释：避开 user 蓝 / error 红 / success 绿。
  */
-const PROVIDER_COLORS: Record<string, string> = {
-  claude: "#ff9e64", // 橙
-  codex: "#73daca", // 青
-};
+const PROVIDER_COLORS: Record<string, string> = Object.fromEntries(
+  PROVIDER_REGISTRY.map((definition) => [definition.shortName, definition.color]),
+);
 
 /**
  * 未知 provider 的兜底池：provider 是开放扩展点，新 provider 按名字哈希

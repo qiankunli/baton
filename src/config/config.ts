@@ -7,9 +7,11 @@ import { join } from "node:path";
 
 import { parse, stringify } from "yaml";
 
+import { PROVIDERS, type ProviderName } from "../providers/ids.ts";
+
 export interface BatonConfig {
-  /** 打开 TUI / REPL 时的默认 agent */
-  defaultAgent: "codex" | "claude";
+  /** 打开 TUI / REPL 时的默认 agent（canonical provider id） */
+  defaultAgent: ProviderName;
   /** claude 可执行文件路径（如公司包装器 reclaude）；env BATON_CLAUDE_BIN 优先 */
   claudeExecutable?: string;
   /** codex 启动命令（headless 必须是 app-server 形态） */
@@ -63,7 +65,7 @@ export function loadConfig(rootDir?: string): BatonConfig {
         ? fromFile.codexCommand
         : DEFAULT_CONFIG.codexCommand,
   };
-  if (merged.defaultAgent !== "codex" && merged.defaultAgent !== "claude") {
+  if (!(PROVIDERS as readonly string[]).includes(merged.defaultAgent)) {
     merged.defaultAgent = DEFAULT_CONFIG.defaultAgent;
   }
   if (!Number.isFinite(merged.mentionBudgetChars) || merged.mentionBudgetChars <= 0) {
