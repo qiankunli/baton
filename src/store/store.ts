@@ -100,6 +100,8 @@ export function sessionPreview(text: string): string | undefined {
 function explicitSessionTitle(meta: SessionMeta): string | undefined {
   const title = meta.title?.trim();
   if (!title) return undefined;
+  // 冻结的 legacy 集合：匹配的是历史版本写入的自动标题，刻意不从 provider registry
+  // 派生——将来新增 provider 不会产生这种标题，跟随 registry 反而会误伤同名用户标题。
   const generated = ["chat", "codex", "claude", "claude-code"].flatMap((agent) => {
     const base = `${agent} @ ${meta.cwd}`;
     return [base, `${base} (fork)`];

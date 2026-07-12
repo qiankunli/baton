@@ -19,7 +19,7 @@ import { COMMANDS, parseProvider, PROVIDERS, type CommandName, type ProviderName
 import type { BatonConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
 import { textOf, type DiffBlock, type PromptBlock } from "../events/types.ts";
-import { createProviderAdapter, providerSessionKey } from "../providers/registry.ts";
+import { createProviderAdapter, providerSessionKey, providerShortName } from "../providers/registry.ts";
 import { openBatonSession } from "../session/open.ts";
 import { BatonSessionRuntime } from "../session/runtime.ts";
 import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from "../store/reduce.ts";
@@ -27,13 +27,10 @@ import type { SessionHandle, SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
 import { sessionPickerOptions, type SessionPickerMode } from "./session-picker.tsx";
 
-// 展示名同时是 theme.ts PROVIDER_COLORS 的着色 key，两处保持一致
-const PROVIDER_LABEL: Record<string, string> = { codex: "codex", "claude-code": "claude" };
-
-/** provider → 时间线 author 展示名；未知 provider 原样展示。着色由 theme.agentColorFor 按该名字统一处理。 */
+/** provider（id 或 wire key）→ 时间线 author 展示名；归一与着色 key 统一走 registry。 */
 function providerAuthor(provider: string | undefined): string | undefined {
   if (!provider) return undefined;
-  return PROVIDER_LABEL[provider] ?? provider;
+  return providerShortName(provider);
 }
 
 export const CHAT_COMMANDS: readonly CommandSpec[] = COMMANDS;

@@ -1,9 +1,9 @@
 // Baton 只实现自己承诺的命令，不透传各 provider TUI 的私有 slash command。
 // `/` 控制 baton/provider；`@` 只引用 baton session/turn/产物。
 
-import { PROVIDERS, type ProviderName } from "../providers/registry.ts";
+import { PROVIDERS, parseProvider, type ProviderName } from "../providers/ids.ts";
 
-export { PROVIDERS, type ProviderName };
+export { PROVIDERS, parseProvider, type ProviderName };
 
 export type CommandName = "provider" | "model" | "sessions" | "status" | "new" | "exit";
 
@@ -49,7 +49,3 @@ export const COMMANDS: readonly CommandDefinition[] = [
   { name: "exit", description: "Exit baton", scope: "baton", runPolicy: "always" },
 ];
 
-export function parseProvider(value: string): ProviderName | null {
-  const normalized = value.trim().toLowerCase();
-  return PROVIDERS.find((provider) => provider === normalized) ?? null;
-}

@@ -6,13 +6,12 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 
-import { ClaudeAdapter } from "../adapters/claude/adapter.ts";
-import { CodexAdapter } from "../adapters/codex/adapter.ts";
-import type { AgentAdapter } from "../adapters/types.ts";
+import { isNativeSessionIdentifiable } from "../adapters/types.ts";
 import { ensureConfigFile, loadConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
 import { newId } from "../events/ids.ts";
 import type { PermissionRequest, QuestionRequest } from "../events/types.ts";
+import { createProviderAdapter, parseProvider } from "../providers/registry.ts";
 import { SessionStore, sessionDisplayTitle } from "../store/store.ts";
 
 function argValue(flag: string): string | undefined {
@@ -57,24 +56,23 @@ async function main(): Promise<void> {
   const rootArg = argValue("--root");
   ensureConfigFile(rootArg);
   const config = loadConfig(rootArg);
-  const agentName = argValue("--agent") ?? config.defaultAgent;
+  const requested = argValue("--agent") ?? config.defaultAgent;
+  // registry 全路径接管：不再手写 provider 分支（未知值以前静默落到 codex，现在显式报错）
+  const agentName = parseProvider(requested);
+  if (!agentName) {
+    stdout.write(`unknown agent: ${requested}\n`);
+    process.exit(1);
+  }
   const cwd = argValue("--cwd") ?? process.cwd();
   const store = new SessionStore(rootArg);
   const session = store.createSession({ cwd });
   stdout.write(`baton session: ${session.id}\nlog: ${session.dir}/session.jsonl\n`);
 
-  const adapter: AgentAdapter =
-    agentName === "claude"
-      ? new ClaudeAdapter({
-          approvalHandler: askApproval,
-          questionHandler: askQuestions,
-          executablePath: config.claudeExecutable,
-        })
-      : new CodexAdapter({
-          approvalHandler: askApproval,
-          questionHandler: askQuestions,
-          command: config.codexCommand,
-        });
+  const adapter = createProviderAdapter(agentName, {
+    approvalHandler: askApproval,
+    questionHandler: askQuestions,
+    config,
+  });
 
   // open 时绑定 session 级 sink；turn 完成以 idle 终态事件为准（design §4.1）
   let sawOutput = false;
@@ -128,8 +126,9 @@ async function main(): Promise<void> {
     await done;
     turnDone = undefined;
     const summary = session.summarizeTurn(turnId);
-    // Claude 的原生 session id 首轮结束才拿得到，回填 meta 以支持将来 resume
-    if (adapter instanceof ClaudeAdapter) {
+    // 原生 session id 可能首轮结束才拿得到（claude），回填 meta 以支持将来 resume；
+    // 按能力接口判定而不是 instanceof——registry 接管后 CLI 不再 import 具体 adapter
+    if (isNativeSessionIdentifiable(adapter)) {
       const nativeId = adapter.nativeSessionId(ref);
       if (nativeId) {
         session.setProviderSession(adapter.provider, { provider: adapter.provider, providerSessionId: nativeId });
