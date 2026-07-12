@@ -51,6 +51,13 @@ interface ThreadRuntime {
   /** 当前被接受、尚未逻辑终结的 turn */
   activeTurn?: CodexTurn;
   codexTurnId?: string;
+  /**
+   * cancel 早于 codexTurnId 就位（fast-submit 后 turn/start 响应与 turn/started
+   * 通知都未回）时挂起的取消意图；id 就位后由 flushPendingCancel 补发 interrupt。
+   * 没有它，这个窗口内的 cancel 会被静默丢弃——runtime 宽限期到点合成"已取消"
+   * 并推进队列，而原生 codex turn 仍在继续跑。
+   */
+  pendingCancel?: boolean;
   /** 用户在 baton 中选择的模型；作为下一次 turn/start override。 */
   model?: string;
   /** 上次 tokenUsage.total 快照，差分成 usage_update 增量 */
@@ -330,7 +337,10 @@ export class CodexAdapter implements AgentAdapter {
         const started = (resp as { turn?: { id?: string; status?: string } }).turn;
         // 迟到响应（老版本阻塞到 turn 结束才回）可能落在下一 turn 已开始之后：
         // 只在自己仍是 active turn 时才写共享的 codexTurnId
-        if (started?.id && rt.activeTurn === turn) rt.codexTurnId = String(started.id);
+        if (started?.id && rt.activeTurn === turn) {
+          rt.codexTurnId = String(started.id);
+          this.flushPendingCancel(rt);
+        }
         const status = started?.status;
         if (status && status !== "inProgress" && status !== "queued") {
           this.finishTurn(rt, turn, status);
@@ -385,8 +395,22 @@ export class CodexAdapter implements AgentAdapter {
 
   async cancel(ref: ProviderSessionRef): Promise<void> {
     const rt = this.mustThread(ref);
-    if (!rt.codexTurnId) return;
+    const turn = rt.activeTurn;
+    if (!turn || turn.finalized) return;
+    if (!rt.codexTurnId) {
+      // fast-submit 窗口：codex turn id 尚未回，此刻无法定向 interrupt。记下意图，
+      // id 就位后补发；即便补发失败，runtime 的 cancel 宽限期兜底仍会合成终态。
+      rt.pendingCancel = true;
+      return;
+    }
     await rt.peer.request("turn/interrupt", { threadId: rt.threadId, turnId: rt.codexTurnId });
+  }
+
+  /** cancel 早于 codex turn id 就位时的补发：fire-and-forget，失败由 runtime 宽限期兜底 */
+  private flushPendingCancel(rt: ThreadRuntime): void {
+    if (!rt.pendingCancel || !rt.codexTurnId) return;
+    rt.pendingCancel = false;
+    void rt.peer.request("turn/interrupt", { threadId: rt.threadId, turnId: rt.codexTurnId }).catch(() => {});
   }
 
   async close(ref: ProviderSessionRef): Promise<void> {
@@ -429,6 +453,7 @@ export class CodexAdapter implements AgentAdapter {
     if (rt.activeTurn === turn) {
       rt.activeTurn = undefined;
       rt.codexTurnId = undefined;
+      rt.pendingCancel = undefined; // turn 已终结，挂起的取消意图随之失效
     }
   }
 
@@ -447,6 +472,7 @@ export class CodexAdapter implements AgentAdapter {
       case "turn/started": {
         const turn = p.turn as Record<string, unknown> | undefined;
         rt.codexTurnId = turn ? String(turn.id) : undefined;
+        this.flushPendingCancel(rt);
         break;
       }
       case "item/agentMessage/delta":

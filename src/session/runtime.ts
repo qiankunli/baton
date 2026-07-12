@@ -32,13 +32,33 @@ interface QueuedTurn {
   reject: (error: unknown) => void;
 }
 
-/** 正在执行（已被 drain 取走）的 turn；finalized 保证逻辑终结每 turn 只发生一次 */
-interface ActiveTurn {
-  turn: QueuedTurn;
+type TurnRole = "driven" | "observed";
+
+/**
+ * turn 台账记录：一个 turn 从进入执行（driven 被 drain 取走 / observed 开界）到
+ * 逻辑终结的一等状态。所有终态通知按 turnId 查表路由到这里，status 保证逻辑终结
+ * 每 turn 恰好一次（迟到/重复/未知终态一律 inert）。
+ *
+ * 合法迁移：
+ * - （队列，不入台账）→ driven/active：drain 取走 QueuedTurn，runTurn 在 submit 前登记；
+ *   排队中的 turn 留在 queue（无事件可路由），被 recall 的永不入账。
+ * - （无）→ observed/active：`state_update(running, origin:"provider")` 开界登记，不进队列。
+ * - active → finalized：`state_update(idle)` 按 envelope.turnId 命中；或 cancel 宽限期
+ *   到期 / driven admission 失败时合成。此后记录保留在内存作幂等判定依据（会话级规模）。
+ */
+interface TurnRecord {
+  turnId: string;
+  role: TurnRole;
   slot: ProviderSlot;
-  finalized: boolean;
-  /** finalize 时 resolve，释放 drain 循环推进队列 */
-  release: () => void;
+  /** 事件 provider 字段同源（slot.adapter.provider，wire key） */
+  provider: string;
+  status: "active" | "finalized";
+  startedAt: number;
+  stopReason?: StopReason;
+  /** driven 专属：入队原件（canSteer/steer 需要用户侧 provider 名） */
+  turn?: QueuedTurn;
+  /** driven 专属：finalize 时 resolve，释放 drain 循环推进队列 */
+  release?: () => void;
   cancelGraceTimer?: ReturnType<typeof setTimeout>;
 }
 
@@ -91,8 +111,13 @@ export const INTERRUPTED_NOTICE_TITLE = "Conversation interrupted — tell the a
  *   baton 不控制其开始，只划界、记账（turn summary + 同步水位），不进队列。
  *
  * 生命周期由 state event 驱动（design §4.1）：adapter.submit 只确认接收，turn 的
- * 完成以 `state_update(idle)` 为准，经 finalizeTurn 按 baton turn id 幂等收口——
+ * 完成以 `state_update(idle)` 为准，经 finalize 按 baton turn id 幂等收口——
  * 重复/迟到的物理终态（reconnect、transport race）不会二次终结，也不会关闭更新的 turn。
+ *
+ * TurnLedger：driven/observed 统一入 `turns` 台账，终态一律按 envelope.turnId 查表
+ * 路由（不看 slot——按 slot 路由在同 provider driven+observed 并发时会吞掉 observed
+ * 的终态）。driven ≤ 1 是**队列策略**（activeDrivenTurnId 指针 + drain 串行），不是
+ * 台账模型假设；将来放开并行 driven 只改 drain 取件策略，台账与路由不动。
  */
 export class BatonSessionRuntime {
   private readonly slots = new Map<string, ProviderSlot>();
@@ -101,11 +126,19 @@ export class BatonSessionRuntime {
   private draining = false;
   private processingProvider?: string;
   private processingStartedAt?: number;
-  private active?: ActiveTurn;
-  /** 已开界、尚未收界的 observed turn（turnId → slot）：idle 到达时据此记账 */
-  private readonly observedTurns = new Map<string, ProviderSlot>();
+  /** turn 台账：turnId → 记录。finalized 记录保留，作迟到终态的幂等判定依据 */
+  private readonly turns = new Map<string, TurnRecord>();
+  /** 队列策略指针：当前唯一 driven turn（本轮 driven ≤ 1；见类 docstring） */
+  private activeDrivenTurnId?: string;
 
   constructor(private readonly options: BatonSessionRuntimeOptions) {}
+
+  /** 当前未终结的 driven turn 记录；无或已终结时 undefined */
+  private activeDriven(): TurnRecord | undefined {
+    if (!this.activeDrivenTurnId) return undefined;
+    const record = this.turns.get(this.activeDrivenTurnId);
+    return record && record.status === "active" ? record : undefined;
+  }
 
   get activeProvider(): string | undefined {
     return this.processingProvider;
@@ -150,8 +183,8 @@ export class BatonSessionRuntime {
    * observed turn（provider 自发）不接受 steer——baton 不拥有其生命周期。
    */
   canSteer(provider: string): boolean {
-    const active = this.active;
-    if (!active || active.finalized) return false;
+    const active = this.activeDriven();
+    if (!active?.turn) return false;
     if (active.turn.provider !== provider) return false;
     if (!active.slot.ref) return false;
     return Boolean(active.slot.adapter.capabilities.steer) && isSteerable(active.slot.adapter);
@@ -163,7 +196,7 @@ export class BatonSessionRuntime {
    * 入队——永不静默丢失输入，也不把降级结果伪装成 steer（effective 如实上报）。
    */
   async steer(provider: string, blocks: PromptBlock[]): Promise<SteerOutcome> {
-    const active = this.active;
+    const active = this.activeDriven();
     if (!active || !this.canSteer(provider) || !active.slot.ref) {
       return { effective: "follow_up", outcome: this.submit(provider, blocks) };
     }
@@ -176,8 +209,8 @@ export class BatonSessionRuntime {
       receipt = await adapter.steer(
         active.slot.ref,
         // steer 消息归属被注入的 turn；messageId 照常由 runtime 分配（design §4.10.1）
-        { turnId: active.turn.turnId, messageId: newId("m"), blocks },
-        active.turn.turnId,
+        { turnId: active.turnId, messageId: newId("m"), blocks },
+        active.turnId,
       );
     } catch {
       // wire 故障视同拒绝：降级路径会经 submit 的正常错误通道暴露 transport 问题，
@@ -235,8 +268,8 @@ export class BatonSessionRuntime {
    * 则合成 terminal error，保证队列永远能推进（不能因 provider 失联而死锁）。
    */
   async cancelActive(): Promise<void> {
-    const active = this.active;
-    if (!active?.slot.ref || active.finalized) return;
+    const active = this.activeDriven();
+    if (!active?.slot.ref) return;
     active.cancelGraceTimer ??= setTimeout(() => {
       this.synthesizeTerminal(active, "cancel grace period expired without provider confirmation");
     }, this.options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS);
@@ -288,9 +321,19 @@ export class BatonSessionRuntime {
       if (!slot.ref) throw new Error(`${turn.provider} failed to start`);
 
       const released = new Promise<void>((resolve) => {
-        // active 必须在 submit 前就位：admission 通过后 adapter 立即经 sink 发
-        // user_message/running，事件路由要能命中本 turn。
-        this.active = { turn, slot, finalized: false, release: resolve };
+        // 台账登记必须在 submit 前就位：admission 通过后 adapter 立即经 sink 发
+        // user_message/running，事件路由要能按 turnId 命中本 turn。
+        this.turns.set(turn.turnId, {
+          turnId: turn.turnId,
+          role: "driven",
+          slot,
+          provider: slot.adapter.provider,
+          status: "active",
+          startedAt: Date.now(),
+          turn,
+          release: resolve,
+        });
+        this.activeDrivenTurnId = turn.turnId;
       });
       this.changed();
 
@@ -331,8 +374,10 @@ export class BatonSessionRuntime {
       });
       await released;
     } catch (error) {
-      // admission/启动失败：本 turn 没有（也不会再有）事件流，直接清理并上抛
-      this.active = undefined;
+      // admission/启动失败：本 turn 没有（也不会再有）事件流，直接终结记录并上抛
+      const record = this.turns.get(turn.turnId);
+      if (record) record.status = "finalized";
+      if (this.activeDrivenTurnId === turn.turnId) this.activeDrivenTurnId = undefined;
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`BatonSession ${this.options.session.id} · ${turn.provider}: ${detail}`, {
         cause: error,
@@ -355,67 +400,63 @@ export class BatonSessionRuntime {
     if (envelope.kind === "state_update") {
       const p = envelope.payload;
       if (p.state === "running" && p.origin === "provider" && envelope.turnId) {
-        // observed turn 开界：只登记，不进队列（design §5.10）
-        this.observedTurns.set(envelope.turnId, slot);
-      } else if (p.state === "idle") {
-        const active = this.active;
-        if (active && active.slot === slot && !active.finalized) {
-          this.finalizeTurn(envelope.turnId, p.stopReason);
-        } else if (envelope.turnId && this.observedTurns.has(envelope.turnId)) {
-          this.finalizeObservedTurn(envelope.turnId);
+        // observed turn 开界：登记入台账，不进队列（design §5.10）
+        if (!this.turns.has(envelope.turnId)) {
+          this.turns.set(envelope.turnId, {
+            turnId: envelope.turnId,
+            role: "observed",
+            slot,
+            provider: slot.adapter.provider,
+            status: "active",
+            startedAt: Date.now(),
+          });
         }
-        // 其余情况是迟到/重复终态：已持久化，不驱动任何生命周期
+      } else if (p.state === "idle") {
+        // 终态一律按 baton turn id 查表路由（不看 slot）。无 turnId 的终态：
+        // 已持久化留痕，但无法归属任何 turn，不驱动生命周期（adapter 契约要求
+        // 终态必带 turnId，由契约测试钉住）。
+        if (envelope.turnId) this.finalize(envelope.turnId, p.stopReason);
       }
     }
     this.changed();
   }
 
   /**
-   * driven turn 的统一有序 finalize 路径（design §4.1）：终态已持久化 →
-   * interrupted notice → 一次 turn summary → 同步元数据 → 释放等待者推进队列。
-   * 按 baton turn id 幂等：迟到/重复终态、或不属于当前 active turn 的终态一律忽略。
+   * 所有 turn 的统一有序 finalize 路径（design §4.1）：终态已持久化 →
+   * （driven 被打断时）interrupted notice → 一次 turn summary → 同步元数据 →
+   * （driven）释放等待者推进队列。observed 只记账，不碰队列——summary 让 provider
+   * 自发产出进入 @ 引用与跨 provider catch-up 的正典历史，否则后台唤醒的结论对
+   * 下一棒 provider 是永久盲区。
+   * 按 baton turn id 幂等：迟到/重复/未知终态一律 inert，不会关闭更新的 turn。
    */
-  private finalizeTurn(turnId: string | undefined, stopReason: StopReason | undefined): void {
-    const active = this.active;
-    if (!active || active.finalized) return;
-    if (turnId !== active.turn.turnId) return; // 迟到终态不能关闭更新的 active turn
-    active.finalized = true;
-    if (active.cancelGraceTimer) clearTimeout(active.cancelGraceTimer);
+  private finalize(turnId: string, stopReason: StopReason | undefined): void {
+    const record = this.turns.get(turnId);
+    if (!record || record.status === "finalized") return;
+    record.status = "finalized";
+    record.stopReason = stopReason;
+    if (record.cancelGraceTimer) clearTimeout(record.cancelGraceTimer);
 
     const session = this.options.session;
-    const slot = active.slot;
-    const key = slot.adapter.provider;
 
     // 用户打断的 turn 在时间线留下醒目标记；排队的后续输入会自然跟在标记后面
-    if (stopReason === "cancelled") {
+    if (record.role === "driven" && stopReason === "cancelled") {
       session.append({
         kind: "_baton_notice",
-        provider: key,
-        turnId: active.turn.turnId,
+        provider: record.provider,
+        turnId,
         payload: { level: "warning", title: INTERRUPTED_NOTICE_TITLE },
       });
     }
 
-    session.summarizeTurnEvent(active.turn.turnId);
-    slot.freshNative = false;
-    this.syncProviderWatermark(slot);
+    session.summarizeTurnEvent(turnId);
+    if (record.role === "driven") record.slot.freshNative = false;
+    this.syncProviderWatermark(record.slot);
 
-    this.active = undefined;
-    active.release();
+    if (record.role === "driven") {
+      if (this.activeDrivenTurnId === turnId) this.activeDrivenTurnId = undefined;
+      record.release?.();
+    }
     this.changed();
-  }
-
-  /**
-   * observed turn 收界：只记账（summary + 同步水位），不碰队列与 active。
-   * summary 让 provider 自发产出进入 @ 引用与跨 provider catch-up 的正典历史——
-   * 否则后台唤醒的结论对下一棒 provider 是永久盲区。
-   */
-  private finalizeObservedTurn(turnId: string): void {
-    const slot = this.observedTurns.get(turnId);
-    if (!slot) return;
-    this.observedTurns.delete(turnId);
-    this.options.session.summarizeTurnEvent(turnId);
-    this.syncProviderWatermark(slot);
   }
 
   /** turn 收界后的共用元数据同步：原生 session id 回填 + syncedSeq 水位推进 */
@@ -431,19 +472,18 @@ export class BatonSessionRuntime {
   }
 
   /** cancel 宽限期到期 / cancel 请求失败：合成结构化 error + idle，走统一事件管线 */
-  private synthesizeTerminal(active: ActiveTurn, message: string): void {
-    if (this.active !== active || active.finalized) return;
-    const provider = active.slot.adapter.provider;
-    this.onAdapterEvent(active.slot, {
+  private synthesizeTerminal(record: TurnRecord, message: string): void {
+    if (record.status === "finalized") return;
+    this.onAdapterEvent(record.slot, {
       kind: "_baton_error_update",
-      provider,
-      turnId: active.turn.turnId,
+      provider: record.provider,
+      turnId: record.turnId,
       payload: { message, retryable: false },
     });
-    this.onAdapterEvent(active.slot, {
+    this.onAdapterEvent(record.slot, {
       kind: "state_update",
-      provider,
-      turnId: active.turn.turnId,
+      provider: record.provider,
+      turnId: record.turnId,
       payload: { state: "idle", stopReason: "cancelled" },
     });
   }
