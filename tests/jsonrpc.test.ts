@@ -61,4 +61,30 @@ describe("JsonRpcPeer", () => {
     peer.close("process exited");
     await expect(p).rejects.toThrow(/closed/);
   });
+
+  // 启动期请求（initialize / thread resume/start / inject_items）卡死不能永久占住
+  // turn 队列：preparing 的退出路径依赖显式超时兜底
+  test("request with timeoutMs rejects when no response arrives", async () => {
+    const { peer } = pair();
+    await expect(peer.request("initialize", {}, { timeoutMs: 10 })).rejects.toThrow(/timed out/);
+  });
+
+  test("timeout is disarmed by a response; late timer stays inert", async () => {
+    const { peer, sent } = pair();
+    const p = peer.request("thread/start", {}, { timeoutMs: 20 });
+    const req = JSON.parse(sent[0]!) as { id: number };
+    peer.feed(`${JSON.stringify({ jsonrpc: "2.0", id: req.id, result: { thread: { id: "th_1" } } })}\n`);
+    expect(await p).toEqual({ thread: { id: "th_1" } });
+    await Bun.sleep(30); // 超时点已过：不得出现迟到 reject / unhandled rejection
+  });
+
+  test("late response after a timeout is ignored", async () => {
+    const { peer, sent } = pair();
+    const p = peer.request("thread/resume", {}, { timeoutMs: 5 });
+    await expect(p).rejects.toThrow(/timed out/);
+    const req = JSON.parse(sent[0]!) as { id: number };
+    expect(() =>
+      peer.feed(`${JSON.stringify({ jsonrpc: "2.0", id: req.id, result: {} })}\n`),
+    ).not.toThrow();
+  });
 });

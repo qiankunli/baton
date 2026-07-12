@@ -22,8 +22,13 @@ export interface OpenOptions {
 
 /**
  * 一轮输入。ID 都由 runtime 分配（design §4.10.1）：turnId 在入队时分配（steer 的
- * expectedTurnId 引用它），messageId 供 adapter 发 user_message upsert；provider 侧
- * 各自的 turn/message id 只进 raw 或 adapter 内部映射，不进 runtime 契约。
+ * expectedTurnId 引用它）；provider 侧各自的 turn/message id 只进 raw 或 adapter
+ * 内部映射，不进 runtime 契约。
+ *
+ * 普通 prompt 的 `user_message` / `state_update(running)` 由 runtime 在出队时落盘
+ * （用户输入是 BatonSession 的事实，不等 provider 冷启动；且 submit 的 blocks 可能
+ * 含 <baton-sync> prepend，不能进正典历史）——adapter **不得**为 prompt 重复发这两个
+ * 事件；messageId 仅供 steer 成功路径发 delivery:"steer" 的 user_message upsert。
  */
 export interface PromptInput {
   /** baton turn ID（t_ 前缀），本 turn 所有事件携带它 */

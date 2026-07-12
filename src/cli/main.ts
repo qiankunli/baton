@@ -112,15 +112,29 @@ async function main(): Promise<void> {
     if (mentions.length) stdout.write(`(injected context summaries from ${mentions.length} session(s))\n`);
 
     const turnId = newId("t");
+    const messageId = newId("m");
     sawOutput = false;
     const done = new Promise<void>((resolve) => {
       turnDone = resolve;
     });
+    // 用户输入的 owner 是驱动方（与 BatonSessionRuntime 同责，design §4.1）：
+    // user_message/running 由 REPL 落盘，adapter 只报告执行过程与终态
+    session.append({
+      kind: "user_message",
+      provider: adapter.provider,
+      turnId,
+      payload: { messageId, content: [{ type: "text", text: prompt }] },
+    });
+    session.append({ kind: "state_update", provider: adapter.provider, turnId, payload: { state: "running" } });
     try {
       // submit 只确认接收；进展与终结经 open 时绑定的 sink 上报
-      await adapter.submit(ref, { turnId, messageId: newId("m"), blocks: [{ type: "text", text: prompt }] });
+      await adapter.submit(ref, { turnId, messageId, blocks: [{ type: "text", text: prompt }] });
     } catch (err) {
-      stdout.write(`\nerror: ${err instanceof Error ? err.message : String(err)}\n`);
+      const message = err instanceof Error ? err.message : String(err);
+      stdout.write(`\nerror: ${message}\n`);
+      // user_message 已落盘：admission 失败也要有结局，不留无终态的半状态
+      session.append({ kind: "_baton_error_update", provider: adapter.provider, turnId, payload: { message, retryable: false } });
+      session.append({ kind: "state_update", provider: adapter.provider, turnId, payload: { state: "idle", stopReason: "error" } });
       continue;
     }
     await done;

@@ -388,12 +388,8 @@ export class ClaudeAdapter implements AgentAdapter {
 
     const turn: ClaudeTurn = { turnId: input.turnId, finalized: false, cancelRequested: false };
     rt.activeTurn = turn;
-    // emit 显式绑定本 turn：上一 turn 的流收尾与本 turn 并发时（steer 场景），
-    // 各自的事件必须盖各自的 turnId，不能在发射时刻读共享的 rt.activeTurn
-    const emit: EventSink = (ev) => this.emit(rt, ev, turn);
-
-    emit({ kind: "user_message", provider: this.provider, payload: { messageId: input.messageId, content: input.blocks } });
-    emit({ kind: "state_update", provider: this.provider, payload: { state: "running" } });
+    // user_message / state_update(running) 由 runtime 在出队时落盘（用户输入是 BatonSession
+    // 的事实，不等 provider 就绪）；adapter 只报告 provider 执行过程与终态。
 
     // 后台消费 SDK 消息流；submit 本身立即回执（design §4.1）
     void this.runQuery(rt, input, turn);
