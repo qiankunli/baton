@@ -230,21 +230,28 @@ composer 里 `@` 触发补全，可引用对象：BatonSession / 单个 turn / t
 
 UI 组件层来自 [chat-tui](https://github.com/qiankunli/chat-tui)（从 baton 抽出的开源库，基于 opentui React reconciler）：baton 侧实现 ChatProtocol——`tui/protocol.ts` 把 runtime/store 状态投影成视图快照、把 intents 翻译成 runtime 操作；补全、分层 Ctrl+C、浮层等交互语义都在 chat-tui。当前布局为 transcript、可增长 composer、状态栏与贴近 composer 的命令 / 引用 / 审批浮层；`/sessions` 提供持久会话切换，`/new` 新建会话。
 
-#### 界面分层：过去时 / 现在时
+#### 界面分层：时态与寿命
 
-界面自上而下分五层，核心区分是信息的**时态与寿命**——越"现在时"的信息越往下、越固定（不随历史滚动）：
+界面自上而下按信息的**时态与寿命**分层——越"现在时"的信息越往下、越固定（不随历史滚动）。带 `[]` 的层是条件渲染：无内容时整层消失、不占高度。
 
 ```text
-Transcript        可滚动历史（过去时；plan 块暂留这里）
-[Current Plan]    预留：若把最新 plan 升级为 pinned 展示，放这层（turn 级长寿命状态）
-Run Status        固定运行状态区（现在时：thinking / compacting / retrying）
-Composer          输入框（命令 / 引用 / 审批浮层贴近它）
-Footer            常驻状态栏（usage、队列、cwd）
+Transcript        可滚动历史（过去时；plan 块留在此层、状态原地更新；子 agent 输出折叠进工具卡）
+[Plan]            全量 plan pin（有未完成项才渲染，全部完成即消失；超长时窗口对准第一个未完成项）
+[Queued]          排队快照（将来时；空则不渲染；空 composer 时 ↑ 按 LIFO 撤回编辑）
+Composer          输入框（现在时）
+  ├ Agent Status  主行：当前输入目标（provider · model）+ 运行相位（thinking · 计时 · Esc hint）；idle 退化为目标标识
+  │               附加行：其他活跃 agent / 子 agent 各一行（best-effort，结束即消失）
+  ├ placeholder   空输入提示（/ commands、@ mentions；有可召回队列时提示 ↑ recall）
+  └ 浮层           命令 / 引用 / 审批，锚定输入框
+Footer            常驻状态栏（usage、队列计数、plan 进度摘要、cwd）
 ```
 
-- **Run Status 不在 scrollbox 里**：运行状态是"现在"的信息，用户翻历史时它必须仍然可见；idle 时区域清空不占高度。plan 与 run status 同为中间过程但寿命不同——plan 是 turn 级、值得留在历史里回看，故进 transcript（未来可另加 pinned 投影）；run status 是秒级阶段、只有当下有意义，只 pinned 不落 transcript。
-- **语义合成在 baton projection，chat-tui 只收展示结构**：projection 的合成规则是——active provider 默认 thinking；`_baton_run_status` 的 phase 覆盖之（如 compacting，来源见 5.2 归一表）；`willRetry` 错误合成 retrying；idle 清空。chat-tui 侧的 `runStatus` 只有 author / label / startedAt / hint，elapsed 跳秒由 TUI 自理，baton 只在状态变化时发快照（避免为跳秒每秒重建整个 view）。着色也走展示结构：不在协议里传颜色，author 沿用 transcript 的 `agentColorFor` 约定，同一 provider 在历史与运行状态区天然同色，颜色决策始终归 Theme。
+- **Agent Status 是输入框的地址标签，不是独立层**：`claude · default · thinking` 回答的是"下一条输入发给谁、它现在在干嘛"——运行状态是输入目标的属性，随 Composer 固定在底部，翻历史时天然可见。主行常驻（idle 只剩目标标识），运行相位是秒级现在时、只有当下有意义，只出现在这里、不落 transcript。plan 寿命不同（turn 级、值得回看），全量始终留在 transcript。
+- **pin 的判断尺：只有"未完成"才 pin，且 pin 带消失规则**：`[Plan]` 层仅在有未完成项时渲染（对齐 opencode sidebar / pi-mono widget 的业界惯例），全部完成即消失；超长 plan 窗口对准第一个未完成项，保证"现在进行到哪一步"始终可见。plan 信息**不进 Agent Status 行**——相位行要求稳定短小、每秒重绘，塞可变长步骤文本会抖动（codex / opencode / pi-mono 三家也均未这么做）；进度摘要（`plan:2/4`）归 Footer。
+- **语义合成在 baton projection，chat-tui 只收展示结构**：projection 的合成规则是——active provider 默认 thinking；`_baton_run_status` 的 phase 覆盖之（如 compacting，来源见 5.2 归一表）；`willRetry` 错误合成 retrying；idle 回落为目标标识主行。chat-tui 侧的 `runStatus` 只有 author / label / startedAt / hint（model 由 projection 拼进 label，chat-tui 不理解 model 概念），elapsed 跳秒由 TUI 自理，baton 只在状态变化时发快照（避免为跳秒每秒重建整个 view）。着色也走展示结构：不在协议里传颜色，author 沿用 transcript 的 `agentColorFor` 约定，同一 provider 在历史与状态行天然同色，颜色决策始终归 Theme。同理，`[Plan]` 的显隐规则（有未完成项才下发）在 projection，chat-tui 只按"非空即渲染"处理。
+- **子 agent 状态是现在时的复数形式**：provider 可上报时（对齐 5.8 的 `parentSessionId` / `agentId` / `agentType` 事件），每个活跃子 agent 在 Agent Status 主行下附加一行、结束即消失；provider 不上报则只显示主行——best-effort，不做正确性承诺。`runStatus` 本就是数组，行形状已就绪。
 - **run status 不塞 `state_update`、不建模成 tool_call**：前者驱动 runtime 的 busy/idle finalize（adapter 终态硬约定），是生命周期语义，混入阶段信息会污染 finalize；后者没有输入输出契约，也不值得在 transcript 占工具卡。
+- **交互提示挂在交互发生地**：↑ 召回队列的提示在 composer placeholder（按键发生在 composer，且 placeholder 天然只在空输入时可见，与召回的生效条件一致），不在队列块上占一行。
 
 输入语义刻意分开：`/provider` 选择当前输入目标，`/model` 配置该 ProviderSession 后续 turn 使用的模型，`@` 只引用 baton session / turn / 产物。所有普通输入先进入 BatonSessionRuntime 的全局串行队列，因此切换 provider 不会分裂出两条并发逻辑历史。
 

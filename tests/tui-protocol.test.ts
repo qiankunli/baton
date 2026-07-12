@@ -85,6 +85,71 @@ describe("BatonChatProtocol status command", () => {
   });
 });
 
+describe("BatonChatProtocol view projection", () => {
+  type ViewInternals = {
+    state: { plans: Map<string, { planId: string; entries: Array<{ content: string; status: string }> }> };
+    changed: () => void;
+  };
+
+  test("idle agent status keeps the input target visible without run phase", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-agentstatus-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+      const view = protocol.getView();
+      // 主行常驻：idle 退化为目标标识（provider · model），无相位/计时/中断提示
+      expect(view.runStatus).toHaveLength(1);
+      expect(view.runStatus?.[0]).toMatchObject({ author: "codex", label: "default" });
+      expect(view.runStatus?.[0]?.startedAt).toBeUndefined();
+      expect(view.runStatus?.[0]?.hint).toBeUndefined();
+      expect(view.composerPlaceholder).toContain("Ctrl+J newline");
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("pinned plan appears only while unfinished and reports progress in the footer", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-plan-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+      const internals = protocol as unknown as ViewInternals;
+
+      internals.state.plans.set("p1", {
+        planId: "p1",
+        entries: [
+          { content: "step one", status: "completed" },
+          { content: "step two", status: "in_progress" },
+        ],
+      });
+      internals.changed();
+      expect(protocol.getView().plan).toEqual([
+        { content: "step one", status: "completed" },
+        { content: "step two", status: "in_progress" },
+      ]);
+      expect(protocol.getView().footer).toContain("plan:1/2");
+
+      // 全部完成：停发 plan（pin 区消失），footer 摘要同步撤下——全量仍留在 transcript
+      internals.state.plans.set("p1", {
+        planId: "p1",
+        entries: [
+          { content: "step one", status: "completed" },
+          { content: "step two", status: "completed" },
+        ],
+      });
+      internals.changed();
+      expect(protocol.getView().plan).toBeUndefined();
+      expect(protocol.getView().footer).not.toContain("plan:");
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("BatonChatProtocol transcript projection", () => {
   test("renders agent messages as Markdown with an explicit streaming boundary", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-markdown-"));
