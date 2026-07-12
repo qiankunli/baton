@@ -192,8 +192,15 @@ export interface CodexAdapterOptions {
   command?: string[];
 }
 
+/**
+ * 启动期与上下文注入请求的显式超时：这些请求发生在 turn 提交之前，卡死会永久占住
+ * 全局 turn 队列（preparing 状态的可取消性也依赖它兜底退出）。turn/start 刻意不设——
+ * 老版本 app-server 会合法地阻塞到 turn 结束。
+ */
+const STARTUP_REQUEST_TIMEOUT_MS = 30_000;
+
 interface CodexThreadPeer {
-  request(method: string, params?: unknown): Promise<unknown>;
+  request(method: string, params?: unknown, opts?: { timeoutMs?: number }): Promise<unknown>;
 }
 
 function threadIdFrom(response: unknown, method: string): string {
@@ -214,14 +221,22 @@ export async function openCodexThread(
 ): Promise<{ threadId: string; resumed: boolean }> {
   if (opts.resumeSessionId) {
     try {
-      const response = await peer.request("thread/resume", { threadId: opts.resumeSessionId });
+      const response = await peer.request(
+        "thread/resume",
+        { threadId: opts.resumeSessionId },
+        { timeoutMs: STARTUP_REQUEST_TIMEOUT_MS },
+      );
       return { threadId: threadIdFrom(response, "thread/resume"), resumed: true };
     } catch (error) {
       if (!missingThread(error)) throw error;
     }
   }
 
-  const response = await peer.request("thread/start", { cwd: opts.cwd });
+  const response = await peer.request(
+    "thread/start",
+    { cwd: opts.cwd },
+    { timeoutMs: STARTUP_REQUEST_TIMEOUT_MS },
+  );
   return { threadId: threadIdFrom(response, "thread/start"), resumed: false };
 }
 
@@ -260,10 +275,14 @@ export class CodexAdapter implements AgentAdapter {
     peer.onNotification((method, params) => this.handleNotification(rt, method, params));
     peer.onServerRequest((method, params) => this.handleServerRequest(rt, method, params));
 
-    await peer.request("initialize", {
-      clientInfo: { name: "baton", version: "0.0.1", title: "baton" },
-      capabilities: { experimentalApi: true },
-    });
+    await peer.request(
+      "initialize",
+      {
+        clientInfo: { name: "baton", version: "0.0.1", title: "baton" },
+        capabilities: { experimentalApi: true },
+      },
+      { timeoutMs: STARTUP_REQUEST_TIMEOUT_MS },
+    );
     peer.notify("initialized", {});
 
     const opened = await openCodexThread(peer, opts);
@@ -275,16 +294,21 @@ export class CodexAdapter implements AgentAdapter {
 
   async syncContext(ref: ProviderSessionRef, blocks: PromptBlock[]): Promise<void> {
     const rt = this.mustThread(ref);
-    await rt.peer.request("thread/inject_items", {
-      threadId: rt.threadId,
-      items: [
-        {
-          type: "message",
-          role: "user",
-          content: [{ type: "input_text", text: textOf(blocks) }],
-        },
-      ],
-    });
+    await rt.peer.request(
+      "thread/inject_items",
+      {
+        threadId: rt.threadId,
+        items: [
+          {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: textOf(blocks) }],
+          },
+        ],
+      },
+      // 注入发生在 submit 之前：卡死会占住队列且无 turn 可 cancel，必须有界
+      { timeoutMs: STARTUP_REQUEST_TIMEOUT_MS },
+    );
   }
 
   async listModels(ref: ProviderSessionRef): Promise<ModelOption[]> {
@@ -315,13 +339,9 @@ export class CodexAdapter implements AgentAdapter {
     const turn: CodexTurn = { turnId: input.turnId, finalized: false };
     rt.turnId = input.turnId;
     rt.activeTurn = turn;
-
-    this.emit(rt, {
-      kind: "user_message",
-      provider: this.provider,
-      payload: { messageId: input.messageId, content: input.blocks },
-    });
-    this.emit(rt, { kind: "state_update", provider: this.provider, payload: { state: "running" } });
+    // user_message / state_update(running) 由 runtime 在出队时落盘（用户输入是 BatonSession
+    // 的事实，且入参 blocks 可能含 <baton-sync> prepend，不能进正典历史）；adapter 只在
+    // steer 成功时补 delivery:"steer" 的用户消息。
 
     // fast-submit：turn/start 的响应立即返回 status=inProgress 的 Turn（旧版本才会阻塞到结束）。
     // 因此响应只用于拿 codex turn id 和捕获终态；正常结束以 turn/completed 通知为准。

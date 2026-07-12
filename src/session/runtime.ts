@@ -28,7 +28,7 @@ interface QueuedTurn {
   id: number;
   /** baton turn id：入队时即分配（steer 的 expectedTurnId 引用它，design §4.3） */
   turnId: string;
-  /** 用户消息的 baton message id，交给 adapter 发 user_message upsert */
+  /** 用户消息的 baton message id；user_message 由 runtime 出队时落盘（见 runTurn） */
   messageId: string;
   provider: string;
   blocks: PromptBlock[];
@@ -44,12 +44,14 @@ type TurnRole = "driven" | "observed";
  * 每 turn 恰好一次（迟到/重复/未知终态一律 inert）。
  *
  * 合法迁移：
- * - （队列，不入台账）→ driven/active：drain 取走 QueuedTurn，runTurn 在 submit 前登记；
+ * - （队列，不入台账）→ driven/active：drain 取走 QueuedTurn，runTurn **出队即登记**并由
+ *   runtime 落 user_message/running——用户输入是 BatonSession 的事实，不等 provider 冷启动；
  *   排队中的 turn 留在 queue（无事件可路由），被 recall 的永不入账。
  * - （无）→ observed/active：`state_update(running, origin:"provider")` 开界登记，不进队列。
  * - active → finalized：`state_update(idle)` 按 envelope.turnId 命中；或 cancel 宽限期
- *   到期 / driven admission 失败时合成。此后记录保留在内存作幂等判定依据（会话级规模），
- *   但经 retire 瘦身——幂等判定只需 turnId+status，重负载字段不随 turn 数线性累积。
+ *   到期 / preparing 期间被取消 / driven 启动与 admission 失败时合成。此后记录保留在内存
+ *   作幂等判定依据（会话级规模），但经 retire 瘦身——幂等判定只需 turnId+status，
+ *   重负载字段不随 turn 数线性累积。
  */
 interface TurnRecord {
   turnId: string;
@@ -325,21 +327,31 @@ export class BatonSessionRuntime {
   /**
    * 请求中断当前 turn。确认以 provider 的 idle/cancelled 终态为准；宽限期内没等到
    * 则合成 terminal error，保证队列永远能推进（不能因 provider 失联而死锁）。
+   * preparing（provider 冷启动中）无需确认：尚未向 provider 提交任何内容，立即合成取消。
    */
   async cancelActive(): Promise<void> {
     const active = this.activeDriven();
-    if (!active?.slot.ref) return;
+    if (!active) return;
+    if (!active.slot.ref) {
+      // preparing：Esc 立即生效，不被冷启动绑住。启动流程继续在后台完成——成功则 slot
+      // 保留给后续 turn 复用；卡死由 adapter 的启动期超时兜底，不会永久占住队列。
+      this.synthesizeTerminal(active, { stopReason: "cancelled" });
+      return;
+    }
     active.cancelGraceTimer ??= setTimeout(() => {
-      this.synthesizeTerminal(active, "cancel grace period expired without provider confirmation");
+      this.synthesizeTerminal(active, {
+        message: "cancel grace period expired without provider confirmation",
+        stopReason: "cancelled",
+      });
     }, this.options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS);
     try {
       await active.slot.adapter.cancel(active.slot.ref);
     } catch (error) {
       // cancel 请求本身失败（transport 已断等）：不再等 provider，直接合成终态
-      this.synthesizeTerminal(
-        active,
-        `cancel request failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      this.synthesizeTerminal(active, {
+        message: `cancel request failed: ${error instanceof Error ? error.message : String(error)}`,
+        stopReason: "cancelled",
+      });
     }
   }
 
@@ -374,27 +386,69 @@ export class BatonSessionRuntime {
   private async runTurn(turn: QueuedTurn): Promise<void> {
     this.processingProvider = turn.provider;
     this.processingStartedAt = Date.now();
-    this.changed();
-    try {
-      const slot = await this.ensureProvider(turn.provider);
-      if (!slot.ref) throw new Error(`${turn.provider} failed to start`);
 
-      const released = new Promise<void>((resolve) => {
-        // 台账登记必须在 submit 前就位：admission 通过后 adapter 立即经 sink 发
-        // user_message/running，事件路由要能按 turnId 命中本 turn。
-        this.turns.set(turn.turnId, {
-          turnId: turn.turnId,
-          role: "driven",
-          slot,
-          provider: slot.adapter.provider,
-          status: "active",
-          startedAt: Date.now(),
-          turn,
-          release: resolve,
-        });
-        this.activeDrivenTurnId = turn.turnId;
+    // 出队即入账、即落盘：用户输入是 BatonSession 的事实，owner 是 runtime——
+    // 不等 provider 冷启动（codex 首启要 spawn → initialize → thread resume/start，
+    // 可达数秒，期间 Transcript 必须已能看到这条输入）。落盘的是**原始输入** turn.blocks：
+    // <baton-sync> 注入只进 provider transport（syncContext / prepend），不进正典历史。
+    const slot = this.slotFor(turn.provider);
+    const providerKey = slot.adapter.provider;
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const record: TurnRecord = {
+      turnId: turn.turnId,
+      role: "driven",
+      slot,
+      provider: providerKey,
+      status: "active",
+      startedAt: Date.now(),
+      turn,
+      release,
+    };
+    this.turns.set(turn.turnId, record);
+    this.activeDrivenTurnId = turn.turnId;
+    const knownProviderSessionId = this.options.session.meta.providerSessions[providerKey]?.providerSessionId;
+    this.onAdapterEvent(slot, {
+      kind: "user_message",
+      provider: providerKey,
+      providerSessionId: knownProviderSessionId,
+      turnId: turn.turnId,
+      payload: { messageId: turn.messageId, content: turn.blocks },
+    });
+    this.onAdapterEvent(slot, {
+      kind: "state_update",
+      provider: providerKey,
+      providerSessionId: knownProviderSessionId,
+      turnId: turn.turnId,
+      payload: { state: "running" },
+    });
+    const coldStart = !slot.ref;
+    if (coldStart) {
+      // 冷启动阶段对用户可见（否则 spinner 只能显示误导性的 thinking…）；
+      // idle 终态会连带清掉 phase，失败/取消路径无需单独收尾
+      this.onAdapterEvent(slot, {
+        kind: "_baton_run_status",
+        provider: providerKey,
+        turnId: turn.turnId,
+        payload: { phase: "starting", title: `Starting ${turn.provider}…` },
       });
-      this.changed();
+    }
+
+    try {
+      await this.ensureProvider(turn.provider);
+      // preparing 期间被取消：终态已合成、summary 已落，不再向 provider 提交
+      if (record.status === "finalized") return;
+      if (!slot.ref) throw new Error(`${turn.provider} failed to start`);
+      if (coldStart) {
+        this.onAdapterEvent(slot, {
+          kind: "_baton_run_status",
+          provider: providerKey,
+          turnId: turn.turnId,
+          payload: { phase: null },
+        });
+      }
 
       const session = this.options.session;
       const key = slot.adapter.provider;
@@ -451,14 +505,13 @@ export class BatonSessionRuntime {
       }
       await released;
     } catch (error) {
-      // admission/启动失败：本 turn 没有（也不会再有）事件流，直接终结记录并上抛
-      const record = this.turns.get(turn.turnId);
-      if (record) {
-        record.status = "finalized";
-        this.retire(record);
-      }
-      if (this.activeDrivenTurnId === turn.turnId) this.activeDrivenTurnId = undefined;
+      // preparing 期间被取消、随后启动又失败：用户已收到 cancelled 终态并继续别的事，
+      // 迟到的启动错误不再作为本 turn 的失败上抛（事件历史已闭合）
+      if (record.status === "finalized") return;
       const detail = error instanceof Error ? error.message : String(error);
+      // 启动/admission 失败：合成结构化终态（error + idle + summary）——user_message 已
+      // 落盘，必须有结局，不允许"输入消失且无历史"的半状态；随后仍上抛给 submit 调用方。
+      this.synthesizeTerminal(record, { message: detail, stopReason: "error" });
       throw new Error(`BatonSession ${this.options.session.id} · ${turn.provider}: ${detail}`, {
         cause: error,
       });
@@ -470,8 +523,9 @@ export class BatonSessionRuntime {
   }
 
   /**
-   * 所有 provider 事件的唯一入口：持久化（append 即广播给事件流订阅者，UI 投影
-   * 由订阅侧完成，这里不做任何转发）→ 识别 turn 边界并记账。
+   * 所有事件的唯一入口（adapter 上报 + runtime 自有：出队 user_message/running、
+   * 合成终态）：持久化（append 即广播给事件流订阅者，UI 投影由订阅侧完成，
+   * 这里不做任何转发）→ 识别 turn 边界并记账。
    * 不变量：任何进入本方法的事件必然对订阅者可见——投影正确性由 append 广播
    * 单通道保证，不依赖"是否有活跃 turn"。
    */
@@ -570,24 +624,35 @@ export class BatonSessionRuntime {
     });
   }
 
-  /** cancel 宽限期到期 / cancel 请求失败：合成结构化 error + idle，走统一事件管线 */
-  private synthesizeTerminal(record: TurnRecord, message: string): void {
+  /**
+   * runtime 合成终态：可选的结构化 error 留痕 + idle，走统一事件管线（→ finalize）。
+   * 使用方：cancel 宽限期到期 / cancel 请求失败 / preparing 取消（无 error，纯 cancelled）/
+   * 启动与 admission 失败（stopReason:"error"）。
+   */
+  private synthesizeTerminal(record: TurnRecord, opts: { message?: string; stopReason: StopReason }): void {
     if (record.status === "finalized") return;
-    this.onAdapterEvent(record.slot, {
-      kind: "_baton_error_update",
-      provider: record.provider,
-      turnId: record.turnId,
-      payload: { message, retryable: false },
-    });
+    if (opts.message !== undefined) {
+      this.onAdapterEvent(record.slot, {
+        kind: "_baton_error_update",
+        provider: record.provider,
+        turnId: record.turnId,
+        payload: { message: opts.message, retryable: false },
+      });
+    }
     this.onAdapterEvent(record.slot, {
       kind: "state_update",
       provider: record.provider,
       turnId: record.turnId,
-      payload: { state: "idle", stopReason: "cancelled" },
+      payload: { state: "idle", stopReason: opts.stopReason },
     });
   }
 
-  private async ensureProvider(provider: string): Promise<ProviderSlot> {
+  /**
+   * 同步获取（创建即启动）provider slot：adapter 构造是同步的，wire key（adapter.provider）
+   * 与事件 sink 在这里就绪——runTurn 依赖这一点在 open() 完成**之前**落 user_message。
+   * 启动完成的等待在 ensureProvider。
+   */
+  private slotFor(provider: string): ProviderSlot {
     let slot = this.slots.get(provider);
     if (!slot) {
       const adapter = this.options.createAdapter(provider, {
@@ -617,7 +682,15 @@ export class BatonSessionRuntime {
           syncedSeq: created.ref.resumed ? existing?.syncedSeq : 0,
         });
       })();
+      // starting 的消费方（ensureProvider）可能晚一拍才 await：先挂空 handler 防
+      // "unhandled rejection"误报；真实错误仍由 await 侧感知并删除 slot
+      void created.starting.catch(() => {});
     }
+    return slot;
+  }
+
+  private async ensureProvider(provider: string): Promise<ProviderSlot> {
+    const slot = this.slotFor(provider);
     if (slot.starting) {
       try {
         await slot.starting;

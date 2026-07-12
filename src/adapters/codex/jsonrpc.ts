@@ -42,11 +42,33 @@ export class JsonRpcPeer {
     this.serverRequestHandler = handler;
   }
 
-  request(method: string, params?: unknown): Promise<unknown> {
+  /**
+   * timeoutMs：显式请求超时（超时后 reject 并丢弃迟到响应）。默认不超时——
+   * turn/start 在老版本 app-server 上会合法地阻塞到 turn 结束，不能一刀切；
+   * 调用方按请求语义决定（启动期请求必须设，否则冷启动卡死会永久占住 turn 队列）。
+   */
+  request(method: string, params?: unknown, opts?: { timeoutMs?: number }): Promise<unknown> {
     const id = this.nextId++;
     const msg: JsonRpcRequestMessage = { jsonrpc: "2.0", id, method, params };
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      if (opts?.timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          if (this.pending.delete(id)) {
+            reject(new Error(`${method} timed out after ${opts.timeoutMs}ms`));
+          }
+        }, opts.timeoutMs);
+      }
+      this.pending.set(id, {
+        resolve: (value) => {
+          if (timer !== undefined) clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          if (timer !== undefined) clearTimeout(timer);
+          reject(error);
+        },
+      });
       this.write(`${JSON.stringify(msg)}\n`);
     });
   }

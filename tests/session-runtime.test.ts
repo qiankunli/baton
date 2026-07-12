@@ -61,16 +61,10 @@ class FakeAdapter implements AgentAdapter {
     return this.model;
   }
 
-  /** submit 立即回执；事件（含终态）异步经 open 绑定的 sink 上报 */
+  /** submit 立即回执；事件（含终态）异步经 open 绑定的 sink 上报。user_message 由 runtime 落盘 */
   async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.hooks.enter?.();
     this.prompts.push(textOf(input.blocks));
-    this.sink?.({
-      kind: "user_message",
-      provider: this.provider,
-      turnId: input.turnId,
-      payload: { messageId: input.messageId, content: input.blocks },
-    });
     void (async () => {
       if (this.hooks.delayMs) await Bun.sleep(this.hooks.delayMs);
       this.sink?.({

@@ -328,16 +328,24 @@ interface AgentAdapter {
 type PromptReceipt = { accepted: true };
 ```
 
-`submit()` resolve 不代表 turn 完成。Adapter 必须用事件报告：
+`submit()` resolve 不代表 turn 完成。用户输入的 owner 是 runtime，provider 执行过程的 owner 是 Adapter：
 
 ```text
-submit accepted
-  → user_message upsert
-  → state_update(running)
+runtime 出队（driven turn）
+  → user_message upsert + state_update(running)   // runtime 落盘：用户输入是 BatonSession 的事实，
+                                                   //   不等 provider 冷启动；正典历史存原始输入，
+                                                   //   <baton-sync> 注入只进 provider transport
+  → （冷启动时）_baton_run_status(starting)        // preparing 阶段对用户可见、可取消
+submit accepted                                    // admission；Adapter 不得为 prompt 重复发
+                                                   //   user_message / running
   → message/tool/plan/... updates
   → state_update(requires_action ↔ running)  // 可重复
   → state_update(idle, stopReason)
 ```
+
+为什么 user_message 不归 Adapter：provider 首启（spawn → initialize → thread resume/start）可达数秒，若由 `submit()` 发用户消息，Transcript 会被冷启动绑住；且 prepend 注入路径下 `submit()` 拿到的 blocks 已掺入 `<baton-sync>`，由它落盘会污染正典历史。steer 是例外——只有 provider 确认接受后消息才成为事实，成功路径仍由 Adapter 发 `delivery:"steer"` 的 user_message。
+
+出队与撤回的边界随之明确：消息在队列中可 recall；一旦出队即由 runtime 落盘、成为正典历史，冷启动期间只能 cancel（立即合成 `idle/cancelled` 终态，启动继续在后台完成、slot 留给后续 turn 复用）。启动或 admission 失败同样合成结构化终态（`_baton_error_update` + `idle/error` + summary）——不存在"输入消失且无历史"的半状态。为保证 preparing 总有退出路径，启动期 wire 请求（codex 的 initialize / thread resume/start / inject_items）必须带显式超时；turn/start 不设（老版本 app-server 合法地阻塞到 turn 结束）。
 
 baton runtime 以 state event 驱动 active/idle，不以 Promise 生命周期推断。cancel 的确认同样是最终 `idle/cancelled`，发送 cancel 后仍接受之前已在路上的 update。
 

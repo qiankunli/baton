@@ -36,20 +36,9 @@ class ScriptedAdapter implements AgentAdapter {
     return { provider: this.provider, providerSessionId: `${this.provider}-ref` };
   }
 
+  // 新契约：user_message / running 由 runtime 出队时落盘，adapter submit 只做 admission
   async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.submits.push(input);
-    this.emit({
-      kind: "user_message",
-      provider: this.provider,
-      turnId: input.turnId,
-      payload: { messageId: input.messageId, content: input.blocks },
-    });
-    this.emit({
-      kind: "state_update",
-      provider: this.provider,
-      turnId: input.turnId,
-      payload: { state: "running" },
-    });
     return { accepted: true };
   }
 

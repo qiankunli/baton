@@ -51,15 +51,9 @@ class OverlapAdapter implements AgentAdapter {
     return { provider: this.provider, providerSessionId: "ov1", resumed: false };
   }
 
+  // 新契约：user_message / running 由 runtime 出队时落盘，adapter submit 只做 admission
   async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.driven = input;
-    this.sink?.({
-      kind: "user_message",
-      provider: this.provider,
-      turnId: input.turnId,
-      payload: { messageId: input.messageId, content: input.blocks },
-    });
-    this.sink?.({ kind: "state_update", provider: this.provider, turnId: input.turnId, payload: { state: "running" } });
     return { accepted: true };
   }
 
