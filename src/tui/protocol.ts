@@ -458,19 +458,22 @@ export class BatonChatProtocol implements ChatProtocol {
         startedAt: observedRun.startedAt,
       });
     }
+    const busy = active !== undefined || observedRun !== undefined;
     // plan 互补显示（design §5.9）：同一时刻只出现在一个地方——进行中归 pin（现在时），
     // 盖棺归 transcript（过去时）。pin 显示期间 transcript 不渲染该 plan 卡（避免同屏两份、
     // 且过去时区域不该有实时改写的块）；全部完成 pin 停发，终态卡在 timeline 原位出现供回看。
+    // pin 同时以运行态门控：idle 后未完成的 plan 也归 transcript（搁置即过去时）——
+    // 否则 provider 状态更新缺失或中途放弃时 pin 永驻；下一回合开跑即重新上 pin。
     const lastPlan = [...v.plans.values()].at(-1);
     const planEntries = (lastPlan?.entries ?? []).map((entry) => ({
       content: entry.content,
       status: normalizePlanStatus(entry.status),
     }));
-    const planActive = planEntries.some((entry) => entry.status !== "completed");
+    const planActive = busy && planEntries.some((entry) => entry.status !== "completed");
     const pinnedPlanId = planActive ? lastPlan?.planId : undefined;
     return {
       transcript: [...buildTranscript(v, pinnedPlanId), ...(this.commandOutput ? [this.commandOutput] : [])],
-      busy: active !== undefined || observedRun !== undefined,
+      busy,
       runStatus,
       plan: planActive ? planEntries : undefined,
       queued: this.runtime.queuedTurns.map((turn) => ({
