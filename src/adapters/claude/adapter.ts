@@ -265,6 +265,16 @@ interface ClaudeTurn {
   streamMessageId?: string;
 }
 
+/**
+ * result 之后同一条消息流上再出现的活动消息，属于 provider 自发回合（observed turn）：
+ * 后台任务（Agent tool 等）完成时 harness 会在无用户输入的情况下重新唤起模型，
+ * 新回合的消息继续从同一条 SDK 流上到达。这里判定"该为它开一个新 turn 了"。
+ * system/result 不开界：前者是瞬时相位（不构成回合），后者无活动时只是迟到终态。
+ */
+export function startsObservedTurn(msgType: string, current: { finalized: boolean }): boolean {
+  return current.finalized && (msgType === "stream_event" || msgType === "assistant" || msgType === "user");
+}
+
 interface ClaudeRuntime {
   cwd: string;
   env?: Record<string, string>;
@@ -382,11 +392,16 @@ export class ClaudeAdapter implements AgentAdapter {
     emit({ kind: "state_update", provider: this.provider, payload: { state: "running" } });
 
     // 后台消费 SDK 消息流；submit 本身立即回执（design §4.1）
-    void this.runQuery(rt, emit, input, turn);
+    void this.runQuery(rt, input, turn);
     return { accepted: true };
   }
 
-  private async runQuery(rt: ClaudeRuntime, emit: EventSink, input: PromptInput, turn: ClaudeTurn): Promise<void> {
+  private async runQuery(rt: ClaudeRuntime, input: PromptInput, turn: ClaudeTurn): Promise<void> {
+    // current 指向本条消息流上"正在进行"的 turn：先是 submit 的 driven turn，
+    // result 之后若流上再来活动消息，则铸造 observed turn 接棒（可多次）。
+    // emit 经 current 动态绑定——审批回调、流耗尽兜底都要盖当时所属 turn 的 id。
+    let current = turn;
+    const emit: EventSink = (ev) => this.emit(rt, ev, current);
     const executable = this.options.executablePath ?? process.env.BATON_CLAUDE_BIN;
     const sdkOptions: Options = {
       cwd: rt.cwd,
@@ -409,25 +424,41 @@ export class ClaudeAdapter implements AgentAdapter {
         })
         .catch(() => {});
       for await (const msg of q) {
-        this.handleMessage(rt, emit, msg, turn);
+        if (startsObservedTurn(msg.type, current)) current = this.mintObservedTurn(rt);
+        this.handleMessage(rt, emit, msg, current);
       }
       // 流正常耗尽但没有 result 消息（SDK 异常路径）：仍要保证恰好一次终态
-      this.finishTurn(rt, emit, turn, turn.cancelRequested ? "cancelled" : "end_turn");
+      this.finishTurn(rt, emit, current, current.cancelRequested ? "cancelled" : "end_turn");
     } catch (error) {
-      if (turn.cancelRequested) {
-        this.finishTurn(rt, emit, turn, "cancelled");
+      if (current.cancelRequested) {
+        this.finishTurn(rt, emit, current, "cancelled");
       } else {
         emit({
           kind: "_baton_error_update",
           provider: this.provider,
           payload: { message: error instanceof Error ? error.message : String(error) },
         });
-        this.finishTurn(rt, emit, turn, "error");
+        this.finishTurn(rt, emit, current, "error");
       }
     } finally {
       // 只清自己注册的 query：本 finally 可能在下一 turn 已把 activeQuery 换掉后才跑
       if (rt.activeQuery === q) rt.activeQuery = undefined;
     }
+  }
+
+  /**
+   * 铸造 observed turn 并以 running(origin:"provider") 开界（design §5.10）。
+   * 刻意不写 rt.activeTurn：observed turn 不占 admission 槽——用户此刻仍可 submit
+   * 新 driven turn（走新 query），宿主队列语义不受 provider 自发活动影响。
+   */
+  private mintObservedTurn(rt: ClaudeRuntime): ClaudeTurn {
+    const observed: ClaudeTurn = { turnId: newId("t"), finalized: false, cancelRequested: false };
+    this.emit(
+      rt,
+      { kind: "state_update", provider: this.provider, payload: { state: "running", origin: "provider" } },
+      observed,
+    );
+    return observed;
   }
 
   /**

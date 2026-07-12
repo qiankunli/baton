@@ -303,11 +303,22 @@ export class SessionHandle {
   readonly dir: string;
   meta: SessionMeta;
   private nextSeq: number | undefined;
+  private listeners = new Set<(ev: AnyEventEnvelope) => void>();
 
   constructor(id: string, dir: string, meta: SessionMeta) {
     this.id = id;
     this.dir = dir;
     this.meta = meta;
+  }
+
+  /**
+   * 订阅本 handle 的事件追加。事件流是唯一合并真相源，UI 投影必须从这里走
+   * （而不是 per-turn 回调）——provider 自发回合（后台唤醒等）没有对应的
+   * submit 调用，任何旁路投影通道都会漏掉它们。返回取消订阅函数。
+   */
+  subscribe(listener: (ev: AnyEventEnvelope) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   private jsonlPath(): string {
@@ -381,6 +392,13 @@ export class SessionHandle {
       ...ev,
     };
     appendFileSync(this.jsonlPath(), `${JSON.stringify(envelope)}\n`);
+    for (const listener of this.listeners) {
+      try {
+        listener(envelope as AnyEventEnvelope);
+      } catch {
+        // 投影侧异常不能污染写入路径：事件已落盘，订阅者自己负责健壮性
+      }
+    }
     return envelope;
   }
 
