@@ -320,6 +320,25 @@ describe("per-turn run state aggregation", () => {
     expect(state.stopReasons.get("t_driven")).toBe("cancelled");
   });
 
+  test("requires_action is preserved per turn and surfaces in the aggregate", () => {
+    const state = reduceEvents([
+      ev("state_update", { state: "running" }, "t_driven"),
+      ev("state_update", { state: "requires_action" }, "t_driven"),
+    ]);
+    // 不折叠成 running：per-turn 保真，会话级上浮（没有用户动作会话无法完整推进）
+    expect(state.activeTurns.get("t_driven")?.state).toBe("requires_action");
+    expect(state.runState).toBe("requires_action");
+
+    // 并发场景：任一 turn requires_action 即上浮
+    applyEvent(state, ev("state_update", { state: "running", origin: "provider" }, "t_obs"));
+    expect(state.runState).toBe("requires_action");
+
+    // 用户应答后回到 running（requires_action ↔ running 可来回迁移）
+    applyEvent(state, ev("state_update", { state: "running" }, "t_driven"));
+    expect(state.activeTurns.get("t_driven")?.state).toBe("running");
+    expect(state.runState).toBe("running");
+  });
+
   test("legacy idle without turnId closes everything (旧 jsonl 兼容)", () => {
     const state = reduceEvents([
       ev("state_update", { state: "running" }, "t1"),

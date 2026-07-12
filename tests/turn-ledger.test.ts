@@ -180,6 +180,50 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
   });
 });
 
+// ---- finalized 记录瘦身：幂等判定只留骨架，重负载（PromptBlock[]/闭包）必须释放 ----
+
+describe("finalized turn records are retired (memory retention regression)", () => {
+  test("finalize drops the queued prompt and release closure but keeps idempotency", async () => {
+    const adapter = new OverlapAdapter();
+    const runtime = new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const ledger = (
+      runtime as unknown as {
+        turns: Map<string, { status: string; turn?: unknown; release?: unknown; cancelGraceTimer?: unknown }>;
+      }
+    ).turns;
+
+    const submitted = runtime.submit("claude", [{ type: "text", text: "go" }]);
+    await Bun.sleep(1);
+    const turnId = adapter.driven!.turnId;
+    expect(ledger.get(turnId)?.turn).toBeDefined(); // active 期间入队原件在场（canSteer 依赖）
+
+    adapter.sink?.({
+      kind: "state_update",
+      provider: adapter.provider,
+      turnId,
+      payload: { state: "idle", stopReason: "end_turn" },
+    });
+    await expect(submitted).resolves.toBe("completed");
+
+    // 骨架保留：迟到终态仍能按 turnId 幂等判定
+    const record = ledger.get(turnId);
+    expect(record?.status).toBe("finalized");
+    // 重负载释放：PromptBlock[] 与 release 闭包不随 finalized 记录线性累积
+    expect(record?.turn).toBeUndefined();
+    expect(record?.release).toBeUndefined();
+    expect(record?.cancelGraceTimer).toBeUndefined();
+
+    // 幂等钉子：重复终态 inert，不产生第二份 summary
+    adapter.sink?.({
+      kind: "state_update",
+      provider: adapter.provider,
+      turnId,
+      payload: { state: "idle", stopReason: "end_turn" },
+    });
+    expect(summaryTurnIds()).toEqual([turnId]);
+  });
+});
+
 // ---- adapter 契约：终态必带 turnId（路由按 turnId 查表的前提） ----
 
 describe("adapter contract: terminal state_update carries a turnId", () => {

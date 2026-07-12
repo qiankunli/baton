@@ -90,7 +90,16 @@ describe("BatonChatProtocol view projection", () => {
     state: {
       plans: Map<string, { planId: string; entries: Array<{ content: string; status: string }> }>;
       timeline: Array<{ type: string; id: string }>;
-      activeTurns: Map<string, { turnId: string; provider?: string; origin: "user" | "provider"; startedAt?: number }>;
+      activeTurns: Map<
+        string,
+        {
+          turnId: string;
+          provider?: string;
+          origin: "user" | "provider";
+          state: "running" | "requires_action";
+          startedAt?: number;
+        }
+      >;
     };
     changed: () => void;
   };
@@ -133,7 +142,7 @@ describe("BatonChatProtocol view projection", () => {
       });
       internals.state.timeline.push({ type: "plan", id: "p1" });
       // pin 是"现在时"层：需有回合在运行（observed run 也算）
-      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "claude-code", origin: "provider" });
+      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "claude-code", origin: "provider", state: "running" });
       internals.changed();
       expect(protocol.getView().plan).toEqual([
         { content: "step one", status: "completed" },
@@ -151,7 +160,7 @@ describe("BatonChatProtocol view projection", () => {
       expect(planInTranscript()).toBe(true);
 
       // 回合重新开跑：未完成 plan 重新上 pin，transcript 卡随之撤下
-      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "claude-code", origin: "provider" });
+      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "claude-code", origin: "provider", state: "running" });
       internals.changed();
       expect(protocol.getView().plan).toHaveLength(2);
       expect(planInTranscript()).toBe(false);
@@ -347,7 +356,7 @@ describe("runStatusLabel", () => {
   const base = { activeTurns: new Map(), lastError: undefined, lastSeq: 5 };
   const withPhase = (turnId: string, phase: { phase: string; title?: string }) => ({
     ...base,
-    activeTurns: new Map([[turnId, { turnId, origin: "user" as const, phase }]]),
+    activeTurns: new Map([[turnId, { turnId, origin: "user" as const, state: "running" as const, phase }]]),
   });
 
   test("defaults to thinking", () => {
