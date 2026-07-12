@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -205,6 +206,40 @@ describe("event append / read", () => {
     // 追加从完好事件之后继续
     const e = reopened.append({ kind: "state_update", payload: { state: "idle" }, provider: "codex" });
     expect(e.seq).toBe(2);
+  });
+
+  test("append after a crash partial repairs the tail (截断残尾 + sidecar 留档)", () => {
+    const h = store.createSession({ cwd: "/tmp/proj" });
+    h.append({ kind: "state_update", payload: { state: "running" }, provider: "codex" });
+    const partial = '{"v":1,"ts":"2026-';
+    appendFileSync(join(h.dir, "session.jsonl"), partial); // 模拟写到一半崩溃
+
+    // 纯读路径不产生写副作用：不截断、不生成 sidecar
+    const readOnly = store.openSession(h.id);
+    expect(readOnly.readEvents()).toHaveLength(1);
+    expect(readFileSync(join(h.dir, "session.jsonl"), "utf8").endsWith(partial)).toBe(true);
+    expect(readdirSync(h.dir).filter((f) => f.startsWith("session.jsonl.partial-"))).toHaveLength(0);
+
+    // 首次 append 截断残尾：新事件不会拼接在残片后形成中间坏行
+    const reopened = store.openSession(h.id);
+    const e = reopened.append({ kind: "state_update", payload: { state: "idle" }, provider: "codex" });
+    expect(e.seq).toBe(2); // 残行 seq 从未完整落盘，由新事件复用
+    const events = store.openSession(h.id).readEvents();
+    expect(events).toHaveLength(2);
+    expect(events.map((ev) => ev.seq)).toEqual([1, 2]);
+
+    // 残片进 sidecar 留档
+    const sidecars = readdirSync(h.dir).filter((f) => f.startsWith("session.jsonl.partial-"));
+    expect(sidecars).toHaveLength(1);
+    expect(readFileSync(join(h.dir, sidecars[0]!), "utf8")).toBe(partial);
+  });
+
+  test("crash partial with no complete line at all truncates to empty", () => {
+    const h = store.createSession({ cwd: "/tmp/proj" });
+    writeFileSync(join(h.dir, "session.jsonl"), '{"v":1,"ts'); // 首行即残片
+    const e = store.openSession(h.id).append({ kind: "state_update", payload: { state: "running" }, provider: "codex" });
+    expect(e.seq).toBe(1);
+    expect(store.openSession(h.id).readEvents()).toHaveLength(1);
   });
 
   test("corrupt middle line throws instead of silently skipping", () => {

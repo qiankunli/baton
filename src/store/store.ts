@@ -15,6 +15,7 @@ import {
   renameSync,
   rmSync,
   rmdirSync,
+  truncateSync,
   writeFileSync,
   writeSync,
 } from "node:fs";
@@ -379,9 +380,29 @@ export class SessionHandle {
     }
   }
 
+  /**
+   * 崩溃残尾修复：上个进程在 append 中途死掉会留下无换行的半行。此时若直接追加，
+   * 新事件会拼接在残片之后形成"中间坏行"，readEvents 对中间坏行抛错（末行残缺
+   * 可容忍，中间坏行不可）——会话从此永久不可读。所以首次写入前必须把文件截断回
+   * 最后一个完整换行。注意不能用"补一个换行"代替截断：那只会把残片固化成独立的
+   * 中间坏行，照样抛错。残片写入 sidecar 留档审计（可能含半条有价值的事件）。
+   * 只挂写路径：只读消费方（session picker、mention 展开）不应产生写副作用。
+   * 残行的 seq 从未完整落盘，由下一条新事件复用，主文件内 seq 仍严格单调。
+   */
+  private repairTail(): void {
+    const path = this.jsonlPath();
+    if (!existsSync(path)) return;
+    const buf = readFileSync(path);
+    if (buf.length === 0 || buf[buf.length - 1] === 0x0a) return;
+    const cut = buf.lastIndexOf(0x0a) + 1; // 文件里没有换行时为 0：整个文件都是残片
+    writeFileSync(join(this.dir, `session.jsonl.partial-${Date.now()}`), buf.subarray(cut));
+    truncateSync(path, cut);
+  }
+
   /** 补齐 v/ts/seq/batonSessionId 并追加一行。seq 以文件为准（重开进程后继续单调）。 */
   append<K extends EventKind>(ev: NewEvent<K>): EventEnvelope<K> {
     if (this.nextSeq === undefined) {
+      this.repairTail();
       const events = this.readEvents();
       const last = events[events.length - 1];
       this.nextSeq = (last?.seq ?? 0) + 1;
