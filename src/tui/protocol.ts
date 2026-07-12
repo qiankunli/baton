@@ -25,7 +25,7 @@ import { BatonSessionRuntime } from "../session/runtime.ts";
 import { applyEvent, emptySessionState, type SessionState, type ToolCallState } from "../store/reduce.ts";
 import type { SessionHandle, SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
-import { sessionPickerOptions } from "./session-picker.tsx";
+import { sessionPickerOptions, type SessionPickerMode } from "./session-picker.tsx";
 
 // 展示名同时是 theme.ts PROVIDER_COLORS 的着色 key，两处保持一致
 const PROVIDER_LABEL: Record<string, string> = { codex: "codex", "claude-code": "claude" };
@@ -173,8 +173,12 @@ export class BatonChatProtocol implements ChatProtocol {
         });
       }
       case "sessions": {
-        if (argument) throw new Error("/sessions takes no arguments");
-        this.openSessionsPicker();
+        // chat-tui Picker 没有自定义按键，模式经参数选择（启动 picker 则用 Tab 就地切换）
+        const mode = argument || "list";
+        if (mode !== "list" && mode !== "tree") {
+          throw new Error(`/sessions takes 'tree' or 'list' (got: ${argument})`);
+        }
+        this.openSessionsPicker(mode);
         return;
       }
       case "status": {
@@ -372,10 +376,13 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   /** /sessions 会话内切换浮层；行投影与启动 session picker 共用 sessionPickerOptions */
-  private openSessionsPicker(): void {
+  private openSessionsPicker(mode: SessionPickerMode = "list"): void {
     this.openPicker({
-      title: "Select BatonSession",
-      options: sessionPickerOptions(this.store.listSessions(), { currentSessionId: this.session.id }),
+      title: `Select BatonSession${mode === "tree" ? " (tree)" : ""}`,
+      options: sessionPickerOptions(this.store.listSessions(), {
+        currentSessionId: this.session.id,
+        mode,
+      }),
       onSelect: async (value) => {
         if (value === this.session.id) return;
         await this.switchSession(() =>

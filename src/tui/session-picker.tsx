@@ -4,14 +4,18 @@
 // <select>（自带 ↑↓/Enter）。chat-tui 的 Picker 是"通用选项浮层"这个机制，与这里的
 // "选会话"业务概念不同层；将来会话内入口若与启动入口合流（codex 的 LaunchContext
 // 语义），统一收敛到本文件。
-// 键位对齐 codex：Enter 选中、Esc 新开会话（StartFresh）、Ctrl+C 退出。
+// 键位对齐 codex：Enter 选中、Esc 新开会话（StartFresh）、Ctrl+C 退出；Tab 切换 list/tree。
 
 import { useKeyboard } from "@opentui/react";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 
 import type { Theme } from "chat-tui";
 
+import { sessionTreeRows, treeRowPrefix } from "../store/session-tree.ts";
 import { sessionDisplayTitle, type SessionMeta } from "../store/store.ts";
+
+/** list = 时间投影（updatedAt desc，listSessions 的顺序）；tree = fork 谱系投影 */
+export type SessionPickerMode = "list" | "tree";
 
 export interface SessionPickerProps {
   title: string;
@@ -29,13 +33,16 @@ export interface SessionPickerProps {
 /**
  * SessionMeta → select 行的唯一投影，启动 picker 与 /sessions 浮层共用。
  * currentSessionId 用于会话内入口标记当前会话（启动入口没有"当前"）。
+ * mode=tree 时按 fork 谱系铺行并加缩进前缀；默认 list 保持传入顺序（时间序）。
  */
 export function sessionPickerOptions(
   sessions: SessionMeta[],
-  opts: { currentSessionId?: string } = {},
+  opts: { currentSessionId?: string; mode?: SessionPickerMode } = {},
 ): Array<{ name: string; description: string; value: string }> {
-  return sessions.map((meta) => ({
-    name: `${meta.batonSessionId === opts.currentSessionId ? "● " : ""}${sessionDisplayTitle(meta)}`,
+  const rows =
+    opts.mode === "tree" ? sessionTreeRows(sessions) : sessions.map((meta) => ({ meta, depth: 0 }));
+  return rows.map(({ meta, depth }) => ({
+    name: `${treeRowPrefix(depth)}${meta.batonSessionId === opts.currentSessionId ? "● " : ""}${sessionDisplayTitle(meta)}`,
     description: `${meta.batonSessionId} · ${meta.cwd} · ${meta.updatedAt ?? meta.createdAt} · [${
       Object.keys(meta.providerSessions).join(",") || "-"
     }]`,
@@ -45,13 +52,15 @@ export function sessionPickerOptions(
 
 export function SessionPickerScreen(props: SessionPickerProps): ReactNode {
   const theme = props.theme;
+  const [mode, setMode] = useState<SessionPickerMode>("list");
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") props.onExit();
     else if (key.name === "escape") props.onStartFresh();
+    else if (key.name === "tab") setMode((m) => (m === "list" ? "tree" : "list"));
   });
   return (
     <box style={{ flexDirection: "column", flexGrow: 1, padding: 1 }}>
-      <text fg={theme.accent}>{props.title}</text>
+      <text fg={theme.accent}>{`${props.title}${mode === "tree" ? " (tree)" : ""}`}</text>
       <box
         border
         borderColor={theme.border}
@@ -60,14 +69,14 @@ export function SessionPickerScreen(props: SessionPickerProps): ReactNode {
         <select
           focused
           style={{ flexGrow: 1 }}
-          options={sessionPickerOptions(props.sessions)}
+          options={sessionPickerOptions(props.sessions, { mode })}
           onSelect={(_index: number, option: { value?: unknown } | null) => {
             if (option) props.onPick(String(option.value));
           }}
         />
       </box>
       {props.error ? <text fg={theme.error}>{props.error}</text> : null}
-      <text fg={theme.dim}>{`↑↓ select · enter ${props.actionLabel} · esc start new session · ctrl+c quit`}</text>
+      <text fg={theme.dim}>{`↑↓ select · enter ${props.actionLabel} · tab ${mode === "list" ? "tree" : "list"} view · esc start new session · ctrl+c quit`}</text>
     </box>
   );
 }
