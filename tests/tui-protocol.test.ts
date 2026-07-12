@@ -87,7 +87,10 @@ describe("BatonChatProtocol status command", () => {
 
 describe("BatonChatProtocol view projection", () => {
   type ViewInternals = {
-    state: { plans: Map<string, { planId: string; entries: Array<{ content: string; status: string }> }> };
+    state: {
+      plans: Map<string, { planId: string; entries: Array<{ content: string; status: string }> }>;
+      timeline: Array<{ type: string; id: string }>;
+    };
     changed: () => void;
   };
 
@@ -110,13 +113,15 @@ describe("BatonChatProtocol view projection", () => {
     }
   });
 
-  test("pinned plan appears only while unfinished and reports progress in the footer", async () => {
+  test("plan shows in exactly one place: pin while unfinished, transcript once done", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-plan-"));
     try {
       const store = new SessionStore(root);
       const session = store.createSession({ cwd: "/repo" });
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
       const internals = protocol as unknown as ViewInternals;
+      const planInTranscript = () =>
+        protocol.getView().transcript.some((item) => item.type === "block" && item.kind === "plan");
 
       internals.state.plans.set("p1", {
         planId: "p1",
@@ -125,14 +130,17 @@ describe("BatonChatProtocol view projection", () => {
           { content: "step two", status: "in_progress" },
         ],
       });
+      internals.state.timeline.push({ type: "plan", id: "p1" });
       internals.changed();
       expect(protocol.getView().plan).toEqual([
         { content: "step one", status: "completed" },
         { content: "step two", status: "in_progress" },
       ]);
       expect(protocol.getView().footer).toContain("plan:1/2");
+      // 互补显示：进行中归 pin，transcript 不重复渲染（过去时区域不该有实时改写的块）
+      expect(planInTranscript()).toBe(false);
 
-      // 全部完成：停发 plan（pin 区消失），footer 摘要同步撤下——全量仍留在 transcript
+      // 全部完成：pin 停发、footer 摘要撤下，终态卡在 transcript 原位出现供回看
       internals.state.plans.set("p1", {
         planId: "p1",
         entries: [
@@ -143,6 +151,10 @@ describe("BatonChatProtocol view projection", () => {
       internals.changed();
       expect(protocol.getView().plan).toBeUndefined();
       expect(protocol.getView().footer).not.toContain("plan:");
+      expect(planInTranscript()).toBe(true);
+      expect(
+        protocol.getView().transcript.find((item) => item.type === "block" && item.kind === "plan"),
+      ).toMatchObject({ id: "p1", status: "completed" });
       await protocol.exit();
     } finally {
       rmSync(root, { recursive: true, force: true });
