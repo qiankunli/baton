@@ -8,6 +8,7 @@ import type {
   Candidate,
   CommandSpec,
   DiffOp,
+  RunStatusItem,
   StatusMessage,
   TranscriptBlockContent,
   TranscriptItem,
@@ -402,27 +403,48 @@ export class BatonChatProtocol implements ChatProtocol {
     const question = this.questions[0];
     const selectedModel = this.runtime.currentModel(this.agent) ?? "default";
     const selectedBusy = active === this.agent;
+    // Agent Status（贴 composer 顶部）：主行=当前输入目标（provider · model）常驻，
+    // 运行相位（语义合成在 baton：phase/retry/thinking）仅 busy 时附加；跳秒由组件按 startedAt 自理。
+    // 输入目标 ≠ 正在运行的 provider 时（运行中切了 /provider），运行者单独一行——
+    // 未来 provider 上报的子 agent 状态也走附加行（best-effort），行形状已就绪。
+    const runStatus: RunStatusItem[] = [
+      selectedBusy
+        ? {
+            id: `agent:${this.agent}`,
+            author: providerAuthor(this.agent),
+            label: `${selectedModel} · ${runStatusLabel(v)}`,
+            startedAt: this.runtime.activeStartedAt,
+            hint: "Esc to interrupt",
+          }
+        : { id: `agent:${this.agent}`, author: providerAuthor(this.agent), label: selectedModel },
+    ];
+    if (active !== undefined && !selectedBusy) {
+      runStatus.push({
+        id: `run:${active}`,
+        author: providerAuthor(active),
+        label: runStatusLabel(v),
+        startedAt: this.runtime.activeStartedAt,
+        hint: "Esc to interrupt",
+      });
+    }
+    // pinned plan：最新 plan 的"进行中"投影——仅在有未完成项时下发；
+    // 全部完成即停发，pin 区随之消失（全量 plan 始终留在 transcript 里可回看）
+    const lastPlan = [...v.plans.values()].at(-1);
+    const planEntries = (lastPlan?.entries ?? []).map((entry) => ({
+      content: entry.content,
+      status: normalizePlanStatus(entry.status),
+    }));
+    const planActive = planEntries.some((entry) => entry.status !== "completed");
     return {
       transcript: [...buildTranscript(v), ...(this.commandOutput ? [this.commandOutput] : [])],
       busy: active !== undefined,
-      // 语义合成在 baton（phase/retry/thinking），chat-tui 只收展示结构；跳秒由组件按 startedAt 自理
-      runStatus: active
-        ? [
-            {
-              id: `run:${active}`,
-              author: providerAuthor(active),
-              label: runStatusLabel(v),
-              startedAt: this.runtime.activeStartedAt,
-              hint: "Esc to interrupt",
-            },
-          ]
-        : [],
+      runStatus,
+      plan: planActive ? planEntries : undefined,
       queued: this.runtime.queuedTurns.map((turn) => ({
         id: String(turn.id),
         text: userVisibleText(textOf(turn.blocks)),
         tag: turn.provider,
       })),
-      queuedHint: "↑ edit last queued message",
       picker: this.picker
         ? { id: this.picker.id, title: this.picker.title, options: this.picker.options }
         : null,
@@ -444,9 +466,9 @@ export class BatonChatProtocol implements ChatProtocol {
           }
         : null,
       status: this.status,
-      footer: `in:${v.usage.inputTokens} out:${v.usage.outputTokens}  turns:${v.turnSummaries.length}  queue:${this.runtime.queueLength}  cwd:${this.session.meta.cwd}`,
-      composerTitle: `provider:${this.agent} · model:${selectedModel}${selectedBusy ? " · running" : ""}`,
-      composerPlaceholder: `Message ${this.agent} (/ commands, @ mentions, Ctrl+J newline)`,
+      footer: `in:${v.usage.inputTokens} out:${v.usage.outputTokens}  turns:${v.turnSummaries.length}  queue:${this.runtime.queueLength}${planActive ? `  plan:${planEntries.filter((entry) => entry.status === "completed").length}/${planEntries.length}` : ""}  cwd:${this.session.meta.cwd}`,
+      // ↑ 召回提示只在"可召回"时出现：交互发生地是 composer（placeholder 天然只在空输入时可见）
+      composerPlaceholder: `Message ${this.agent} (/ commands, @ mentions, ${this.runtime.queueLength > 0 ? "↑ recall queued" : "Ctrl+J newline"})`,
       header: `baton · session ${this.session.id}\ntype to chat · /provider switch · /sessions open · @bs_xxx reference another session\n`,
       showThoughts: this.config.showThoughts,
     };
