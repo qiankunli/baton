@@ -24,7 +24,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.3.205",
     "@opentui/core": "^0.4.3",
     "@opentui/react": "^0.4.3",
-    "chat-tui": "github:qiankunli/chat-tui#c5ed4b882973b45bff6d13b9620c72c34cf301e9",
+    "chat-tui": "github:qiankunli/chat-tui#1ee3c7b6165210f2f91d8d991ff72941723f0f68",
     "react": "^19.2.7",
     "yaml": "^2.9.0"
   }
