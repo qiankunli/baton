@@ -4,8 +4,12 @@ import {
   isNativeSessionIdentifiable,
   isSteerable,
   type AgentAdapter,
+  type ApprovalDecision,
+  type ApprovalHandler,
   type ModelOption,
   type ProviderSessionRef,
+  type QuestionDecision,
+  type QuestionHandler,
   type SteerReceipt,
 } from "../adapters/types.ts";
 import { buildProviderCatchUpContext } from "../context/mention.ts";
@@ -81,10 +85,16 @@ export type SteerOutcome =
   | { effective: "steer" }
   | { effective: "follow_up"; outcome: Promise<SubmitOutcome> };
 
+/** runtime 注入给 adapter 构造器的交互回调（见 InteractionHandlers 的注入点 ensureProvider） */
+export interface InteractionHandlers {
+  approvalHandler: ApprovalHandler;
+  questionHandler: QuestionHandler;
+}
+
 export interface BatonSessionRuntimeOptions {
   session: SessionHandle;
   mentionBudgetChars: number;
-  createAdapter(provider: string): AgentAdapter;
+  createAdapter(provider: string, handlers: InteractionHandlers): AgentAdapter;
   providerSessionKey?(provider: string): string;
   onStateChange?: () => void;
   /**
@@ -130,8 +140,51 @@ export class BatonSessionRuntime {
   private readonly turns = new Map<string, TurnRecord>();
   /** 队列策略指针：当前唯一 driven turn（本轮 driven ≤ 1；见类 docstring） */
   private activeDrivenTurnId?: string;
+  /**
+   * 未决交互的应答通道：requestId → resolver。**只有应答通道，没有状态**——
+   * pending 交互的真相源是事件流（adapter 先 emit permission_request 再 await 回调，
+   * UI 从 reduced state 投影），内存只保留唤醒 adapter 的 resolve 函数。
+   * 崩溃后新进程没有 resolver，open 时的 crash recovery 会对 reduced pending
+   * 一律补 resolved(cancelled)，两侧语义自洽。
+   */
+  private readonly pendingApprovals = new Map<string, (d: ApprovalDecision) => void>();
+  private readonly pendingQuestions = new Map<string, (d: QuestionDecision) => void>();
 
   constructor(private readonly options: BatonSessionRuntimeOptions) {}
+
+  /** 注入给 adapter 的审批回调：注册 resolver 后挂起，等宿主经 resolvePermission 应答 */
+  readonly approvalHandler: ApprovalHandler = (request) =>
+    new Promise((resolve) => {
+      this.pendingApprovals.set(request.requestId, resolve);
+      this.changed();
+    });
+
+  readonly questionHandler: QuestionHandler = (request) =>
+    new Promise((resolve) => {
+      this.pendingQuestions.set(request.requestId, resolve);
+      this.changed();
+    });
+
+  /**
+   * 宿主应答一个未决审批。false = requestId 不在挂起集合（已被应答、或事件流里的
+   * pending 来自已死进程且无 resolver）——UI 据此提示 stale 而不是静默吞掉。
+   * 事件留痕（permission_resolved）由被唤醒的 adapter 负责，这里不落事件。
+   */
+  resolvePermission(requestId: string, decision: ApprovalDecision): boolean {
+    const resolve = this.pendingApprovals.get(requestId);
+    if (!resolve) return false;
+    this.pendingApprovals.delete(requestId);
+    resolve(decision);
+    return true;
+  }
+
+  resolveQuestion(requestId: string, decision: QuestionDecision): boolean {
+    const resolve = this.pendingQuestions.get(requestId);
+    if (!resolve) return false;
+    this.pendingQuestions.delete(requestId);
+    resolve(decision);
+    return true;
+  }
 
   /** 当前未终结的 driven turn 记录；无或已终结时 undefined */
   private activeDriven(): TurnRecord | undefined {
@@ -520,7 +573,10 @@ export class BatonSessionRuntime {
   private async ensureProvider(provider: string): Promise<ProviderSlot> {
     let slot = this.slots.get(provider);
     if (!slot) {
-      const adapter = this.options.createAdapter(provider);
+      const adapter = this.options.createAdapter(provider, {
+        approvalHandler: this.approvalHandler,
+        questionHandler: this.questionHandler,
+      });
       const created: ProviderSlot = { adapter, freshNative: true };
       slot = created;
       this.slots.set(provider, created);

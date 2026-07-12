@@ -376,6 +376,79 @@ describe("runStatusLabel", () => {
   });
 });
 
+describe("interaction eventization: pending projects from the event stream", () => {
+  const APPROVAL_OPTIONS = [
+    { optionId: "allow", name: "Allow", kind: "allow_once" as const },
+    { optionId: "deny", name: "Deny", kind: "reject_once" as const },
+  ];
+
+  test("approval card follows permission_request/resolved events; stale answer is a hint, not a crash", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-interaction-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+
+      // 事件流是 pending 交互的唯一真相源：request 落盘即出卡片，id = requestId
+      session.append({
+        kind: "permission_request",
+        provider: "claude-code",
+        turnId: "t1",
+        payload: { requestId: "ar_1", title: "Write file?", options: APPROVAL_OPTIONS },
+      });
+      let view = protocol.getView();
+      expect(view.approval).toMatchObject({ id: "ar_1", title: "Write file?" });
+
+      // 无 live resolver（如崩溃残留）：应答提示 stale，不静默吞掉
+      protocol.resolveApproval("ar_1", "allow");
+      view = protocol.getView();
+      expect(view.approval).not.toBeNull(); // 卡片消失只由 resolved 事件驱动
+      expect(view.status?.text).toContain("no longer pending");
+
+      // resolved 落盘 → 卡片消失
+      session.append({
+        kind: "permission_resolved",
+        provider: "baton",
+        payload: { requestId: "ar_1", outcome: "cancelled" },
+      });
+      expect(protocol.getView().approval).toBeNull();
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("question card follows question_request/resolved events", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-question-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+
+      session.append({
+        kind: "question_request",
+        provider: "codex",
+        turnId: "t1",
+        payload: {
+          requestId: "qr_1",
+          questions: [{ questionId: "q1", header: "Scope", question: "Which scope?" }],
+        },
+      });
+      expect(protocol.getView().question).toMatchObject({ id: "qr_1" });
+
+      session.append({
+        kind: "question_resolved",
+        provider: "baton",
+        payload: { requestId: "qr_1", outcome: "cancelled" },
+      });
+      expect(protocol.getView().question).toBeNull();
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("BatonChatProtocol steer submit", () => {
   function protocolWith(root: string) {
     const store = new SessionStore(root);

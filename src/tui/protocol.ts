@@ -18,13 +18,7 @@ import type {
 import { COMMANDS, parseProvider, PROVIDERS, type CommandName, type ProviderName } from "../commands/registry.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
-import {
-  textOf,
-  type DiffBlock,
-  type PermissionRequest,
-  type PromptBlock,
-  type QuestionRequest,
-} from "../events/types.ts";
+import { textOf, type DiffBlock, type PromptBlock } from "../events/types.ts";
 import { createProviderAdapter, providerSessionKey } from "../providers/registry.ts";
 import { openBatonSession } from "../session/open.ts";
 import { BatonSessionRuntime } from "../session/runtime.ts";
@@ -91,18 +85,6 @@ export function thoughtDisplayBlocks(text: string): ThoughtDisplayBlock[] {
     });
 }
 
-interface PendingApproval {
-  id: string;
-  request: PermissionRequest;
-  resolve: (d: { optionId: string }) => void;
-}
-
-interface PendingQuestion {
-  id: string;
-  request: QuestionRequest;
-  resolve: (d: { answers: Record<string, string[]> }) => void;
-}
-
 interface PendingPicker {
   id: string;
   title: string;
@@ -117,8 +99,6 @@ export class BatonChatProtocol implements ChatProtocol {
   private agent: ProviderName;
   private status: StatusMessage | null = null;
   private commandOutput: TranscriptItem | null = null;
-  private approvals: PendingApproval[] = [];
-  private questions: PendingQuestion[] = [];
   private picker: PendingPicker | null = null;
   private nextOverlayId = 1;
   private listeners = new Set<() => void>();
@@ -305,20 +285,24 @@ export class BatonChatProtocol implements ChatProtocol {
     })();
   }
 
+  /**
+   * 审批卡片应答 → runtime 的 resolver 注册表（id 即事件流里的 requestId）。
+   * 卡片消失不在这里发生：被唤醒的 adapter 发 permission_resolved 落盘，
+   * reduced pending 删除后视图自然更新——UI 只消费事件流投影，不维护第二份状态。
+   */
   resolveApproval(id: string, optionId: string): void {
-    const index = this.approvals.findIndex((approval) => approval.id === id);
-    if (index < 0) return;
-    const [approval] = this.approvals.splice(index, 1);
-    approval!.resolve({ optionId });
-    this.changed();
+    if (!this.runtime.resolvePermission(id, { optionId })) {
+      // 无 resolver：请求已被应答，或是崩溃残留（新进程没有等待中的 adapter）
+      this.status = { text: "approval request is no longer pending", tone: "info" };
+      this.changed();
+    }
   }
 
   resolveQuestion(id: string, answers: QuestionAnswers): void {
-    const index = this.questions.findIndex((question) => question.id === id);
-    if (index < 0) return;
-    const [question] = this.questions.splice(index, 1);
-    question!.resolve({ answers });
-    this.changed();
+    if (!this.runtime.resolveQuestion(id, { answers })) {
+      this.status = { text: "question is no longer pending", tone: "info" };
+      this.changed();
+    }
   }
 
   recallQueued(): { text: string } | null {
@@ -337,29 +321,13 @@ export class BatonChatProtocol implements ChatProtocol {
 
   // ===== 内部 =====
 
-  /** adapter 的审批回调：挂进队列，由 TUI 的审批卡片经 resolveApproval 应答 */
-  private approvalHandler = (request: PermissionRequest): Promise<{ optionId: string }> =>
-    new Promise((resolve) => {
-      this.approvals.push({ id: `ap_${this.nextOverlayId++}`, request, resolve });
-      this.changed();
-    });
-
-  private questionHandler = (request: QuestionRequest): Promise<{ answers: Record<string, string[]> }> =>
-    new Promise((resolve) => {
-      this.questions.push({ id: `qu_${this.nextOverlayId++}`, request, resolve });
-      this.changed();
-    });
-
   private createRuntime(): BatonSessionRuntime {
     return new BatonSessionRuntime({
       session: this.session,
       mentionBudgetChars: this.config.mentionBudgetChars,
-      createAdapter: (name) =>
-        createProviderAdapter(name as ProviderName, {
-          approvalHandler: this.approvalHandler,
-          questionHandler: this.questionHandler,
-          config: this.config,
-        }),
+      // 交互回调由 runtime 提供（resolver 注册表）：protocol 不再持有交互状态
+      createAdapter: (name, handlers) =>
+        createProviderAdapter(name as ProviderName, { ...handlers, config: this.config }),
       providerSessionKey: (name) => providerSessionKey(name as ProviderName),
       onStateChange: () => this.changed(),
     });
@@ -454,8 +422,10 @@ export class BatonChatProtocol implements ChatProtocol {
   private buildView(): ChatViewState {
     const v = this.state;
     const active = this.runtime.activeProvider;
-    const approval = this.approvals[0];
-    const question = this.questions[0];
+    // pending 交互从事件流投影（Map 保插入序，取最早的一个）；id 即 requestId，
+    // 应答经 runtime 的 resolver 注册表回到 adapter 的 await 点
+    const approval = v.pendingPermissions.values().next().value;
+    const question = v.pendingQuestions.values().next().value;
     const selectedModel = this.runtime.currentModel(this.agent) ?? "default";
     const selectedBusy = active === this.agent;
     // Agent Status（贴 composer 顶部）：主行=当前输入目标（provider · model）常驻，
@@ -523,12 +493,12 @@ export class BatonChatProtocol implements ChatProtocol {
         ? { id: this.picker.id, title: this.picker.title, options: this.picker.options }
         : null,
       approval: approval
-        ? { id: approval.id, title: approval.request.title, options: approval.request.options }
+        ? { id: approval.requestId, title: approval.title, options: approval.options }
         : null,
       question: question
         ? {
-            id: question.id,
-            questions: question.request.questions.map((prompt) => ({
+            id: question.requestId,
+            questions: question.questions.map((prompt) => ({
               id: prompt.questionId,
               header: prompt.header,
               question: prompt.question,
