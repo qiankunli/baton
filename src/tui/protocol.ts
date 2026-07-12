@@ -458,16 +458,18 @@ export class BatonChatProtocol implements ChatProtocol {
         startedAt: observedRun.startedAt,
       });
     }
-    // pinned plan：最新 plan 的"进行中"投影——仅在有未完成项时下发；
-    // 全部完成即停发，pin 区随之消失（全量 plan 始终留在 transcript 里可回看）
+    // plan 互补显示（design §5.9）：同一时刻只出现在一个地方——进行中归 pin（现在时），
+    // 盖棺归 transcript（过去时）。pin 显示期间 transcript 不渲染该 plan 卡（避免同屏两份、
+    // 且过去时区域不该有实时改写的块）；全部完成 pin 停发，终态卡在 timeline 原位出现供回看。
     const lastPlan = [...v.plans.values()].at(-1);
     const planEntries = (lastPlan?.entries ?? []).map((entry) => ({
       content: entry.content,
       status: normalizePlanStatus(entry.status),
     }));
     const planActive = planEntries.some((entry) => entry.status !== "completed");
+    const pinnedPlanId = planActive ? lastPlan?.planId : undefined;
     return {
-      transcript: [...buildTranscript(v), ...(this.commandOutput ? [this.commandOutput] : [])],
+      transcript: [...buildTranscript(v, pinnedPlanId), ...(this.commandOutput ? [this.commandOutput] : [])],
       busy: active !== undefined || observedRun !== undefined,
       runStatus,
       plan: planActive ? planEntries : undefined,
@@ -574,8 +576,11 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
   };
 }
 
-/** SessionState → chat-tui 展示形状。provider 内容在这里收敛为通用 command/output/diff/lines，块语义不出 baton。 */
-function buildTranscript(state: SessionState): TranscriptItem[] {
+/**
+ * SessionState → chat-tui 展示形状。provider 内容在这里收敛为通用 command/output/diff/lines，块语义不出 baton。
+ * pinnedPlanId：正被 pin 区承载的 plan——按互补显示规则跳过其 transcript 卡（见 buildView 处注释）。
+ */
+function buildTranscript(state: SessionState, pinnedPlanId?: string): TranscriptItem[] {
   const items: TranscriptItem[] = [];
   const noticesById = new Map(state.notices.map((notice) => [`n_${notice.seq}`, notice]));
   for (const entry of state.timeline) {
@@ -638,6 +643,7 @@ function buildTranscript(state: SessionState): TranscriptItem[] {
     }
     const plan = state.plans.get(entry.id);
     if (!plan) continue;
+    if (plan.planId === pinnedPlanId) continue; // 进行中归 pin，transcript 只在盖棺后展示终态卡
     const entries = plan.entries.map((e) => ({ content: e.content, status: normalizePlanStatus(e.status) }));
     const status =
       entries.length > 0 && entries.every((entry) => entry.status === "completed")

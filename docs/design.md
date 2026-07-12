@@ -235,7 +235,7 @@ UI 组件层来自 [chat-tui](https://github.com/qiankunli/chat-tui)（从 baton
 界面自上而下按信息的**时态与寿命**分层——越"现在时"的信息越往下、越固定（不随历史滚动）。带 `[]` 的层是条件渲染：无内容时整层消失、不占高度。
 
 ```text
-Transcript        可滚动历史（过去时；plan 块留在此层、状态原地更新；子 agent 输出折叠进工具卡）
+Transcript        可滚动历史（过去时；plan 只在盖棺后落终态卡；子 agent 输出折叠进工具卡）
 [Plan]            全量 plan pin（有未完成项才渲染，全部完成即消失；超长时窗口对准第一个未完成项）
 [Queued]          排队快照（将来时；空则不渲染；空 composer 时 ↑ 按 LIFO 撤回编辑）
 Composer          输入框（现在时）
@@ -246,8 +246,9 @@ Composer          输入框（现在时）
 Footer            常驻状态栏（usage、队列计数、plan 进度摘要、cwd）
 ```
 
-- **Agent Status 是输入框的地址标签，不是独立层**：`claude · default · thinking` 回答的是"下一条输入发给谁、它现在在干嘛"——运行状态是输入目标的属性，随 Composer 固定在底部，翻历史时天然可见。主行常驻（idle 只剩目标标识），运行相位是秒级现在时、只有当下有意义，只出现在这里、不落 transcript。plan 寿命不同（turn 级、值得回看），全量始终留在 transcript。
+- **Agent Status 是输入框的地址标签，不是独立层**：`claude · default · thinking` 回答的是"下一条输入发给谁、它现在在干嘛"——运行状态是输入目标的属性，随 Composer 固定在底部，翻历史时天然可见。主行常驻（idle 只剩目标标识），运行相位是秒级现在时、只有当下有意义，只出现在这里、不落 transcript。plan 寿命不同（turn 级、值得回看），盖棺后落 transcript 终态卡。
 - **pin 的判断尺：只有"未完成"才 pin，且 pin 带消失规则**：`[Plan]` 层仅在有未完成项时渲染（对齐 opencode sidebar / pi-mono widget 的业界惯例），全部完成即消失；超长 plan 窗口对准第一个未完成项，保证"现在进行到哪一步"始终可见。plan 信息**不进 Agent Status 行**——相位行要求稳定短小、每秒重绘，塞可变长步骤文本会抖动（codex / opencode / pi-mono 三家也均未这么做）；进度摘要（`plan:2/4`）归 Footer。
+- **plan 互补显示：同一时刻只出现在一个地方**。进行中归 pin（现在时），transcript 不渲染该 plan 卡——pin 已完整承担"进行到哪"，同屏两份是冗余，且"过去时区域里有块在实时改写"本身违背时态分层（pin 出现前它是不得已，之后失去存在理由）。全部完成 pin 停发，终态卡在 timeline 原位出现（过去时），回看长 turn 时它就是目录，@ 引用与 resume 也靠它。数据（plan_update 事件与 reduce 状态）始终全量保留，互补只是显隐规则，全部在 baton projection，chat-tui 无感知。
 - **语义合成在 baton projection，chat-tui 只收展示结构**：projection 的合成规则是——active provider 默认 thinking；`_baton_run_status` 的 phase 覆盖之（如 compacting，来源见 5.2 归一表）；`willRetry` 错误合成 retrying；idle 回落为目标标识主行。chat-tui 侧的 `runStatus` 只有 author / label / startedAt / hint（model 由 projection 拼进 label，chat-tui 不理解 model 概念），elapsed 跳秒由 TUI 自理，baton 只在状态变化时发快照（避免为跳秒每秒重建整个 view）。着色也走展示结构：不在协议里传颜色，author 沿用 transcript 的 `agentColorFor` 约定，同一 provider 在历史与状态行天然同色，颜色决策始终归 Theme。同理，`[Plan]` 的显隐规则（有未完成项才下发）在 projection，chat-tui 只按"非空即渲染"处理。
 - **子 agent 状态是现在时的复数形式**：provider 可上报时（对齐 5.8 的 `parentSessionId` / `agentId` / `agentType` 事件），每个活跃子 agent 在 Agent Status 主行下附加一行、结束即消失；provider 不上报则只显示主行——best-effort，不做正确性承诺。`runStatus` 本就是数组，行形状已就绪。
 - **run status 不塞 `state_update`、不建模成 tool_call**：前者驱动 runtime 的 busy/idle finalize（adapter 终态硬约定），是生命周期语义，混入阶段信息会污染 finalize；后者没有输入输出契约，也不值得在 transcript 占工具卡。
