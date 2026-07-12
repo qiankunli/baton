@@ -144,7 +144,7 @@ export class BatonChatProtocol implements ChatProtocol {
     this.status = null;
     this.commandOutput = null;
     this.session.setPreviewIfEmpty(text);
-    const { prompt } = expandMentions(this.store, text, this.config.mentionBudgetChars);
+    const { prompt } = expandMentions(this.store, text, this.config.mentionBudgetChars, this.session.id);
     if (this.runtime.isBusy || this.runtime.queueLength > 0) {
       this.status = { text: `${target} turn queued`, tone: "info" };
     }
