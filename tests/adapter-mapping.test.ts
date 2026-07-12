@@ -149,6 +149,27 @@ describe("claude: Task 工具族 → plan_update", () => {
     expect(taskToolOp("TaskList", {})).toBeNull();
     expect(taskToolOp("TaskGet", { taskId: "1" })).toBeNull();
     expect(taskToolOp("Bash", { command: "ls" })).toBeNull();
+    expect(taskToolOp("TaskUpdate", { status: "completed" })).toBeNull(); // 无 id 无从落账
+  });
+
+  // 回归：真实 harness 的 TaskUpdate 入参是 snake_case task_id——曾按 camelCase 假设
+  // 实现＋写测试，update 全被丢弃，TUI 的 plan 永远停在 pending（"做完了但 todo 不动"）
+  test("TaskUpdate with snake_case task_id (real harness shape) settles the status", () => {
+    expect(taskToolOp("TaskUpdate", { task_id: "1", status: "completed" })).toEqual({
+      op: "update",
+      taskId: "1",
+      status: "completed",
+    });
+
+    const { events, feed } = claudeHarness();
+    feed(toolUse("tu1", "TaskCreate", { subject: "确认演示范围" }));
+    feed(toolResult("tu1", "Task #1 created successfully: 确认演示范围"));
+    feed(toolUse("tu2", "TaskUpdate", { task_id: "1", status: "completed" }));
+    feed(toolResult("tu2", "Updated task #1 status"));
+    const plans = events.filter((e) => e.kind === "plan_update");
+    expect((plans.at(-1)!.payload as { entries: unknown[] }).entries).toEqual([
+      { content: "确认演示范围", priority: "medium", status: "completed" },
+    ]);
   });
 });
 
