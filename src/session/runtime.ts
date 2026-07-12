@@ -144,6 +144,11 @@ export class BatonSessionRuntime {
     return this.processingProvider;
   }
 
+  /** 当前 driven turn 的 baton turn id；TUI 据此做 per-turn 投影（运行阶段等） */
+  get activeTurnId(): string | undefined {
+    return this.activeDriven()?.turnId;
+  }
+
   /** 当前 turn 的起跑时刻（epoch ms）；elapsed 跳秒由 TUI 组件自理，这里只给起点 */
   get activeStartedAt(): number | undefined {
     return this.processingStartedAt;

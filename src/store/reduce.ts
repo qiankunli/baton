@@ -64,9 +64,28 @@ export interface UsageTotal {
   hasEstimated: boolean;
 }
 
+/** 一个仍在运行的 turn 的投影状态（running 开界、本 turn idle 收界） */
+export interface ActiveTurnState {
+  turnId: string;
+  provider?: string;
+  /** 缺省 user=driven turn；provider=agent 自发的 observed turn（design §5.10） */
+  origin: "user" | "provider";
+  startedAt?: number;
+  /** per-turn 运行阶段（compacting…）：null phase 或本 turn idle 清除（阶段不跨 turn） */
+  phase?: { phase: string; title?: string };
+}
+
 export interface SessionState {
+  /** 派生值：activeTurns 非空 ⇒ running。保留字段兼容既有消费面，真相源是 activeTurns */
   runState: SessionRunState;
   lastStopReason?: StopReason;
+  /**
+   * running 且尚未收到本 turn idle 的 turns。driven 与 observed 并发时各占一席，
+   * 任何一个收口只清自己——busy/流式/运行行等呈现一律从这里聚合派生。
+   */
+  activeTurns: Map<string, ActiveTurnState>;
+  /** per-turn 终态 stopReason：并发 turn 交错收口时按 turn 取值，不共享单槽 */
+  stopReasons: Map<string, StopReason>;
   timeline: TimelineItem[];
   messages: Map<string, MessageState>;
   toolCalls: Map<string, ToolCallState>;
@@ -82,15 +101,6 @@ export interface SessionState {
   contextUsage?: ContextUsageUpdate;
   /** 最近一次结构化错误；willRetry 时 runState 仍应为 running（由事件源保证） */
   lastError?: ErrorUpdate & { seq: number };
-  /** 当前运行阶段（compacting…）：null phase 事件清除；idle 也清除（阶段不跨 turn） */
-  runPhase?: { phase: string; title?: string; provider?: string };
-  /**
-   * 最近一次 running 的归属：provider / 发起方 / 起点时刻；idle 清除。
-   * origin=provider 表示 agent 自发的 observed turn（不经 runtime 队列），
-   * TUI 据此在没有 driven turn 时也能呈现运行态。单槽语义（最后一次 running 赢），
-   * 多路并发运行态留给将来的多 agent 呈现需求。
-   */
-  activeRun?: { provider?: string; origin: "user" | "provider"; startedAt?: number };
   /**
    * 提示历史（append-only），同时进 timeline（id 为 `n_<seq>`）：打断标记、
    * provider warning 等属于会话流的一部分，要按发生位置内联展示。
@@ -103,6 +113,8 @@ export interface SessionState {
 export function emptySessionState(): SessionState {
   return {
     runState: "idle",
+    activeTurns: new Map(),
+    stopReasons: new Map(),
     timeline: [],
     messages: new Map(),
     toolCalls: new Map(),
@@ -206,19 +218,31 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
   switch (ev.kind) {
     case "state_update": {
       const p = ev.payload;
-      state.runState = p.state;
-      if (p.stopReason !== undefined) state.lastStopReason = p.stopReason;
-      // idle 兜底清除运行阶段：adapter 异常退出可能来不及发 phase:null
-      if (p.state === "idle") {
-        state.runPhase = undefined;
-        state.activeRun = undefined;
-      } else if (p.state === "running") {
-        state.activeRun = {
-          provider: ev.provider,
-          origin: p.origin ?? "user",
-          startedAt: ev.ts ? Date.parse(ev.ts) || undefined : undefined,
-        };
+      if (p.stopReason !== undefined) {
+        state.lastStopReason = p.stopReason;
+        if (ev.turnId) state.stopReasons.set(ev.turnId, p.stopReason);
       }
+      if (p.state === "idle") {
+        if (ev.turnId) {
+          // 只收本 turn 的口：并发的 driven/observed turn 互不误清
+          state.activeTurns.delete(ev.turnId);
+        } else {
+          // 向后兼容：旧 jsonl / 旧版 crash recovery 的无 turnId idle 是全局收口语义
+          state.activeTurns.clear();
+        }
+      } else if (ev.turnId) {
+        // running（含 requires_action 等非 idle 态）：turn 在场。startedAt/origin
+        // 以首个 running 为准，重复 running（reconnect 重放）不重置起点。
+        const existing = state.activeTurns.get(ev.turnId);
+        state.activeTurns.set(ev.turnId, {
+          turnId: ev.turnId,
+          provider: ev.provider ?? existing?.provider,
+          origin: p.origin ?? existing?.origin ?? "user",
+          startedAt: existing?.startedAt ?? (ev.ts ? Date.parse(ev.ts) || undefined : undefined),
+          phase: existing?.phase,
+        });
+      }
+      state.runState = state.activeTurns.size > 0 ? "running" : "idle";
       break;
     }
     case "user_message":
@@ -282,8 +306,10 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       break;
     case "_baton_run_status": {
       const p = ev.payload;
-      state.runPhase =
-        p.phase === null ? undefined : { phase: p.phase, title: p.title, provider: ev.provider };
+      // per-turn 运行阶段；无 turnId 或未命中活跃 turn 时丢弃——phase 是短寿命
+      // 装饰信息（design §5.9），turn 已收口后的迟到 phase 没有呈现意义。
+      const turn = ev.turnId ? state.activeTurns.get(ev.turnId) : undefined;
+      if (turn) turn.phase = p.phase === null ? undefined : { phase: p.phase, title: p.title };
       break;
     }
     case "_baton_notice":
@@ -314,4 +340,14 @@ export function reduceEvents(events: Iterable<AnyEventEnvelope>): SessionState {
   const state = emptySessionState();
   for (const ev of events) applyEvent(state, ev);
   return state;
+}
+
+/**
+ * 该 turn 是否仍在运行。消息级流式/思考态按所属 turn 判定，不看全局——
+ * 并发 turn 下"别人 idle"不能把自己的流式状态打断。turnId 缺失（旧数据 /
+ * 非 turn 事件）时回退"会话存在任一运行 turn"。
+ */
+export function isTurnRunning(state: SessionState, turnId: string | undefined): boolean {
+  if (turnId === undefined) return state.activeTurns.size > 0;
+  return state.activeTurns.has(turnId);
 }

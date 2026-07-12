@@ -28,7 +28,7 @@ import {
 import { createProviderAdapter, providerSessionKey } from "../providers/registry.ts";
 import { openBatonSession } from "../session/open.ts";
 import { BatonSessionRuntime } from "../session/runtime.ts";
-import { applyEvent, type SessionState, type ToolCallState } from "../store/reduce.ts";
+import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from "../store/reduce.ts";
 import type { SessionHandle, SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
 import { sessionPickerOptions, type SessionPickerMode } from "./session-picker.tsx";
@@ -52,9 +52,17 @@ export function userVisibleText(text: string): string {
  * Run status 文案合成（design §5.9）：运行阶段（compacting…）覆盖默认 thinking；
  * willRetry 错误仅当它是最新事件时显示 retrying——其后一旦有任何事件即视为已恢复，
  * 避免"重试成功后 retrying 挂到 turn 结束"。
+ * phase 按 turn 取（并发 turn 各有各的阶段）；turnId 缺省时退化为任一带 phase 的 turn。
  */
-export function runStatusLabel(state: Pick<SessionState, "runPhase" | "lastError" | "lastSeq">): string {
-  if (state.runPhase) return state.runPhase.title ?? `${state.runPhase.phase}…`;
+export function runStatusLabel(
+  state: Pick<SessionState, "activeTurns" | "lastError" | "lastSeq">,
+  turnId?: string,
+): string {
+  const phase =
+    turnId !== undefined
+      ? state.activeTurns.get(turnId)?.phase
+      : [...state.activeTurns.values()].find((turn) => turn.phase)?.phase;
+  if (phase) return phase.title ?? `${phase.phase}…`;
   if (state.lastError?.willRetry && state.lastError.seq === state.lastSeq) return "retrying…";
   return "thinking…";
 }
@@ -454,12 +462,13 @@ export class BatonChatProtocol implements ChatProtocol {
     // 运行相位（语义合成在 baton：phase/retry/thinking）仅 busy 时附加；跳秒由组件按 startedAt 自理。
     // 输入目标 ≠ 正在运行的 provider 时（运行中切了 /provider），运行者单独一行——
     // 未来 provider 上报的子 agent 状态也走附加行（best-effort），行形状已就绪。
+    const activeTurnId = this.runtime.activeTurnId;
     const runStatus: RunStatusItem[] = [
       selectedBusy
         ? {
             id: `agent:${this.agent}`,
             author: providerAuthor(this.agent),
-            label: `${selectedModel} · ${runStatusLabel(v)}`,
+            label: `${selectedModel} · ${runStatusLabel(v, activeTurnId)}`,
             startedAt: this.runtime.activeStartedAt,
             hint: "Esc to interrupt",
           }
@@ -469,24 +478,25 @@ export class BatonChatProtocol implements ChatProtocol {
       runStatus.push({
         id: `run:${active}`,
         author: providerAuthor(active),
-        label: runStatusLabel(v),
+        label: runStatusLabel(v, activeTurnId),
         startedAt: this.runtime.activeStartedAt,
         hint: "Esc to interrupt",
       });
     }
-    // observed turn（provider 自发回合，如后台任务唤醒）：没有 driven turn 时也要呈现
-    // 运行态，否则 agent 在"静默"状态下说话。无 hint——Esc 中断的是 runtime 队列里的
-    // driven turn，管不到 provider 自己发起的回合（v1 不支持打断 observed turn）。
-    const observedRun = active === undefined && v.activeRun?.origin === "provider" ? v.activeRun : undefined;
-    if (observedRun) {
+    // observed turn（provider 自发回合，如后台任务唤醒）：每个各占一行——driven turn
+    // 运行时并发的后台回合同样要呈现，否则 agent 在"静默"状态下说话。无 hint——Esc
+    // 中断的是 runtime 队列里的 driven turn，管不到 provider 自己发起的回合
+    // （v1 不支持打断 observed turn）。
+    const observedRuns = [...v.activeTurns.values()].filter((turn) => turn.origin === "provider");
+    for (const run of observedRuns) {
       runStatus.push({
-        id: "run:observed",
-        author: providerAuthor(observedRun.provider),
-        label: `${runStatusLabel(v)} · background`,
-        startedAt: observedRun.startedAt,
+        id: `run:observed:${run.turnId}`,
+        author: providerAuthor(run.provider),
+        label: `${runStatusLabel(v, run.turnId)} · background`,
+        startedAt: run.startedAt,
       });
     }
-    const busy = active !== undefined || observedRun !== undefined;
+    const busy = active !== undefined || observedRuns.length > 0;
     // plan 互补显示（design §5.9）：同一时刻只出现在一个地方——进行中归 pin（现在时），
     // 盖棺归 transcript（过去时）。pin 显示期间 transcript 不渲染该 plan 卡（避免同屏两份、
     // 且过去时区域不该有实时改写的块）；全部完成 pin 停发，终态卡在 timeline 原位出现供回看。
@@ -641,7 +651,7 @@ function buildTranscript(state: SessionState, pinnedPlanId?: string): Transcript
       if (msg.role === "thought") {
         const turnCompleted = state.turnSummaries.some((summary) => summary.turnId === msg.turnId);
         const status =
-          msg.streamStatus === "completed" || turnCompleted || state.runState !== "running"
+          msg.streamStatus === "completed" || turnCompleted || !isTurnRunning(state, msg.turnId)
             ? "completed"
             : "in_progress";
         for (const [index, block] of thoughtDisplayBlocks(textOf(msg.content)).entries()) {
@@ -667,7 +677,8 @@ function buildTranscript(state: SessionState, pinnedPlanId?: string): Transcript
         ...(msg.role === "agent"
           ? {
               format: "markdown" as const,
-              streaming: msg.streamStatus === "in_progress" && state.runState === "running",
+              // 流式指示按消息所属 turn 判：并发 turn 下别人收口不打断自己的流
+              streaming: msg.streamStatus === "in_progress" && isTurnRunning(state, msg.turnId),
             }
           : { format: "plain" as const }),
       });

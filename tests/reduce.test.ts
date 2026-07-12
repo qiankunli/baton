@@ -8,7 +8,7 @@ import {
   type EventKind,
   type EventPayloadMap,
 } from "../src/events/types.ts";
-import { emptySessionState, reduceEvents } from "../src/store/reduce.ts";
+import { applyEvent, emptySessionState, reduceEvents } from "../src/store/reduce.ts";
 
 let seq = 0;
 function ev<K extends EventKind>(kind: K, payload: EventPayloadMap[K], turnId?: string): EventEnvelope<K> {
@@ -253,8 +253,8 @@ describe("error and notice events", () => {
 
   test("retrying error does not flip runState by itself", () => {
     const state = reduceEvents([
-      ev("state_update", { state: "running" }),
-      ev("_baton_error_update", { message: "retrying", willRetry: true }),
+      ev("state_update", { state: "running" }, "t1"),
+      ev("_baton_error_update", { message: "retrying", willRetry: true }, "t1"),
     ]);
     expect(state.runState).toBe("running");
   });
@@ -270,23 +270,71 @@ describe("error and notice events", () => {
 });
 
 describe("run status events", () => {
-  test("phase sets runPhase with provider attribution, null clears", () => {
+  test("phase attaches to its turn, null clears", () => {
     const state = reduceEvents([
-      ev("_baton_run_status", { phase: "compacting", title: "Compacting context…" }),
+      ev("state_update", { state: "running" }, "t1"),
+      ev("_baton_run_status", { phase: "compacting", title: "Compacting context…" }, "t1"),
     ]);
-    expect(state.runPhase).toEqual({ phase: "compacting", title: "Compacting context…", provider: "test" });
+    expect(state.activeTurns.get("t1")?.phase).toEqual({ phase: "compacting", title: "Compacting context…" });
     const cleared = reduceEvents([
-      ev("_baton_run_status", { phase: "compacting" }),
-      ev("_baton_run_status", { phase: null }),
+      ev("state_update", { state: "running" }, "t1"),
+      ev("_baton_run_status", { phase: "compacting" }, "t1"),
+      ev("_baton_run_status", { phase: null }, "t1"),
     ]);
-    expect(cleared.runPhase).toBeUndefined();
+    expect(cleared.activeTurns.get("t1")?.phase).toBeUndefined();
   });
 
-  test("idle clears runPhase as a safety net (adapter 崩溃可能来不及发 null)", () => {
+  test("idle clears the turn (and its phase) as a safety net", () => {
     const state = reduceEvents([
-      ev("_baton_run_status", { phase: "compacting" }),
-      ev("state_update", { state: "idle", stopReason: "end_turn" }),
+      ev("state_update", { state: "running" }, "t1"),
+      ev("_baton_run_status", { phase: "compacting" }, "t1"),
+      ev("state_update", { state: "idle", stopReason: "end_turn" }, "t1"),
     ]);
-    expect(state.runPhase).toBeUndefined();
+    expect(state.activeTurns.has("t1")).toBe(false);
+  });
+
+  test("phase without a matching active turn is dropped (短寿命装饰信息)", () => {
+    const state = reduceEvents([ev("_baton_run_status", { phase: "compacting" }, "t_gone")]);
+    expect(state.activeTurns.size).toBe(0);
+  });
+});
+
+describe("per-turn run state aggregation", () => {
+  test("concurrent turns close independently; runState derives from the set", () => {
+    const state = reduceEvents([
+      ev("state_update", { state: "running" }, "t_driven"),
+      ev("state_update", { state: "running", origin: "provider" }, "t_obs"),
+    ]);
+    expect([...state.activeTurns.keys()].sort()).toEqual(["t_driven", "t_obs"]);
+    expect(state.runState).toBe("running");
+
+    // 一个收口不误清另一个（bug#3 回归钉子）
+    applyEvent(state, ev("state_update", { state: "idle", stopReason: "end_turn" }, "t_obs"));
+    expect(state.activeTurns.has("t_driven")).toBe(true);
+    expect(state.runState).toBe("running");
+    expect(state.stopReasons.get("t_obs")).toBe("end_turn");
+
+    applyEvent(state, ev("state_update", { state: "idle", stopReason: "cancelled" }, "t_driven"));
+    expect(state.activeTurns.size).toBe(0);
+    expect(state.runState).toBe("idle");
+    expect(state.stopReasons.get("t_driven")).toBe("cancelled");
+  });
+
+  test("legacy idle without turnId closes everything (旧 jsonl 兼容)", () => {
+    const state = reduceEvents([
+      ev("state_update", { state: "running" }, "t1"),
+      ev("state_update", { state: "running", origin: "provider" }, "t2"),
+      ev("state_update", { state: "idle", stopReason: "cancelled" }),
+    ]);
+    expect(state.activeTurns.size).toBe(0);
+    expect(state.runState).toBe("idle");
+  });
+
+  test("duplicate running keeps the original startedAt and origin", () => {
+    const state = reduceEvents([
+      ev("state_update", { state: "running", origin: "provider" }, "t1"),
+      ev("state_update", { state: "running" }, "t1"),
+    ]);
+    expect(state.activeTurns.get("t1")?.origin).toBe("provider");
   });
 });

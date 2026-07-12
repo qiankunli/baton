@@ -87,6 +87,46 @@ describe("crash recovery on open", () => {
     expect(state.turnSummaries[0]!.stopReason).toBe("cancelled");
   });
 
+  test("concurrent interrupted turns each get idle + notice + summary", () => {
+    const h = store.createSession({ cwd: "/repo" });
+    // driven turn 运行中 + 同 provider 的 observed turn 也在运行时崩溃
+    h.append({ kind: "state_update", payload: { state: "running" }, provider: "codex", turnId: "t_driven" });
+    h.append({
+      kind: "agent_message_chunk",
+      payload: { messageId: "m1", content: { type: "text", text: "partial" } },
+      provider: "codex",
+      turnId: "t_driven",
+    });
+    h.append({
+      kind: "state_update",
+      payload: { state: "running", origin: "provider" },
+      provider: "claude-code",
+      turnId: "t_obs",
+    });
+    h.append({
+      kind: "agent_message",
+      payload: { messageId: "m2", content: [{ type: "text", text: "bg partial" }] },
+      provider: "claude-code",
+      turnId: "t_obs",
+    });
+
+    const result = openBatonSession(store, { cwd: "/repo", sessionId: h.id });
+    expect(result.recovered).toBe(true);
+    const state = result.session.loadState();
+    expect(state.activeTurns.size).toBe(0); // 每个 turn 各自收口，不是只收最后一个
+    expect(state.runState).toBe("idle");
+    expect(state.stopReasons.get("t_driven")).toBe("cancelled");
+    expect(state.stopReasons.get("t_obs")).toBe("cancelled");
+    expect(state.notices.filter((n) => n.title === CRASH_RECOVERY_NOTICE_TITLE)).toHaveLength(2);
+    expect(state.turnSummaries.map((s) => s.turnId).sort()).toEqual(["t_driven", "t_obs"]);
+    for (const summary of state.turnSummaries) expect(summary.stopReason).toBe("cancelled");
+    // 恢复合成的终态恒带 turnId（per-turn reducer 的精确收口依赖它）
+    const recoveryIdles = result.session
+      .readEvents()
+      .filter((ev) => ev.kind === "state_update" && (ev.payload as { state?: string }).state === "idle");
+    for (const idle of recoveryIdles) expect(idle.turnId).toBeTruthy();
+  });
+
   test("recovery is idempotent: second open changes nothing", () => {
     const h = store.createSession({ cwd: "/repo" });
     h.append({ kind: "state_update", payload: { state: "running" }, provider: "codex", turnId: "t1" });

@@ -491,7 +491,9 @@ export class SessionHandle {
 
     const summary: TurnSummary = {
       turnId,
-      stopReason: state.lastStopReason as StopReason | undefined,
+      // per-turn 取值：输入虽已按 turnId 过滤，但显式按 turn 取让它对"过滤集混入
+      // 他人终态"的任何未来变化免疫（无 turnId 的迟到终态只会进 lastStopReason）
+      stopReason: (state.stopReasons.get(turnId) ?? state.lastStopReason) as StopReason | undefined,
       userText: userText || undefined,
       agentText: agentText || undefined,
       toolCalls,

@@ -90,7 +90,7 @@ describe("BatonChatProtocol view projection", () => {
     state: {
       plans: Map<string, { planId: string; entries: Array<{ content: string; status: string }> }>;
       timeline: Array<{ type: string; id: string }>;
-      activeRun?: { provider?: string; origin: "user" | "provider"; startedAt?: number };
+      activeTurns: Map<string, { turnId: string; provider?: string; origin: "user" | "provider"; startedAt?: number }>;
     };
     changed: () => void;
   };
@@ -133,7 +133,7 @@ describe("BatonChatProtocol view projection", () => {
       });
       internals.state.timeline.push({ type: "plan", id: "p1" });
       // pin 是"现在时"层：需有回合在运行（observed run 也算）
-      internals.state.activeRun = { provider: "claude-code", origin: "provider" };
+      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "claude-code", origin: "provider" });
       internals.changed();
       expect(protocol.getView().plan).toEqual([
         { content: "step one", status: "completed" },
@@ -144,14 +144,14 @@ describe("BatonChatProtocol view projection", () => {
       expect(planInTranscript()).toBe(false);
 
       // idle 且未完成：pin 卸下（搁置即过去时）——否则状态更新缺失/中途放弃时 pin 永驻
-      internals.state.activeRun = undefined;
+      internals.state.activeTurns.clear();
       internals.changed();
       expect(protocol.getView().plan).toBeUndefined();
       expect(protocol.getView().footer).not.toContain("plan:");
       expect(planInTranscript()).toBe(true);
 
       // 回合重新开跑：未完成 plan 重新上 pin，transcript 卡随之撤下
-      internals.state.activeRun = { provider: "claude-code", origin: "provider" };
+      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "claude-code", origin: "provider" });
       internals.changed();
       expect(protocol.getView().plan).toHaveLength(2);
       expect(planInTranscript()).toBe(false);
@@ -344,17 +344,28 @@ describe("toolTranscriptItem", () => {
 // 不经过 BatonChatProtocol）；/sessions 的会话内切换浮层仍由 protocol 承载。
 
 describe("runStatusLabel", () => {
-  const base = { runPhase: undefined, lastError: undefined, lastSeq: 5 };
+  const base = { activeTurns: new Map(), lastError: undefined, lastSeq: 5 };
+  const withPhase = (turnId: string, phase: { phase: string; title?: string }) => ({
+    ...base,
+    activeTurns: new Map([[turnId, { turnId, origin: "user" as const, phase }]]),
+  });
 
   test("defaults to thinking", () => {
     expect(runStatusLabel(base)).toBe("thinking…");
   });
 
   test("phase overrides thinking; title wins over generic phase text", () => {
-    expect(runStatusLabel({ ...base, runPhase: { phase: "compacting", title: "Compacting context…" } })).toBe(
+    expect(runStatusLabel(withPhase("t1", { phase: "compacting", title: "Compacting context…" }), "t1")).toBe(
       "Compacting context…",
     );
-    expect(runStatusLabel({ ...base, runPhase: { phase: "warming" } })).toBe("warming…");
+    expect(runStatusLabel(withPhase("t1", { phase: "warming" }), "t1")).toBe("warming…");
+  });
+
+  test("phase is per-turn: another turn's phase does not leak", () => {
+    const state = withPhase("t1", { phase: "compacting" });
+    expect(runStatusLabel(state, "t2")).toBe("thinking…");
+    // turnId 缺省时退化为任一带 phase 的 turn
+    expect(runStatusLabel(state)).toBe("compacting…");
   });
 
   test("willRetry shows retrying only while the error is the latest event", () => {

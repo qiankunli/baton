@@ -67,9 +67,10 @@ function resolveSession(
 /**
  * 崩溃残留归一化。前提：调用方已持有会话锁——否则"最后事件是 running"可能是
  * 另一个活进程正在执行，合成终态会污染活会话。
- * 收口顺序与 runtime.finalizeTurn 一致（终态 → notice → summary），三类残留：
- * 悬挂审批 → resolved(cancelled)；running 终态 → idle(cancelled) + 中断 notice；
- * 缺 summary 的 turn（含 fork 从运行中源会话复制来的半截 turn）→ 补 summary。
+ * 收口顺序与 runtime.finalize 一致（终态 → notice → summary），三类残留：
+ * 悬挂审批 → resolved(cancelled)；每个未收口的 turn（driven/observed 并发崩溃时
+ * 可能不止一个）→ 各补 idle(cancelled) + 中断 notice；缺 summary 的 turn
+ * （含 fork 从运行中源会话复制来的半截 turn）→ 补 summary。
  */
 function recoverInterruptedState(session: SessionHandle): boolean {
   const events = session.readEvents();
@@ -86,9 +87,9 @@ function recoverInterruptedState(session: SessionHandle): boolean {
     if (!summarized.has(ev.turnId) && !unsummarized.includes(ev.turnId)) unsummarized.push(ev.turnId);
   }
 
-  const interrupted = state.runState !== "idle";
+  const interruptedTurns = [...state.activeTurns.keys()];
   if (
-    !interrupted &&
+    interruptedTurns.length === 0 &&
     unsummarized.length === 0 &&
     state.pendingPermissions.size === 0 &&
     state.pendingQuestions.size === 0
@@ -110,20 +111,20 @@ function recoverInterruptedState(session: SessionHandle): boolean {
       payload: { requestId, outcome: "cancelled" },
     });
   }
-  if (interrupted) {
-    const lastTurnId = unsummarized.at(-1);
-    const provider =
-      (lastTurnId && events.findLast((ev) => ev.turnId === lastTurnId)?.provider) || "baton";
+  // 每个未收口的 turn 各补一份终态 + 中断标记（并发崩溃不止一个；恒带 turnId，
+  // 让 per-turn reducer 精确收口，不误清并发 turn）
+  for (const turnId of interruptedTurns) {
+    const provider = events.findLast((ev) => ev.turnId === turnId)?.provider || "baton";
     session.append({
       kind: "state_update",
       provider,
-      turnId: lastTurnId,
+      turnId,
       payload: { state: "idle", stopReason: "cancelled" },
     });
     session.append({
       kind: "_baton_notice",
       provider,
-      turnId: lastTurnId,
+      turnId,
       payload: { level: "warning", title: CRASH_RECOVERY_NOTICE_TITLE },
     });
   }
