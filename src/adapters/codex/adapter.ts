@@ -25,6 +25,7 @@ import type {
   PromptReceipt,
   ProviderSessionRef,
   QuestionHandler,
+  SteerReceipt,
 } from "../types.ts";
 import { unsupportedPromptBlocks } from "../types.ts";
 import { JsonRpcPeer } from "./jsonrpc.ts";
@@ -221,7 +222,7 @@ export class CodexAdapter implements AgentAdapter {
   readonly provider = "codex";
   // 当前 adapter 最终只发送 text（design.md §3.1）；可选能力接口落地并验证后才声明
   // 对应 marker——契约测试钉住"声明支持就必须实现对应接口"。
-  readonly capabilities: AdapterCapabilities = { prompt: {} };
+  readonly capabilities: AdapterCapabilities = { prompt: {}, steer: { supported: true } };
   private threads = new Map<string, ThreadRuntime>();
 
   constructor(private options: CodexAdapterOptions) {}
@@ -339,6 +340,47 @@ export class CodexAdapter implements AgentAdapter {
         this.failTurn(rt, turn, err instanceof Error ? err.message : String(err));
       });
     return { accepted: true };
+  }
+
+  /**
+   * same-turn steer：映射原生 `turn/steer`（Steerable，design §4.3）。入参 expectedTurnId
+   * 是 baton turn id，wire 上换成 codex turn id；成功不产生新 `turn/started`，输入在
+   * 当前 turn 的下一个安全边界被消费。stale turn、codex 侧拒绝（review/compact 等特殊
+   * turn）与 wire 失败都归 rejected 交 runtime 降级——rejected 路径不发任何事件。
+   */
+  async steer(ref: ProviderSessionRef, input: PromptInput, expectedTurnId: string): Promise<SteerReceipt> {
+    const rt = this.mustThread(ref);
+    const turn = rt.activeTurn;
+    // race 防线：用户提交时看到的 turn 已终结，或 codex turn id 尚未就位（turn/start
+    // 响应未回），都无法把输入安全钉到目标 turn——拒绝而不是注入错误的 turn。
+    if (!turn || turn.finalized || turn.turnId !== expectedTurnId || !rt.codexTurnId) {
+      return { effective: "rejected" };
+    }
+    const unsupported = unsupportedPromptBlocks(input.blocks, this.capabilities);
+    if (unsupported.length) {
+      throw new Error(`codex adapter does not support prompt block type(s): ${unsupported.join(", ")}`);
+    }
+    try {
+      await rt.peer.request("turn/steer", {
+        threadId: rt.threadId,
+        expectedTurnId: rt.codexTurnId,
+        input: [{ type: "text", text: textOf(input.blocks) }],
+      });
+    } catch {
+      return { effective: "rejected" };
+    }
+    // codex 已按 expectedTurnId 校验通过：消息确定进入该 turn，用户消息绑定原 turn 落盘
+    this.emit(
+      rt,
+      {
+        kind: "user_message",
+        provider: this.provider,
+        payload: { messageId: input.messageId, content: input.blocks, delivery: "steer" },
+      },
+      undefined,
+      turn,
+    );
+    return { effective: "steer" };
   }
 
   async cancel(ref: ProviderSessionRef): Promise<void> {

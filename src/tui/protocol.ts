@@ -18,7 +18,13 @@ import type {
 import { COMMANDS, parseProvider, PROVIDERS, type CommandName, type ProviderName } from "../commands/registry.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
-import { textOf, type DiffBlock, type PermissionRequest, type QuestionRequest } from "../events/types.ts";
+import {
+  textOf,
+  type DiffBlock,
+  type PermissionRequest,
+  type PromptBlock,
+  type QuestionRequest,
+} from "../events/types.ts";
 import { createProviderAdapter, providerSessionKey } from "../providers/registry.ts";
 import { openBatonSession } from "../session/open.ts";
 import { BatonSessionRuntime } from "../session/runtime.ts";
@@ -157,11 +163,33 @@ export class BatonChatProtocol implements ChatProtocol {
     this.commandOutput = null;
     this.session.setPreviewIfEmpty(text);
     const { prompt } = expandMentions(this.store, text, this.config.mentionBudgetChars);
+    const blocks: PromptBlock[] = [{ type: "text", text: prompt }];
+
+    // busy 且当前 provider 支持时默认 steer（对齐原生"打字即纠偏"体验）；队列非空时
+    // 例外——已有排队的 follow-up 意味着用户在按顺序编排，插队 steer 会打乱预期顺序。
+    if (this.runtime.queueLength === 0 && this.runtime.canSteer(target)) {
+      const steered = await this.runtime.steer(target, blocks);
+      if (steered.effective === "steer") {
+        this.status = { text: `steering ${target} — applies at the next safe point`, tone: "info" };
+        this.changed();
+        return;
+      }
+      // 降级如实提示（design §3.7：不能把 follow-up 仍标成 steer）
+      this.status = { text: `${target} steer rejected; queued as follow-up`, tone: "info" };
+      this.changed();
+      const outcome = await steered.outcome;
+      if (outcome === "completed" && this.status?.tone !== "error") {
+        this.status = null;
+        this.changed();
+      }
+      return;
+    }
+
     if (this.runtime.isBusy || this.runtime.queueLength > 0) {
       this.status = { text: `${target} turn queued`, tone: "info" };
     }
     this.changed();
-    const outcome = await this.runtime.submit(target, [{ type: "text", text: prompt }]);
+    const outcome = await this.runtime.submit(target, blocks);
     if (outcome === "completed" && this.status?.tone !== "error") {
       this.status = null;
       this.changed();
@@ -501,7 +529,14 @@ export class BatonChatProtocol implements ChatProtocol {
       status: this.status,
       footer: `in:${v.usage.inputTokens} out:${v.usage.outputTokens}  turns:${v.turnSummaries.length}  queue:${this.runtime.queueLength}${planActive ? `  plan:${planEntries.filter((entry) => entry.status === "completed").length}/${planEntries.length}` : ""}  cwd:${this.session.meta.cwd}`,
       // ↑ 召回提示只在"可召回"时出现：交互发生地是 composer（placeholder 天然只在空输入时可见）
-      composerPlaceholder: `Message ${this.agent} (/ commands, @ mentions, ${this.runtime.queueLength > 0 ? "↑ recall queued" : "Ctrl+J newline"})`,
+      // busy 且可 steer 时提示 Enter 的实际语义（design §3.2：delivery 对用户可见、可预期）
+      composerPlaceholder: `Message ${this.agent} (/ commands, @ mentions, ${
+        this.runtime.queueLength > 0
+          ? "↑ recall queued"
+          : this.runtime.canSteer(this.agent)
+            ? "Enter steers current turn"
+            : "Ctrl+J newline"
+      })`,
       header: `baton · session ${this.session.id}\ntype to chat · /provider switch · /sessions open · @bs_xxx reference another session\n`,
       showThoughts: this.config.showThoughts,
     };

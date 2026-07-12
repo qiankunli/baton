@@ -16,6 +16,7 @@ import type {
   SessionConfigOption,
   SessionRunState,
   StopReason,
+  SubmitDelivery,
   ToolCallStatus,
   TurnSummary,
   UsageUpdate,
@@ -30,6 +31,8 @@ export interface MessageState {
   turnId?: string;
   /** 产生该消息的 provider（多 agent 同时间线时用于标注说话人） */
   provider?: string;
+  /** 仅 user 消息：effective delivery（steer = 中途注入当前 turn），缺省 = prompt */
+  delivery?: SubmitDelivery;
 }
 
 export interface ToolCallState {
@@ -166,6 +169,11 @@ function applyMessageUpsert(
   // 三态：省略=不变；null/[]=清空；数组=整体替换
   if (p.content !== undefined) {
     msg.content = p.content === null ? [] : [...p.content];
+  }
+  // EventEnvelope<union> 不随 kind 自动收窄（非判别联合入参），手动断言 user_message
+  if (ev.kind === "user_message") {
+    const delivery = (ev as EventEnvelope<"user_message">).payload.delivery;
+    if (delivery !== undefined) msg.delivery = delivery;
   }
   if (role !== "user") msg.streamStatus = "completed";
 }

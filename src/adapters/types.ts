@@ -143,6 +143,34 @@ export function isModelConfigurable(adapter: AgentAdapter): adapter is AgentAdap
   );
 }
 
+/**
+ * steer 的回执：`rejected` 是正常返回值而非异常——expectedTurnId 已过期（race）、
+ * provider 侧拒绝（review/compact 等特殊 turn）都归入 rejected，由 runtime 决定降级；
+ * 只有 wire/transport 故障才 throw。
+ */
+export interface SteerReceipt {
+  effective: "steer" | "rejected";
+}
+
+/**
+ * 可选能力（design §4.3）：把输入注入当前活跃 turn 的下一个安全边界，不新开 turn。
+ *
+ * 契约：
+ * - `expectedTurnId` 恒为 baton turn id；到 provider turn id 的映射留在 adapter 内部，
+ *   不进 runtime 词汇。expectedTurnId 与 adapter 当前 active turn 不符必须返回 rejected
+ *   （防 race：用户提交时看到的 turn 已结束，不能把输入注入新 turn）。
+ * - `input.turnId` 即被注入的 turn；effective:"steer" 时 adapter 负责发 delivery:"steer"
+ *   的 user_message upsert（信封 turnId 绑定该 turn），rejected 时不得发任何事件。
+ * - 声明 capabilities.steer 才可被 runtime 调用；契约测试钉住"声明即实现"。
+ */
+export interface Steerable {
+  steer(ref: ProviderSessionRef, input: PromptInput, expectedTurnId: string): Promise<SteerReceipt>;
+}
+
+export function isSteerable(adapter: AgentAdapter): adapter is AgentAdapter & Steerable {
+  return typeof (adapter as Partial<Steerable>).steer === "function";
+}
+
 /** 可把 BatonSession 的缺失历史追加到 provider 自己的 model-visible history。 */
 export interface ContextSynchronizable {
   syncContext(ref: ProviderSessionRef, blocks: PromptBlock[]): Promise<void>;
