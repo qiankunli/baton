@@ -352,6 +352,10 @@ export class BatonSessionRuntime {
         budgetChars: this.options.mentionBudgetChars,
       });
       let blocks = turn.blocks;
+      // 水位（syncedSeq）只在注入时前进到本批 throughSeq（并发正确性的关键：
+      // throughSeq 固定在注入时点，turn 运行期间其它 provider 落盘的事件 seq 必然
+      // 大于它，下一次注入自然回补；finalize 推尾水位则会永久越过它们）。
+      let prependedCatchUp: typeof catchUp = null;
       if (catchUp) {
         const syncBlock: PromptBlock = {
           type: "text",
@@ -367,16 +371,30 @@ export class BatonSessionRuntime {
           });
           slot.freshNative = false;
         } else {
+          // prepend 注入随本 turn 的 submit 送达；水位在 admission 通过后才推进
           blocks = [syncBlock, { type: "text", text: "\n\n" }, ...blocks];
+          prependedCatchUp = catchUp;
         }
       }
 
-      // submit 只确认 admission；完成以 finalizeTurn 收到 idle 终态为准
+      // submit 只确认 admission；完成以 finalize 收到 idle 终态为准
       await slot.adapter.submit(slot.ref, {
         turnId: turn.turnId,
         messageId: turn.messageId,
         blocks,
       });
+      if (prependedCatchUp) {
+        // admission 通过 ⇒ prepend 的 sync 块已进入 provider 输入：视为同步到 throughSeq。
+        // admission 失败走 catch 上抛，水位不动，下次重新注入。
+        session.setProviderSession(key, {
+          ...session.meta.providerSessions[key],
+          provider: key,
+          providerSessionId:
+            session.meta.providerSessions[key]?.providerSessionId ?? this.nativeSessionId(slot),
+          syncedSeq: prependedCatchUp.throughSeq,
+        });
+        slot.freshNative = false;
+      }
       await released;
     } catch (error) {
       // admission/启动失败：本 turn 没有（也不会再有）事件流，直接终结记录并上抛
@@ -455,7 +473,7 @@ export class BatonSessionRuntime {
 
     session.summarizeTurnEvent(turnId);
     if (record.role === "driven") record.slot.freshNative = false;
-    this.syncProviderWatermark(record.slot);
+    this.backfillProviderSessionId(record.slot);
 
     if (record.role === "driven") {
       if (this.activeDrivenTurnId === turnId) this.activeDrivenTurnId = undefined;
@@ -464,15 +482,21 @@ export class BatonSessionRuntime {
     this.changed();
   }
 
-  /** turn 收界后的共用元数据同步：原生 session id 回填 + syncedSeq 水位推进 */
-  private syncProviderWatermark(slot: ProviderSlot): void {
+  /**
+   * turn 收界后的元数据回填：原生 session id 首轮结束才拿得到（claude）。
+   * 刻意**不**推进 syncedSeq——水位只在注入时前进（见 runTurn）：finalize 推尾水位
+   * 会越过并发期间其它 provider 落盘、尚未注入本 provider 的事件，形成永久同步洞。
+   */
+  private backfillProviderSessionId(slot: ProviderSlot): void {
     const session = this.options.session;
     const key = slot.adapter.provider;
+    const existing = session.meta.providerSessions[key];
+    const nativeId = this.nativeSessionId(slot) ?? existing?.providerSessionId;
+    if (nativeId === existing?.providerSessionId) return; // 无变化不写盘
     session.setProviderSession(key, {
-      ...session.meta.providerSessions[key],
+      ...existing,
       provider: key,
-      providerSessionId: this.nativeSessionId(slot) ?? session.meta.providerSessions[key]?.providerSessionId,
-      syncedSeq: session.readEvents().at(-1)?.seq,
+      providerSessionId: nativeId,
     });
   }
 

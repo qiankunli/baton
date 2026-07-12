@@ -124,6 +124,15 @@ function providerSummaries(handle: SessionHandle): ProviderSummary[] {
 /**
  * 生成 provider 尚未同步的 BatonSession 历史，并返回本批覆盖到的事件水位。
  * 新建原生会话时 includeProviderTurns=true，从零恢复完整逻辑历史；resume 时只补其它 provider 的增量。
+ *
+ * 同步语义（与 runtime 的注入时点水位配套，三条规则都有测试钉住）：
+ * - **自身产出不注入**：provider 自己的 driven/observed turn（summary 的 envelope.provider
+ *   等于目标 provider）是其亲历内容，注入即复读；
+ * - **throughSeq = 全量 summary 尾 seq（含自己的）**：亲历即已同步，水位越过它是正确的。
+ *   注意 summary 事件本身不进注入文本，其 userText 已由 summarize 时的
+ *   stripBatonInjectedContext 剥掉 <baton-sync> 标签——sync 块不经 summary 递归放大；
+ * - **预算裁剪是有意的有损压缩**：从最新往回装，装不下的早期 turn 以
+ *   "(N earlier turns omitted)" 一句代偿且不回补（throughSeq 照常推进）。
  */
 export function buildProviderCatchUpContext(
   handle: SessionHandle,
