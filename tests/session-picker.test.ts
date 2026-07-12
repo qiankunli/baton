@@ -49,4 +49,28 @@ describe("sessionPickerOptions", () => {
     ]);
     expect(option!.name).toBe("Release follow-up");
   });
+
+  test("tree mode nests forks with indent and keeps the current marker", () => {
+    const fork: SessionMeta = {
+      ...sessions[1]!,
+      batonSessionId: "bs_fork",
+      updatedAt: "2026-07-04T00:00:00Z",
+      forkedFrom: { batonSessionId: "bs_titled", throughSeq: 3 },
+    };
+    const names = sessionPickerOptions([fork, ...sessions], {
+      mode: "tree",
+      currentSessionId: "bs_fork",
+    }).map((o) => o.name);
+    // fork（07-04）把 bs_titled 整棵树浮顶；fork 缩进挂在源下并保留 ● 标记
+    expect(names).toEqual([
+      "Implement resume titles",
+      "└ ● Inspect provider logs",
+      "Inspect provider logs",
+    ]);
+  });
+
+  test("list mode keeps incoming order untouched", () => {
+    const names = sessionPickerOptions(sessions, { mode: "list" }).map((o) => o.name);
+    expect(names).toEqual(["Implement resume titles", "Inspect provider logs"]);
+  });
 });

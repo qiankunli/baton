@@ -11,6 +11,7 @@
 
 import packageJson from "../../package.json" with { type: "json" };
 
+import { sessionTreeRows, treeRowPrefix } from "../store/session-tree.ts";
 import { SessionStore, sessionDisplayTitle } from "../store/store.ts";
 
 const HELP = `baton — one durable terminal session across coding-agent providers
@@ -29,7 +30,9 @@ Usage:
                         sessions) and open the fork; without an id shows the
                         session list to pick the source (--last forks the
                         latest in cwd)
-  baton sessions        list sessions (reference with @<id> in the input)
+  baton sessions [--tree]
+                        list sessions (--tree shows fork lineage; reference
+                        with @<id> in the input)
   baton version         show version (also --version / -V)
   baton help            this help
 
@@ -136,9 +139,15 @@ async function run(command: string): Promise<void> {
         console.log("(no sessions yet — run baton or baton repl first)");
         break;
       }
-      for (const m of sessions) {
-        const providers = Object.keys(m.providerSessions).join(",") || "-";
-        console.log(`@${m.batonSessionId}  [${providers}]  ${sessionDisplayTitle(m)}  (${m.createdAt})`);
+      // --tree：fork 谱系视图，与 TUI picker 的 tree mode 共用同一投影
+      const rows = process.argv.includes("--tree")
+        ? sessionTreeRows(sessions)
+        : sessions.map((meta) => ({ meta, depth: 0 }));
+      for (const { meta, depth } of rows) {
+        const providers = Object.keys(meta.providerSessions).join(",") || "-";
+        console.log(
+          `${treeRowPrefix(depth)}@${meta.batonSessionId}  [${providers}]  ${sessionDisplayTitle(meta)}  (${meta.createdAt})`,
+        );
       }
       break;
     }

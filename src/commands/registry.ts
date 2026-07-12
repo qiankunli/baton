@@ -30,7 +30,7 @@ export const COMMANDS: readonly CommandDefinition[] = [
   },
   {
     name: "sessions",
-    description: "Open the BatonSession picker",
+    description: "Open the BatonSession picker ('tree' for the fork-lineage view)",
     scope: "baton",
     runPolicy: "idle",
   },
