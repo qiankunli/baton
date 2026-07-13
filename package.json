@@ -1,6 +1,6 @@
 {
   "name": "@qiankun01/baton",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "One durable terminal session across coding-agent providers.",
   "type": "module",
   "license": "Apache-2.0",
