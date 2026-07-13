@@ -1,0 +1,33 @@
+AGENTS.md
+  s_1c012ff5fbf8bf::t_e0d37b611b3e16 31
+bun.lock
+  s_1c012ff5fbf8bf::t_159978f0485d26 12,132
+docs/chat-cli-experience.md
+  s_1c012ff5fbf8bf::t_a5d2d38e3c8e12 1-62
+docs/user-input-lifecycle.md
+  s_1c012ff5fbf8bf::t_e4d4cc17b76145 48-62,75,153-154,160
+package.json
+  s_1c012ff5fbf8bf::t_5ae7af1a2856d8 40
+src/tui/protocol.ts
+  s_1c012ff5fbf8bf::t_5d92c1b477ed62 135-140,157,206-208,364-365,373-433,470
+tests/tui-protocol.test.ts
+  s_1c012ff5fbf8bf::t_256826afb183c3 638-733
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "37a0b0dc5f1334b1f5e7f24cca0429e587ccaf5e",
+  "prompts": {},
+  "sessions": {
+    "s_1c012ff5fbf8bf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e2da10e-d021-4cf6-bfbe-51ef326b5f3f",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
