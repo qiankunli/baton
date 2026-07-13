@@ -535,6 +535,13 @@ function diffOpOf(operation: string): DiffOp {
   return DIFF_OPS.has(operation as DiffOp) ? (operation as DiffOp) : "modify";
 }
 
+/** 命令卡标题的时态即事实：declined 的命令没有跑过，不能写 Ran */
+function executeTitleOf(status: ReturnType<typeof normalizeToolStatus>): string {
+  if (status === "in_progress") return "Running";
+  if (status === "declined") return "Declined";
+  return "Ran";
+}
+
 /** 工具状态 → chat-tui 展示块；命令源码和 diff 保持结构化，避免组件层猜字符串。 */
 export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, { type: "block" }> {
   const status = normalizeToolStatus(tc.status);
@@ -570,15 +577,7 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
     id: tc.toolCallId,
     kind: "tool",
     author: providerAuthor(tc.provider),
-    // declined 的命令没有跑过，标题不能写 Ran（时态即事实）
-    title:
-      tc.kind === "execute"
-        ? status === "in_progress"
-          ? "Running"
-          : status === "declined"
-            ? "Declined"
-            : "Ran"
-        : rawTitle,
+    title: tc.kind === "execute" ? executeTitleOf(status) : rawTitle,
     status,
     content: content.length > 0 ? content : undefined,
   };
