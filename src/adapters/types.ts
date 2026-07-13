@@ -82,6 +82,12 @@ export interface AdapterCapabilities {
   sync?: CapabilityMarker;
   commands?: CapabilityMarker;
   config?: CapabilityMarker;
+  /**
+   * 支持对账：runtime 在 turn 停滞时可主动查询 provider 侧该 turn 的真实运行态
+   * （见 Reconcilable / docs/provider-output-lifecycle.md §5）。未声明的 provider
+   * 回落——只发 stall 提示、交用户 cancel，不做主动对账。
+   */
+  reconcile?: CapabilityMarker;
   interactions?: {
     permission?: CapabilityMarker;
     question?: CapabilityMarker;
@@ -113,6 +119,34 @@ export interface AgentAdapter {
   /** 请求中断当前 turn；确认以最终 `idle/cancelled` 事件为准，发出后仍接受在途 update */
   cancel(ref: ProviderSessionRef): Promise<void>;
   close(ref: ProviderSessionRef): Promise<void>;
+}
+
+/**
+ * 对账裁决：provider 眼中某 turn 此刻的真实运行态（docs/provider-output-lifecycle.md §5）。
+ * - `idle`：provider 已结束——baton 漏了终态，runtime 自愈式 finalize（最常见）；
+ * - `active`：确在跑，保留 stall 提示交用户决策，不动终态；
+ * - `waiting_approval` / `waiting_input`：被审批/输入阻塞，上报对应待决；
+ * - `unknown`：查不到 / 探针失败——保守不收口，交用户。
+ */
+export type ReconcileState = "idle" | "active" | "waiting_approval" | "waiting_input" | "unknown";
+
+export interface ReconcileVerdict {
+  state: ReconcileState;
+  /** provider 侧原始状态标识，仅诊断/日志用，不参与 runtime 决策 */
+  detail?: string;
+}
+
+/**
+ * 可选能力：对账（reconcile capability）。声明 `capabilities.reconcile` 的 adapter 必须实现。
+ * 各家用各自基元：Codex 拉 `thread/read` 的 live `thread.status`；Claude 无对等状态查询，
+ * 因此 v1 不声明、回落到仅停滞提示。语义只回答"这个 turn 现在如何"，收口动作由 runtime 决定。
+ */
+export interface Reconcilable {
+  reconcile(ref: ProviderSessionRef, turnId: string): Promise<ReconcileVerdict>;
+}
+
+export function isReconcilable(adapter: AgentAdapter): adapter is AgentAdapter & Reconcilable {
+  return typeof (adapter as Partial<Reconcilable>).reconcile === "function";
 }
 
 /** admission 检查：返回 capabilities 未声明支持的 block 类型（text 恒支持） */

@@ -420,6 +420,17 @@ describe("runStatusLabel", () => {
     expect(runStatusLabel(withPhase("t1", { phase: "warming" }), "t1")).toBe("warming…");
   });
 
+  test("stalled overrides phase/tool: a stuck turn does not show a misleading activity", () => {
+    const stalled = (turnId: string) => ({
+      ...base,
+      activeTurns: new Map([
+        [turnId, { turnId, origin: "user" as const, state: "running" as const, phase: { phase: "compacting" }, stalled: true }],
+      ]),
+    });
+    expect(runStatusLabel(stalled("t1"), "t1")).toBe("no response — may be stuck");
+    expect(runStatusLabel(stalled("t1"))).toBe("no response — may be stuck"); // turnId 缺省时任一 stalled 即命中
+  });
+
   test("shows the current tool activity instead of generic thinking", () => {
     const toolCalls = new Map([
       [

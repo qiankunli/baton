@@ -75,6 +75,8 @@ export interface ActiveTurnState {
   startedAt?: number;
   /** per-turn 运行阶段（compacting…）：null phase 或本 turn idle 清除（阶段不跨 turn） */
   phase?: { phase: string; title?: string };
+  /** 停滞观测态：长时间无事件时为 true，活动恢复/收口清除（可自愈，非终态） */
+  stalled?: boolean;
 }
 
 export interface SessionState {
@@ -267,6 +269,7 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
           state: hasPendingBlocking(state, ev.turnId) ? "requires_action" : p.state,
           startedAt: existing?.startedAt ?? (ev.ts ? Date.parse(ev.ts) || undefined : undefined),
           phase: existing?.phase,
+          stalled: existing?.stalled,
         });
       }
       break;
@@ -346,6 +349,16 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       // 装饰信息（design §5.9），turn 已收口后的迟到 phase 没有呈现意义。
       const turn = ev.turnId ? state.activeTurns.get(ev.turnId) : undefined;
       if (turn) turn.phase = p.phase === null ? undefined : { phase: p.phase, title: p.title };
+      break;
+    }
+    case "_baton_stall_notice": {
+      // 观测态：只标记/清除对应活跃 turn 的 stalled，不进 timeline、不改 runState、
+      // 不留 notice 历史（自愈态无回看价值）。turn 已收口（不在 activeTurns）时忽略——
+      // 迟到的 stall 事件不复活已结束的 turn。
+      if (ev.turnId) {
+        const at = state.activeTurns.get(ev.turnId);
+        if (at) at.stalled = !ev.payload.cleared;
+      }
       break;
     }
     case "_baton_notice":

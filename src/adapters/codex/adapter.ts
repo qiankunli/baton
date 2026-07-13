@@ -25,6 +25,9 @@ import type {
   PromptReceipt,
   ProviderSessionRef,
   QuestionHandler,
+  Reconcilable,
+  ReconcileState,
+  ReconcileVerdict,
   SteerReceipt,
 } from "../types.ts";
 import { unsupportedPromptBlocks } from "../types.ts";
@@ -247,6 +250,27 @@ export interface CodexAdapterOptions {
  * turn/start 刻意不设——老版本 app-server 会合法地阻塞到 turn 结束。
  */
 const STARTUP_REQUEST_TIMEOUT_MS = 30_000;
+const RECONCILE_REQUEST_TIMEOUT_MS = 10_000;
+
+/**
+ * 把 codex `thread/read` 的 live `thread.status`（wire 形状 `{type, activeFlags?}`）翻译成
+ * baton 对账裁决。只信 live status——`includeTurns` 的 item 来自 rollout history，可能和
+ * 已漏掉的事件一样陈旧。notLoaded / systemError / 缺失一律 unknown：查不到就保守不收口。
+ */
+export function mapThreadStatus(status: { type?: string; activeFlags?: string[] } | undefined): ReconcileState {
+  switch (status?.type) {
+    case "idle":
+      return "idle";
+    case "active": {
+      const flags = status.activeFlags ?? [];
+      if (flags.includes("waitingOnApproval")) return "waiting_approval";
+      if (flags.includes("waitingOnUserInput")) return "waiting_input";
+      return "active";
+    }
+    default:
+      return "unknown";
+  }
+}
 
 /**
  * 计入"turn 有产出"的事件 kind（空回合判定，见 CodexTurn.sawOutput）。
@@ -307,7 +331,7 @@ export async function openCodexThread(
   return { threadId: threadIdFrom(response, "thread/start"), resumed: false };
 }
 
-export class CodexAdapter implements AgentAdapter {
+export class CodexAdapter implements AgentAdapter, Reconcilable {
   readonly provider = "codex";
   // 当前 adapter 最终只发送 text（design.md §3.1）；可选能力接口落地并验证后才声明
   // 对应 marker——契约测试钉住"声明支持就必须实现对应接口"。
@@ -315,7 +339,12 @@ export class CodexAdapter implements AgentAdapter {
   // experimentalApi）。曾用 thread/inject_items 注入独立 user message，但那会污染 codex
   // 原生历史（rollout 里出现无对应回合的悬空 user message）；additionalContext 由 codex
   // 以 contextual fragment 形态随本 turn 入史，且不过 UserPromptSubmit hook。
-  readonly capabilities: AdapterCapabilities = { prompt: {}, steer: { supported: true }, sync: { supported: true } };
+  readonly capabilities: AdapterCapabilities = {
+    prompt: {},
+    steer: { supported: true },
+    sync: { supported: true },
+    reconcile: { supported: true },
+  };
   private threads = new Map<string, ThreadRuntime>();
 
   constructor(private options: CodexAdapterOptions) {}
@@ -481,6 +510,22 @@ export class CodexAdapter implements AgentAdapter {
       return;
     }
     await rt.peer.request("turn/interrupt", { threadId: rt.threadId, turnId: rt.codexTurnId });
+  }
+
+  /**
+   * 对账：查 live `thread.status`（design：docs/provider-output-lifecycle.md §5）。
+   * turnId 不入参 wire——codex thread 同一时刻 ≤1 活跃 turn，thread 级 status 即该 turn
+   * 的状态；runtime 只对活跃 turn 发起对账，二者一致。探针自带超时，失败由调用方读作 unknown。
+   */
+  async reconcile(ref: ProviderSessionRef, _turnId: string): Promise<ReconcileVerdict> {
+    const rt = this.mustThread(ref);
+    const response = await rt.peer.request(
+      "thread/read",
+      { threadId: rt.threadId, includeTurns: false },
+      { timeoutMs: RECONCILE_REQUEST_TIMEOUT_MS },
+    );
+    const status = (response as { thread?: { status?: { type?: string; activeFlags?: string[] } } })?.thread?.status;
+    return { state: mapThreadStatus(status), detail: status?.type };
   }
 
   /** cancel 早于 codex turn id 就位时的补发：fire-and-forget，失败由 runtime 宽限期兜底 */
