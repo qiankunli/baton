@@ -1,0 +1,33 @@
+AGENTS.md
+  s_1c012ff5fbf8bf::t_4ff387fce6a19b 30
+docs/approval-lifecycle.md
+  s_1c012ff5fbf8bf::t_074739a0214cfb 1-96
+src/config/config.ts
+  s_1c012ff5fbf8bf::t_c63e1c4ac54a93 19-24,84-88
+src/events/types.ts
+  s_1c012ff5fbf8bf::t_caa32bdcc0be1a 197-217,369
+src/store/reduce.ts
+  s_1c012ff5fbf8bf::t_092f14e43417a2 6,99-103,133,323-329
+tests/config.test.ts
+  s_1c012ff5fbf8bf::t_e3b6c28f6ac98b 73-86
+tests/reduce.test.ts
+  s_1c012ff5fbf8bf::t_adff411e52acf4 410-434
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a87a695d8ebcd8f766904904ba094cfc4a6038c2",
+  "prompts": {},
+  "sessions": {
+    "s_1c012ff5fbf8bf": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6e2da10e-d021-4cf6-bfbe-51ef326b5f3f",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
