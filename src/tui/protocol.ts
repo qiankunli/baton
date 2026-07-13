@@ -24,7 +24,7 @@ import {
 } from "../commands/registry.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
-import { textOf, type DiffBlock, type PromptBlock } from "../events/types.ts";
+import { textOf, type ApprovalReviewUpdate, type DiffBlock, type PromptBlock } from "../events/types.ts";
 import {
   createProviderAdapter,
   providerDefinitionFor,
@@ -549,12 +549,13 @@ export class BatonChatProtocol implements ChatProtocol {
     const statusProvider = active ?? observedRun?.provider ?? this.agent;
     const statusProviderId = providerDefinitionFor(statusProvider)?.id;
     const statusModel = statusProviderId ? (this.runtime.currentModel(statusProviderId) ?? "default") : "default";
+    const approvalMode = this.config.codexApprovalReviewer === "auto_review" ? " · approvals:auto-review" : "";
     const runStatus: RunStatusItem[] = active
       ? [
           {
             id: `run:${active}`,
             author: providerAuthor(active),
-            label: `${statusModel} · ${runStatusLabel(v, activeTurnId)}`,
+            label: `${statusModel} · ${runStatusLabel(v, activeTurnId)}${approvalMode}`,
             startedAt: this.runtime.activeStartedAt,
             hint: "Esc to interrupt",
           },
@@ -564,7 +565,7 @@ export class BatonChatProtocol implements ChatProtocol {
             {
               id: `run:observed:${observedRun.turnId}`,
               author: providerAuthor(statusProvider),
-              label: `${statusModel} · ${runStatusLabel(v, observedRun.turnId)} · background`,
+              label: `${statusModel} · ${runStatusLabel(v, observedRun.turnId)} · background${approvalMode}`,
               startedAt: observedRun.startedAt,
             },
           ]
@@ -572,7 +573,7 @@ export class BatonChatProtocol implements ChatProtocol {
             {
               id: `agent:${this.agent}`,
               author: providerAuthor(this.agent),
-              label: `${statusModel} · idle`,
+              label: `${statusModel} · idle${approvalMode}`,
             },
           ];
     const busy = active !== undefined || observedRuns.length > 0;
@@ -715,6 +716,34 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
   };
 }
 
+function approvalReviewTranscriptItem(toolCallId: string, review: ApprovalReviewUpdate): TranscriptItem {
+  const facts = [
+    review.riskLevel ? `risk: ${review.riskLevel}` : undefined,
+    review.userAuthorization ? `authorization: ${review.userAuthorization}` : undefined,
+  ].filter(Boolean);
+  const suffix = facts.length > 0 ? ` (${facts.join(", ")})` : "";
+  const status =
+    review.decision === "approved"
+      ? "warning"
+      : review.decision === "denied"
+        ? "declined"
+        : review.decision === "aborted"
+          ? "failed"
+          : "in_progress";
+  const title =
+    review.decision === "in_progress"
+      ? "Reviewing approval…"
+      : `Automatic approval review ${review.decision}${suffix}`;
+  return {
+    type: "block",
+    id: `approval-review:${toolCallId}`,
+    kind: "notice",
+    status,
+    title,
+    content: review.rationale ? { type: "text", text: review.rationale } : undefined,
+  };
+}
+
 /**
  * SessionState → chat-tui 展示形状。provider 内容在这里收敛为通用 command/output/diff/lines，块语义不出 baton。
  * pinnedPlanId：正被 pin 区承载的 plan——按互补显示规则跳过其 transcript 卡（见 buildView 处注释）。
@@ -779,6 +808,8 @@ function buildTranscript(state: SessionState, pinnedPlanId?: string): Transcript
       const tc = state.toolCalls.get(entry.id);
       if (!tc) continue;
       items.push(toolTranscriptItem(tc));
+      const review = state.approvalReviews.get(tc.toolCallId);
+      if (review) items.push(approvalReviewTranscriptItem(tc.toolCallId, review));
       continue;
     }
     const plan = state.plans.get(entry.id);

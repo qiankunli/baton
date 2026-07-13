@@ -70,4 +70,26 @@ describe("config", () => {
     process.env.BATON_CLAUDE_BIN = "/from/env";
     expect(loadConfig(root).claudeExecutable).toBe("/from/env");
   });
+
+  test("codexApprovalReviewer accepts known values and drops unknown", () => {
+    writeFileSync(configPath(root), "codexApprovalReviewer: auto_review\n");
+    expect(loadConfig(root).codexApprovalReviewer).toBe("auto_review");
+    writeFileSync(configPath(root), "codexApprovalReviewer: user\n");
+    expect(loadConfig(root).codexApprovalReviewer).toBe("user");
+    writeFileSync(configPath(root), "codexApprovalReviewer: yolo\n");
+    expect(loadConfig(root).codexApprovalReviewer).toBeUndefined();
+  });
+
+  test("codexApprovalReviewer defaults to undefined (adapter forces user)", () => {
+    writeFileSync(configPath(root), "defaultAgent: codex\n");
+    expect(loadConfig(root).codexApprovalReviewer).toBeUndefined();
+  });
+
+  test("codexCommand reviewer override becomes the effective value used by the UI", () => {
+    writeFileSync(
+      configPath(root),
+      'codexApprovalReviewer: user\ncodexCommand: [codex, -c, \'approvals_reviewer="auto_review"\', app-server]\n',
+    );
+    expect(loadConfig(root).codexApprovalReviewer).toBe("auto_review");
+  });
 });

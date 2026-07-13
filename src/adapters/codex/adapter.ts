@@ -76,6 +76,8 @@ interface ThreadRuntime {
    * 提示而不是静默渲染。启动参数注入（codexLaunchCommand）防已知配置，这里防未知。
    */
   approvalSeenItemIds?: Set<string>;
+  /** 收到权威 auto-review 回执的 item：避免 declined 终态再触发旧的启发式旁路告警。 */
+  autoReviewedItemIds?: Set<string>;
 }
 
 function codexModels(result: unknown): ModelOption[] {
@@ -206,13 +208,14 @@ export function codexToolTerminalStatus(rawStatus: unknown): ToolCallStatus {
 }
 
 /**
- * 审批路由权归 adapter：baton 的产品前提是"危险操作的决策必须进 TUI 闭环"，而
- * codex 侧的 auto-review 配置（~/.codex/config.toml 的 approvals_reviewer）会把
- * 审批请求转给自动 reviewer、静默替用户拒绝，requestApproval 根本不会发给 baton。
- * 这种正确性攸关的启动参数由拉起进程的一方保证，不托付给每台机器的用户配置；
- * 用户命令里已显式写 approvals_reviewer 时尊重其覆盖（逃生口）。
+ * 审批路由权归 adapter：默认 reviewer=user，让危险操作进入 TUI 闭环；只有用户显式
+ * 配置 auto_review 时才委托 provider reviewer，并以权威回执留痕。启动参数由拉起进程的
+ * 一方保证，不隐式继承机器上的全局设置；用户命令里已写 reviewer 时尊重其覆盖（逃生口）。
  */
-export function codexLaunchCommand(command?: string[]): string[] {
+export function codexLaunchCommand(
+  command?: string[],
+  approvalReviewer: "user" | "auto_review" = "user",
+): string[] {
   const base = command && command.length > 0 ? [...command] : ["codex", "app-server"];
   if (base.some((arg) => arg.includes("approvals_reviewer"))) return base;
   // 只对认识的命令形态说 codex 的方言：注入锚定 app-server 子命令（-c 是全局
@@ -220,7 +223,12 @@ export function codexLaunchCommand(command?: string[]): string[] {
   // wrapper）不乱动——猜错位置比不注入更糟。
   const subcommandAt = base.indexOf("app-server");
   if (subcommandAt < 0) return base;
-  return [...base.slice(0, subcommandAt), "-c", 'approvals_reviewer="user"', ...base.slice(subcommandAt)];
+  return [
+    ...base.slice(0, subcommandAt),
+    "-c",
+    `approvals_reviewer="${approvalReviewer}"`,
+    ...base.slice(subcommandAt),
+  ];
 }
 
 function stopReasonOf(turnStatus: string): StopReason {
@@ -237,6 +245,8 @@ function stopReasonOf(turnStatus: string): StopReason {
 export interface CodexAdapterOptions {
   approvalHandler: ApprovalHandler;
   questionHandler?: QuestionHandler;
+  /** 缺省仍由用户审批；auto_review 是显式委托，逐条回执经 approval_review_update 留痕。 */
+  approvalReviewer?: "user" | "auto_review";
   /** 覆盖二进制，测试用 */
   command?: string[];
 }
@@ -321,7 +331,7 @@ export class CodexAdapter implements AgentAdapter {
   constructor(private options: CodexAdapterOptions) {}
 
   async open(opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
-    const [cmd, ...args] = codexLaunchCommand(this.options.command);
+    const [cmd, ...args] = codexLaunchCommand(this.options.command, this.options.approvalReviewer);
     const child = spawn(cmd as string, args, {
       cwd: opts.cwd,
       // 继承 HOME 等本机环境：凭证零持有，复用 ~/.codex 登录态（design §5.1）
@@ -663,7 +673,11 @@ export class CodexAdapter implements AgentAdapter {
           const status = method === "item/started" ? "in_progress" : codexToolTerminalStatus(item.status);
           // 对账：declined 却从未向 baton 发过 requestApproval → 决策权被 provider 侧
           // 策略（auto-review 等）截走了，用户全程不知情。显式提示，不静默渲染。
-          if (status === "declined" && !rt.approvalSeenItemIds?.has(String(item.id))) {
+          if (
+            status === "declined" &&
+            !rt.approvalSeenItemIds?.has(String(item.id)) &&
+            !rt.autoReviewedItemIds?.has(String(item.id))
+          ) {
             this.emit(
               rt,
               {
@@ -702,6 +716,49 @@ export class CodexAdapter implements AgentAdapter {
             params,
           );
         }
+        break;
+      }
+      case "item/autoApprovalReview/started":
+      case "item/autoApprovalReview/completed": {
+        // UNSTABLE wire shape：所有字段都在 adapter 边界容错，原始 params 仍随 envelope.raw 保留。
+        const review = (p.review ?? {}) as Record<string, unknown>;
+        const action = (p.action ?? {}) as Record<string, unknown>;
+        const targetItemId = p.targetItemId === undefined ? undefined : String(p.targetItemId);
+        if (targetItemId) (rt.autoReviewedItemIds ??= new Set()).add(targetItemId);
+        const rawStatus = String(review.status ?? "");
+        const decision =
+          rawStatus === "inProgress"
+            ? "in_progress"
+            : rawStatus || (method.endsWith("/started") ? "in_progress" : "aborted");
+        this.emit(
+          rt,
+          {
+            kind: "approval_review_update",
+            provider: this.provider,
+            payload: {
+              ...(targetItemId ? { toolCallId: targetItemId } : {}),
+              decision,
+              ...(review.riskLevel !== undefined ? { riskLevel: String(review.riskLevel) } : {}),
+              ...(review.userAuthorization !== undefined
+                ? { userAuthorization: String(review.userAuthorization) }
+                : {}),
+              ...(review.rationale !== undefined ? { rationale: String(review.rationale) } : {}),
+              ...(action.type !== undefined ? { actionType: String(action.type) } : {}),
+            },
+          },
+          params,
+        );
+        this.emit(
+          rt,
+          {
+            kind: "_baton_run_status",
+            provider: this.provider,
+            payload: method.endsWith("/started")
+              ? { phase: "reviewing_approval", title: "Reviewing approval…" }
+              : { phase: null },
+          },
+          params,
+        );
         break;
       }
       case "item/commandExecution/outputDelta":

@@ -194,6 +194,27 @@ export interface PermissionResolved {
   optionId?: string;
 }
 
+/**
+ * 自动审批（auto-review）回执：reviewer 替用户对某操作作出的决策，供诚实留痕（见
+ * docs/approval-lifecycle.md §3）。与 permission_request/resolved 的交互待决流正交——
+ * auto-review 开启时审批卡不触发，baton 只观测这条回执。归一自 codex
+ * `item/autoApprovalReview/*`（**UNSTABLE**）：字段全部按可选容忍，原始形状保留在 envelope.raw。
+ */
+export interface ApprovalReviewUpdate {
+  /** 被审操作对应的 tool call / item id（对齐 codex targetItemId），据此把回执挂到操作上 */
+  toolCallId?: string;
+  /** reviewer 决策：in_progress = 审核中（临时相位），其余为终态 */
+  decision: "in_progress" | "approved" | "denied" | "aborted" | (string & {});
+  /** provider 给出时透传的风险等级 */
+  riskLevel?: "low" | "medium" | "high" | "critical" | (string & {});
+  /** reviewer 评估的授权等级（非“回退给用户”，不改变委托语义） */
+  userAuthorization?: "unknown" | "low" | "medium" | "high" | (string & {});
+  /** 决策理由，审计 / 诊断展示用 */
+  rationale?: string;
+  /** 被审操作类型：command / execve / applyPatch / networkAccess / mcpToolCall 等 */
+  actionType?: string;
+}
+
 export interface QuestionOption {
   label: string;
   description: string;
@@ -345,6 +366,7 @@ export type EventPayloadMap = {
   plan_update: PlanUpdate;
   permission_request: PermissionRequest;
   permission_resolved: PermissionResolved;
+  approval_review_update: ApprovalReviewUpdate;
   question_request: QuestionRequest;
   question_resolved: QuestionResolved;
   usage_update: UsageUpdate;

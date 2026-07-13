@@ -3,8 +3,8 @@
 //    以 permission_resolved 留痕并把决定回传 provider；
 // 2. 终态白名单——只有明确的成功值可以映射 completed，declined 是一等终态，
 //    未知终态悲观归 failed（乐观兜底曾把 codex declined 渲染成绿勾）；
-// 3. 审批路由收权——codex 启动命令必须钉死 approvals_reviewer=user（防 auto-review
-//    静默截走决策权），declined-without-approval 必须发对账 notice。
+// 3. 审批路由收权——codex 默认钉死 reviewer=user；显式 auto-review 必须有权威回执，
+//    未知策略导致的 declined-without-approval 继续发对账 notice。
 import { describe, expect, test } from "bun:test";
 
 import { ClaudeAdapter } from "../src/adapters/claude/adapter.ts";
@@ -115,6 +115,17 @@ describe("codex approval routing is pinned by the adapter", () => {
     ]);
   });
 
+  test("explicit auto-review config is injected while command-level overrides still win", () => {
+    expect(codexLaunchCommand(undefined, "auto_review")).toEqual([
+      "codex",
+      "-c",
+      'approvals_reviewer="auto_review"',
+      "app-server",
+    ]);
+    const command = ["codex", "-c", 'approvals_reviewer="user"', "app-server"];
+    expect(codexLaunchCommand(command, "auto_review")).toEqual(command);
+  });
+
   test("an explicit approvals_reviewer in the user command is respected (escape hatch)", () => {
     const command = ["codex", "-c", 'approvals_reviewer="agent"', "app-server"];
     expect(codexLaunchCommand(command)).toEqual(command);
@@ -145,5 +156,54 @@ describe("codex approval routing is pinned by the adapter", () => {
     });
     expect(events.find((e) => e.kind === "_baton_notice")).toBeUndefined();
     expect(events.find((e) => e.kind === "tool_call_update")?.payload).toMatchObject({ status: "declined" });
+  });
+
+  test("auto-review notifications emit authoritative receipts and suppress the heuristic warning", () => {
+    const { events, notify } = codexServerRequestHarness("decline");
+    notify("item/autoApprovalReview/started", {
+      threadId: "th1",
+      turnId: "codex-turn-1",
+      targetItemId: "cmd1",
+      review: { status: "inProgress" },
+      action: { type: "applyPatch" },
+    });
+    notify("item/autoApprovalReview/completed", {
+      threadId: "th1",
+      turnId: "codex-turn-1",
+      targetItemId: "cmd1",
+      review: {
+        status: "denied",
+        riskLevel: "high",
+        userAuthorization: "low",
+        rationale: "writes outside the workspace",
+      },
+      action: { type: "applyPatch" },
+    });
+    notify("item/completed", {
+      threadId: "th1",
+      item: { type: "commandExecution", id: "cmd1", status: "declined", command: "bun install" },
+    });
+
+    const receipts = events.filter((event) => event.kind === "approval_review_update");
+    expect(receipts).toHaveLength(2);
+    expect(receipts[0]?.payload).toMatchObject({ toolCallId: "cmd1", decision: "in_progress" });
+    expect(receipts[1]?.payload).toMatchObject({
+      toolCallId: "cmd1",
+      decision: "denied",
+      riskLevel: "high",
+      userAuthorization: "low",
+      rationale: "writes outside the workspace",
+      actionType: "applyPatch",
+    });
+    expect(events.find((event) => event.kind === "_baton_notice")).toBeUndefined();
+  });
+
+  test("auto-review tolerates missing unstable fields", () => {
+    const { events, notify } = codexServerRequestHarness("decline");
+    notify("item/autoApprovalReview/completed", { threadId: "th1", targetItemId: "cmd1" });
+    expect(events.find((event) => event.kind === "approval_review_update")?.payload).toEqual({
+      toolCallId: "cmd1",
+      decision: "aborted",
+    });
   });
 });

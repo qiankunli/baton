@@ -40,7 +40,8 @@ Usage:
 
 Config:
   ~/.baton/config.yaml      generated on first run; defaultAgent / claudeExecutable /
-                            codexCommand / mentionBudgetChars / showThoughts
+                            codexCommand / codexApprovalReviewer /
+                            mentionBudgetChars / showThoughts
   BATON_CLAUDE_BIN          env var, takes precedence over claudeExecutable in config.yaml
 `;
 
