@@ -272,7 +272,8 @@ describe("BatonChatProtocol transcript projection", () => {
         title: "Automatic approval review approved (risk: low, authorization: unknown)",
         content: { type: "text", text: "Auto-review returned a low-risk allow decision." },
       });
-      expect(protocol.getView().footer).toContain("approvals:auto-review");
+      expect(protocol.getView().runStatus?.[0]?.label).toContain("approvals:auto-review");
+      expect(protocol.getView().footer).not.toContain("approvals:auto-review");
       await protocol.exit();
     } finally {
       rmSync(root, { recursive: true, force: true });

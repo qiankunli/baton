@@ -13,7 +13,7 @@ codexCommand:
 
 # Optional: delegate Codex approvals to its automatic reviewer. The default is
 # user, which keeps approval decisions in the baton TUI. Auto-review decisions
-# remain visible as per-tool audit receipts and in the footer.
+# remain visible as per-tool audit receipts and in Agent Status.
 codexApprovalReviewer: user # user | auto_review
 
 # Maximum number of characters injected for session mentions and provider handoffs.

@@ -475,12 +475,13 @@ export class BatonChatProtocol implements ChatProtocol {
     const statusProvider = active ?? observedRun?.provider ?? this.agent;
     const statusProviderId = providerDefinitionFor(statusProvider)?.id;
     const statusModel = statusProviderId ? (this.runtime.currentModel(statusProviderId) ?? "default") : "default";
+    const approvalMode = this.config.codexApprovalReviewer === "auto_review" ? " · approvals:auto-review" : "";
     const runStatus: RunStatusItem[] = active
       ? [
           {
             id: `run:${active}`,
             author: providerAuthor(active),
-            label: `${statusModel} · ${runStatusLabel(v, activeTurnId)}`,
+            label: `${statusModel} · ${runStatusLabel(v, activeTurnId)}${approvalMode}`,
             startedAt: this.runtime.activeStartedAt,
             hint: "Esc to interrupt",
           },
@@ -490,7 +491,7 @@ export class BatonChatProtocol implements ChatProtocol {
             {
               id: `run:observed:${observedRun.turnId}`,
               author: providerAuthor(statusProvider),
-              label: `${statusModel} · ${runStatusLabel(v, observedRun.turnId)} · background`,
+              label: `${statusModel} · ${runStatusLabel(v, observedRun.turnId)} · background${approvalMode}`,
               startedAt: observedRun.startedAt,
             },
           ]
@@ -498,7 +499,7 @@ export class BatonChatProtocol implements ChatProtocol {
             {
               id: `agent:${this.agent}`,
               author: providerAuthor(this.agent),
-              label: `${statusModel} · idle`,
+              label: `${statusModel} · idle${approvalMode}`,
             },
           ];
     const busy = active !== undefined || observedRuns.length > 0;
@@ -550,7 +551,7 @@ export class BatonChatProtocol implements ChatProtocol {
           }
         : null,
       status: this.status,
-      footer: `session: ${this.session.id}  in:${v.usage.inputTokens} out:${v.usage.outputTokens}  turns:${v.turnSummaries.length}  queue:${this.runtime.queueLength}${planActive ? `  plan:${planEntries.filter((entry) => entry.status === "completed").length}/${planEntries.length}` : ""}${this.config.codexApprovalReviewer === "auto_review" ? "  approvals:auto-review" : ""}  cwd:${this.session.meta.cwd}`,
+      footer: `session: ${this.session.id}  in:${v.usage.inputTokens} out:${v.usage.outputTokens}  turns:${v.turnSummaries.length}  queue:${this.runtime.queueLength}${planActive ? `  plan:${planEntries.filter((entry) => entry.status === "completed").length}/${planEntries.length}` : ""}  cwd:${this.session.meta.cwd}`,
       // ↑ 召回提示只在"可召回"时出现：交互发生地是 composer（placeholder 天然只在空输入时可见）
       // busy 且可 steer 时提示 Enter 的实际语义（design §3.2：delivery 对用户可见、可预期）
       composerPlaceholder: `Message ${this.agent} (/ commands, @ mentions, ${
