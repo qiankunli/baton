@@ -6,7 +6,7 @@
 export const PROVIDERS = ["codex", "claude"] as const;
 export type ProviderName = (typeof PROVIDERS)[number];
 
-/** 用户输入（/provider 参数、--agent、config.defaultAgent）归一为 canonical id；未知返回 null */
+/** 用户输入（slash command、--agent、config.defaultAgent）归一为 canonical id；未知返回 null */
 export function parseProvider(value: string): ProviderName | null {
   const normalized = value.trim().toLowerCase();
   return PROVIDERS.find((provider) => provider === normalized) ?? null;

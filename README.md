@@ -4,7 +4,7 @@
 
 > Pass context between coding agents like a baton.
 
-baton is a terminal-native coding-agent session, inspired by [tutti](https://github.com/tutti-os/tutti). A BatonSession remains the same durable conversation while you switch providers with `/provider`, including after closing and reopening baton. Claude Code and Codex are the first bundled providers, not a closed support list.
+baton is a terminal-native coding-agent session, inspired by [tutti](https://github.com/tutti-os/tutti). A BatonSession remains the same durable conversation while you switch providers with `/codex` or `/claude`, including after closing and reopening baton. Claude Code and Codex are the first bundled providers, not a closed support list.
 
 Provider-native sessions are resume optimizations; BatonSession history remains available even when a native session cannot be resumed.
 
@@ -15,7 +15,7 @@ The most common shape of multi-agent work today is a human acting as a context c
 Two fundamentals are in place today:
 
 - **Context portability**: a BatonSession is a durable, unified history owned by the user that outlives any single provider. Switching agents requires no context carrying; provider-native sessions only accelerate resume and are never a prerequisite for the history to survive.
-- **Native experience**: baton preserves each agent's own input, completion, streaming, tool-call, and approval experience as much as possible, adding only a few commands of its own (such as `/provider`).
+- **Native experience**: baton preserves each agent's own input, completion, streaming, tool-call, and approval experience as much as possible, adding only a few commands of its own (such as `/codex` and `/claude`).
 
 On top of these, three directions are on the roadmap (**none implemented yet**):
 
@@ -26,7 +26,7 @@ On top of these, three directions are on the roadmap (**none implemented yet**):
 ## Features
 
 - Use Claude Code and Codex from the same terminal interface
-- Switch between Claude Code and Codex with `/provider`, and configure the active provider with `/model`
+- Switch directly with `/codex` or `/claude`, and configure the active provider with `/model`
 - Open a previous BatonSession with `/sessions`, or start a clean one with `/new`
 - Continue the latest session in a project with `baton -c`, or open one by ID with `baton -s <id>`
 - Reference previous sessions with `@<session-id>` and inject a compact summary automatically
@@ -69,9 +69,8 @@ If Claude Code uses a custom executable, set `claudeExecutable` in the configura
 Start the TUI and type a prompt to send it.
 
 ```text
-/provider            Open the provider picker
-/provider claude     Switch to Claude Code
-/provider codex      Switch to Codex
+/claude              Switch to Claude Code
+/codex               Switch to Codex
 /model               Open the model picker for the active provider
 /model <id>          Select the model used by subsequent turns
 /sessions            Open the BatonSession picker

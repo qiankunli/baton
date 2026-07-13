@@ -4,7 +4,7 @@
 
 > 像传递接力棒一样，在 coding agents 之间传递上下文。
 
-baton 是一个 terminal-native 的统一 coding agent 会话，受 [tutti](https://github.com/tutti-os/tutti) 启发。你可以用 `/provider` 在不同 coding agent 间切换，而 BatonSession 始终是同一段持久对话；关闭 baton 后重新打开，也可以换一个 provider 自然续聊。Claude Code 和 Codex 是首批内置 provider，不是封闭支持列表。
+baton 是一个 terminal-native 的统一 coding agent 会话，受 [tutti](https://github.com/tutti-os/tutti) 启发。你可以用 `/codex` 或 `/claude` 直接切换 coding agent，而 BatonSession 始终是同一段持久对话；关闭 baton 后重新打开，也可以换一个 provider 自然续聊。Claude Code 和 Codex 是首批内置 provider，不是封闭支持列表。
 
 各家的原生会话只是恢复加速；即使原生会话无法恢复，BatonSession 历史仍然存在。
 
@@ -15,7 +15,7 @@ baton 是一个 terminal-native 的统一 coding agent 会话，受 [tutti](http
 当前已落地的两个基本点：
 
 - **上下文打通**：BatonSession 是用户拥有的持久统一历史，跨 provider 存续。换 agent 不需要搬运上下文；各家原生会话只承担恢复加速，不是历史存续的前提。
-- **原生体验**：尽量保留单独使用各 agent 时的输入、补全、流式输出、工具调用与审批体验，baton 只增加少量自己的命令（如 `/provider`）。
+- **原生体验**：尽量保留单独使用各 agent 时的输入、补全、流式输出、工具调用与审批体验，baton 只增加少量自己的命令（如 `/codex` 和 `/claude`）。
 
 在此之上有三个演进方向（**均尚未实现**）：
 
@@ -26,7 +26,7 @@ baton 是一个 terminal-native 的统一 coding agent 会话，受 [tutti](http
 ## 功能
 
 - 在同一个终端界面中使用 Claude Code 和 Codex
-- 使用 `/provider` 切换 Claude Code / Codex，使用 `/model` 配置当前 provider
+- 使用 `/codex` 或 `/claude` 直接切换 agent，使用 `/model` 配置当前 provider
 - 使用 `/sessions` 打开历史 BatonSession，或用 `/new` 新建干净会话
 - 使用 `baton -c` 继续当前项目最近会话，或用 `baton -s <id>` 打开指定会话
 - 使用 `@<session-id>` 引用历史会话，并自动注入紧凑摘要
@@ -69,9 +69,8 @@ showThoughts: true
 启动 TUI 后直接输入内容即可发送。
 
 ```text
-/provider            打开 provider 选择器
-/provider claude     切换到 Claude Code
-/provider codex      切换到 Codex
+/claude              切换到 Claude Code
+/codex               切换到 Codex
 /model               打开当前 provider 的模型选择器
 /model <id>          设置后续 turn 使用的模型
 /sessions            打开 BatonSession 选择器

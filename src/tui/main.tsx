@@ -3,7 +3,7 @@
 // UI 层来自 chat-tui（github.com/qiankunli/chat-tui）：ChatShell 消费视图快照、回传 intents；
 // baton 侧只有 BatonChatProtocol（runtime/store → 视图投影 + intents → runtime 操作）。
 //   - 直接输入 → 发给当前 agent（默认 codex）
-//   - /provider 选择输入目标；/model 配置当前 provider 后续 turn 的模型
+//   - /codex、/claude 直接选择输入目标；/model 配置当前 provider 后续 turn 的模型
 //   - 切换 agent 时自动注入对方最新进展（buildCatchUpContext），无需手动搬运上下文
 //   - @bs_xxx 引用其它 baton 会话；@ 不承担 provider 路由
 // 用法：baton [--root <batonRoot>] [--cwd <dir>] [-c|--continue] [-s|--session <id>]
