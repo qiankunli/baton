@@ -816,10 +816,10 @@ export class CodexAdapter implements AgentAdapter {
           (rt.approvalSeenItemIds ??= new Set()).add(String(idField));
         }
         const requestId = String(p.approvalId ?? p.itemId ?? p.callId ?? newId("ar"));
-        const title = approvalTitleOf(method, p);
+        const presentation = approvalPresentationOf(method, p);
         const request = {
           requestId,
-          title,
+          ...presentation,
           toolCallId: p.itemId !== undefined ? String(p.itemId) : undefined,
           options: APPROVAL_OPTIONS,
         };
@@ -874,12 +874,18 @@ export class CodexAdapter implements AgentAdapter {
   }
 }
 
-function approvalTitleOf(method: string, p: Record<string, unknown>): string {
+function approvalPresentationOf(
+  method: string,
+  p: Record<string, unknown>,
+): { title: string; description?: string } {
   if (method === "item/commandExecution/requestApproval" || method === "execCommandApproval") {
-    return `Run command: ${String(p.command ?? p.reason ?? "(see details)")}`;
+    return {
+      title: "Run command?",
+      description: String(p.command ?? p.reason ?? "(see details)"),
+    };
   }
   if (method === "item/fileChange/requestApproval" || method === "applyPatchApproval") {
-    return "Apply file changes?";
+    return { title: "Apply file changes?" };
   }
-  return "Codex requests permission";
+  return { title: "Codex requests permission" };
 }
