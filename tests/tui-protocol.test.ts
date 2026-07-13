@@ -138,6 +138,7 @@ describe("BatonChatProtocol view projection", () => {
       expect(view.runStatus?.[0]).toMatchObject({ author: "codex", label: "default" });
       expect(view.runStatus?.[0]?.startedAt).toBeUndefined();
       expect(view.runStatus?.[0]?.hint).toBeUndefined();
+      expect(view.footer).toStartWith(`session:${session.id}  `);
       expect(view.composerPlaceholder).toContain("Ctrl+J newline");
       await protocol.exit();
     } finally {
