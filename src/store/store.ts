@@ -255,14 +255,21 @@ export class SessionStore {
    * providerSessions 只保留 provider 与 model 偏好：child 不得 resume 源的原生
    * ProviderSession（否则两个 BatonSession 会写进同一份 provider 历史）；child 首 turn
    * 由 runtime 走 fresh native + 全量补课（syncedSeq 缺省=0）重建上下文。
+   * opts.cwd 支持跨 project fork：历史跟源走，project 归属跟 fork 发起位置走；
+   * 缺省沿用源 cwd。
    */
-  forkSession(sourceSessionId: string, opts: { title?: string; throughSeq?: number } = {}): SessionHandle {
+  forkSession(
+    sourceSessionId: string,
+    opts: { title?: string; throughSeq?: number; cwd?: string } = {},
+  ): SessionHandle {
     const source = this.openSession(sourceSessionId);
     const events = source
       .readEvents()
       .filter((ev) => opts.throughSeq === undefined || ev.seq <= opts.throughSeq);
     const id = newId("bs");
-    const dir = join(this.projectsDir(), projectDirName(source.meta.cwd), id);
+    // 落盘目录与 meta.cwd 必须同源：listSessions({cwd}) 按目录扫描，两者不一致会漏掉该会话
+    const cwd = opts.cwd ?? source.meta.cwd;
+    const dir = join(this.projectsDir(), projectDirName(cwd), id);
     mkdirSync(dir, { recursive: true });
     if (events.length > 0) {
       const lines = events.map((ev) => JSON.stringify({ ...ev, batonSessionId: id }));
@@ -278,7 +285,7 @@ export class SessionStore {
       batonSessionId: id,
       title: opts.title ?? (sourceTitle ? `${sourceTitle} (fork)` : undefined),
       preview: source.meta.preview,
-      cwd: source.meta.cwd,
+      cwd,
       createdAt: now,
       updatedAt: now,
       providerSessions,
