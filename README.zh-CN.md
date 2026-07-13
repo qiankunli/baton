@@ -109,12 +109,12 @@ baton 的数据默认保存在 `~/.baton/`：
 ```text
 ~/.baton/
 ├── config.yaml
-└── sessions/<session-id>/
+└── projects/<cwd-escaped>/<session-id>/
     ├── meta.json
     └── session.jsonl
 ```
 
-`session.jsonl` 是用于渲染、恢复、provider 接力和跨会话引用的持久逻辑历史。各 agent 的原生会话仍由 Claude Code / Codex 管理；baton 只保存其 ID 用于加速 resume，不会修改原生 session 文件。
+会话按工作目录分组保存在 `projects/` 下，原始 `cwd` 记录在 `meta.json` 中。`session.jsonl` 是用于渲染、恢复、provider 接力和跨会话引用的持久逻辑历史。各 agent 的原生会话仍由 Claude Code / Codex 管理；baton 只保存其 ID 用于加速 resume，不会修改原生 session 文件。
 
 ## License
 
