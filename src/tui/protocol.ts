@@ -24,7 +24,7 @@ import {
 } from "../commands/registry.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
-import { textOf, type DiffBlock, type PromptBlock } from "../events/types.ts";
+import { textOf, type ApprovalReviewUpdate, type DiffBlock, type PromptBlock } from "../events/types.ts";
 import {
   createProviderAdapter,
   providerDefinitionFor,
@@ -550,7 +550,7 @@ export class BatonChatProtocol implements ChatProtocol {
           }
         : null,
       status: this.status,
-      footer: `session: ${this.session.id}  in:${v.usage.inputTokens} out:${v.usage.outputTokens}  turns:${v.turnSummaries.length}  queue:${this.runtime.queueLength}${planActive ? `  plan:${planEntries.filter((entry) => entry.status === "completed").length}/${planEntries.length}` : ""}  cwd:${this.session.meta.cwd}`,
+      footer: `session: ${this.session.id}  in:${v.usage.inputTokens} out:${v.usage.outputTokens}  turns:${v.turnSummaries.length}  queue:${this.runtime.queueLength}${planActive ? `  plan:${planEntries.filter((entry) => entry.status === "completed").length}/${planEntries.length}` : ""}${this.config.codexApprovalReviewer === "auto_review" ? "  approvals:auto-review" : ""}  cwd:${this.session.meta.cwd}`,
       // ↑ 召回提示只在"可召回"时出现：交互发生地是 composer（placeholder 天然只在空输入时可见）
       // busy 且可 steer 时提示 Enter 的实际语义（design §3.2：delivery 对用户可见、可预期）
       composerPlaceholder: `Message ${this.agent} (/ commands, @ mentions, ${
@@ -641,6 +641,34 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
   };
 }
 
+function approvalReviewTranscriptItem(toolCallId: string, review: ApprovalReviewUpdate): TranscriptItem {
+  const facts = [
+    review.riskLevel ? `risk: ${review.riskLevel}` : undefined,
+    review.userAuthorization ? `authorization: ${review.userAuthorization}` : undefined,
+  ].filter(Boolean);
+  const suffix = facts.length > 0 ? ` (${facts.join(", ")})` : "";
+  const status =
+    review.decision === "approved"
+      ? "warning"
+      : review.decision === "denied"
+        ? "declined"
+        : review.decision === "aborted"
+          ? "failed"
+          : "in_progress";
+  const title =
+    review.decision === "in_progress"
+      ? "Reviewing approval…"
+      : `Automatic approval review ${review.decision}${suffix}`;
+  return {
+    type: "block",
+    id: `approval-review:${toolCallId}`,
+    kind: "notice",
+    status,
+    title,
+    content: review.rationale ? { type: "text", text: review.rationale } : undefined,
+  };
+}
+
 /**
  * SessionState → chat-tui 展示形状。provider 内容在这里收敛为通用 command/output/diff/lines，块语义不出 baton。
  * pinnedPlanId：正被 pin 区承载的 plan——按互补显示规则跳过其 transcript 卡（见 buildView 处注释）。
@@ -705,6 +733,8 @@ function buildTranscript(state: SessionState, pinnedPlanId?: string): Transcript
       const tc = state.toolCalls.get(entry.id);
       if (!tc) continue;
       items.push(toolTranscriptItem(tc));
+      const review = state.approvalReviews.get(tc.toolCallId);
+      if (review) items.push(approvalReviewTranscriptItem(tc.toolCallId, review));
       continue;
     }
     const plan = state.plans.get(entry.id);

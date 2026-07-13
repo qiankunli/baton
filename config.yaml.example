@@ -7,12 +7,14 @@ defaultAgent: codex
 claudeExecutable: claude
 
 # Codex must run in headless app-server mode.
-# baton injects `-c approvals_reviewer="user"` automatically so approvals reach
-# the baton TUI instead of a provider-side auto reviewer; add your own
-# approvals_reviewer entry here only if you deliberately want to override that.
 codexCommand:
   - codex
   - app-server
+
+# Optional: delegate Codex approvals to its automatic reviewer. The default is
+# user, which keeps approval decisions in the baton TUI. Auto-review decisions
+# remain visible as per-tool audit receipts and in the footer.
+codexApprovalReviewer: user # user | auto_review
 
 # Maximum number of characters injected for session mentions and provider handoffs.
 mentionBudgetChars: 4096

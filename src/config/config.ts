@@ -43,6 +43,14 @@ export function configPath(rootDir?: string): string {
   return join(batonRoot(rootDir), "config.yaml");
 }
 
+function commandApprovalReviewer(command: string[]): "user" | "auto_review" | undefined {
+  const override = command.find((arg) => arg.includes("approvals_reviewer"));
+  if (!override) return undefined;
+  if (/approvals_reviewer\s*=\s*["']?(auto_review|guardian_subagent)/.test(override)) return "auto_review";
+  if (/approvals_reviewer\s*=\s*["']?user/.test(override)) return "user";
+  return undefined;
+}
+
 /** 不存在则写入默认配置，返回文件路径。只在入口调用一次，load 本身无副作用。 */
 export function ensureConfigFile(rootDir?: string): string {
   const path = configPath(rootDir);
@@ -82,10 +90,14 @@ export function loadConfig(rootDir?: string): BatonConfig {
     merged.showThoughts = DEFAULT_CONFIG.showThoughts;
   }
   // 只接受已知取值，其余（含缺省）落回 undefined = adapter 走强制 "user"
-  merged.codexApprovalReviewer =
+  const configuredReviewer =
     merged.codexApprovalReviewer === "auto_review" || merged.codexApprovalReviewer === "user"
       ? merged.codexApprovalReviewer
       : undefined;
+  // codexCommand 是更底层的显式逃生口；投影也必须拿到实际生效值，避免 footer 误报委托状态。
+  merged.codexApprovalReviewer = merged.codexCommand.some((arg) => arg.includes("approvals_reviewer"))
+    ? commandApprovalReviewer(merged.codexCommand)
+    : configuredReviewer;
   if (process.env.BATON_CLAUDE_BIN) merged.claudeExecutable = process.env.BATON_CLAUDE_BIN;
   return merged;
 }

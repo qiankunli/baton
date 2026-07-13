@@ -45,7 +45,12 @@ export const PROVIDER_REGISTRY = [
     shortName: "codex",
     color: "#73daca", // 青
     create: ({ approvalHandler, questionHandler, config }) =>
-      new CodexAdapter({ approvalHandler, questionHandler, command: config.codexCommand }),
+      new CodexAdapter({
+        approvalHandler,
+        questionHandler,
+        command: config.codexCommand,
+        approvalReviewer: config.codexApprovalReviewer,
+      }),
   },
   {
     ...PROVIDER_IDENTITIES.claude,

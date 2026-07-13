@@ -31,7 +31,7 @@
 | 交互审批（请求→决策→留痕） | `permission_request` / `approvalHandler` / `permission_resolved` | SDK `canUseTool` 回调 | app-server 审批请求 | 已支持；两家归一到同一对事件 |
 | 审批选项 | `PermissionOption[]`（含 `always`） | 仅当 SDK 给出 permission suggestions 才提供 `always` | 原生选项 | 已支持；baton 不自造 always |
 | 权限模式 | 尚无统一入口 | SDK 有 default / acceptEdits / plan / bypassPermissions | `approvals_reviewer` + sandbox 策略 | 未统一暴露；各家模式尚未进 baton 配置面 |
-| 自动审批 / 委托 | 可选 opt-in + 权威回执（本次新增） | 无逐条 reviewer；acceptEdits / bypass 是另一形态的委托（模式而非 reviewer） | `approvals_reviewer="auto_review"` + `item/autoApprovalReview/*` | 见 §3；Codex 先行，事件 UNSTABLE |
+| 自动审批 / 委托 | 可选 opt-in + 权威回执 | 无逐条 reviewer；acceptEdits / bypass 是另一形态的委托（模式而非 reviewer） | `approvals_reviewer="auto_review"` + `item/autoApprovalReview/*` | 已支持 Codex opt-in；事件 UNSTABLE |
 | 静默处置的诚实兜底 | notice / 回执 | 暂无对应场景 | 现为启发式 notice，待权威回执取代 | 见 §2.3、§3.2 |
 
 ## 2. 当前主流程
@@ -40,21 +40,21 @@
 
 Adapter emit `permission_request` → runtime 的 `approvalHandler` 注册 resolver（pending 真相源是事件流，不在 handler 里另存状态）→ chat-tui 渲染审批卡 → 用户经 `resolveApproval` 决策 → Adapter 的 await 点返回 → `permission_resolved` 落盘留痕。
 
-### 2.2 默认 force `reviewer=user` + 逃生口
+### 2.2 默认 `reviewer=user` + 显式委托
 
-Codex adapter 在启动参数里强制注入 `-c approvals_reviewer="user"`；若用户命令里已显式写 `approvals_reviewer`，则尊重其覆盖（逃生口）。见 `src/adapters/codex/adapter.ts` 的 reviewer 注入段。
+Codex adapter 默认在启动参数注入 `-c approvals_reviewer="user"`；配置 `codexApprovalReviewer: auto_review` 才显式委托。若 `codexCommand` 已写 `approvals_reviewer`，则命令级取值优先，footer 也按实际生效值展示。
 
 ### 2.3 当前对 auto-review 的兜底：启发式，不是权威
 
 今天若用户自行开了 auto-review，baton 收不到 reviewer 的任何事件，只能在某个 item 变成 `declined` **且从未就它问过用户**时，启发式地 emit 一条 `_baton_notice` 警告（“Approval bypassed by provider-side policy”）。这是**猜**出来的、且只覆盖 declined、拿不到风险/理由。本次要用权威事件取代它。
 
-## 3. auto-review 回执设计（本次要做）
+## 3. auto-review 回执
 
 ### 3.1 目标与语义边界
 
 - **目标**：把 auto-review 从“静默”变“留痕”——approve 与 deny **都**产生权威回执，携带目标操作、风险等级、授权等级与理由。
 - **取代而非共存**：Codex 的 `review.status ∈ {inProgress, approved, denied, aborted}`，**没有“升级给用户”这一档**（`userAuthorization` 是 reviewer 评估的授权等级，不是回退给用户）。因此开 auto-review = 该 turn 的审批卡**完全不触发**，baton 只观测回执。依据：app-server README 的 `approvalsReviewer` 与 `item/autoApprovalReview/*` 段（均标 **UNSTABLE**）。
-- **强制 opt-in**：默认仍 `user`。新增一个可选权限模式，opt-in 时才传 `approvalsReviewer: "auto_review"`，并保留 §2.2 的显式覆盖逃生口。
+- **强制 opt-in**：默认仍 `user`；只有 `codexApprovalReviewer: auto_review`（或命令级显式覆盖）才开启委托。
 
 ### 3.2 事件归一
 
@@ -87,10 +87,10 @@ auto-review 开启时，footer / Agent Status 常驻一条 `approvals: auto-revi
 
 ## 5. 代码与测试锚点
 
-- `src/adapters/codex/adapter.ts`：`approvals_reviewer` 注入（现 force user + 逃生口）；待加 `autoApprovalReview/*` 消费、归一与 §2.3 启发式 notice 的收敛。
-- `src/adapters/types.ts`：`ApprovalHandler` / `PermissionRequest`；待加 auto-review capability marker。
+- `src/adapters/codex/adapter.ts`：reviewer 注入、`autoApprovalReview/*` 消费、归一与 §2.3 启发式 notice 收敛。
+- `src/adapters/types.ts`：`ApprovalHandler` / `PermissionRequest` 交互审批契约。
 - `src/session/runtime.ts`：`approvalHandler` resolver 注册、pending 事件流真相源。
-- `src/events/types.ts`：`permission_request` / `permission_resolved`；待加 `approval_review_update`。
-- `src/tui/protocol.ts`：`pendingPermissions` 投影、审批卡；待加 review 回执投影与 §3.4 全局提示。
-- chat-tui `src/types/index.ts`：`TranscriptBlockStatus` 待加 `warning`；`components/transcript.tsx` 的状态图标/配色。
+- `src/events/types.ts`：`permission_request` / `permission_resolved` / `approval_review_update`。
+- `src/tui/protocol.ts`：审批卡、review 回执与 footer 委托提示投影。
+- chat-tui `src/types/index.ts`：`TranscriptBlockStatus.warning`；`components/transcript.tsx` 的状态图标/配色。
 - `tests/approval-contract.test.ts` 等：审批契约与回执归一。

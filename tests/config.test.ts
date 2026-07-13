@@ -84,4 +84,12 @@ describe("config", () => {
     writeFileSync(configPath(root), "defaultAgent: codex\n");
     expect(loadConfig(root).codexApprovalReviewer).toBeUndefined();
   });
+
+  test("codexCommand reviewer override becomes the effective value used by the UI", () => {
+    writeFileSync(
+      configPath(root),
+      'codexApprovalReviewer: user\ncodexCommand: [codex, -c, \'approvals_reviewer="auto_review"\', app-server]\n',
+    );
+    expect(loadConfig(root).codexApprovalReviewer).toBe("auto_review");
+  });
 });

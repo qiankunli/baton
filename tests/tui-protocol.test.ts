@@ -238,6 +238,47 @@ describe("BatonChatProtocol view projection", () => {
 });
 
 describe("BatonChatProtocol transcript projection", () => {
+  test("renders auto-review receipts beside the target tool and keeps delegation globally visible", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-auto-review-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      session.append({
+        kind: "tool_call_update",
+        provider: "codex",
+        turnId: "t1",
+        payload: { toolCallId: "tc1", title: "edit src/app.ts", kind: "edit", status: "completed" },
+      });
+      session.append({
+        kind: "approval_review_update",
+        provider: "codex",
+        turnId: "t1",
+        payload: {
+          toolCallId: "tc1",
+          decision: "approved",
+          riskLevel: "low",
+          userAuthorization: "unknown",
+          rationale: "Auto-review returned a low-risk allow decision.",
+        },
+      });
+      const config = { ...DEFAULT_CONFIG, codexApprovalReviewer: "auto_review" as const };
+      const protocol = new BatonChatProtocol(store, config, { session, resumed: false }, () => undefined);
+
+      const toolIndex = protocol.getView().transcript.findIndex((item) => item.id === "tc1");
+      expect(protocol.getView().transcript[toolIndex + 1]).toMatchObject({
+        id: "approval-review:tc1",
+        kind: "notice",
+        status: "warning",
+        title: "Automatic approval review approved (risk: low, authorization: unknown)",
+        content: { type: "text", text: "Auto-review returned a low-risk allow decision." },
+      });
+      expect(protocol.getView().footer).toContain("approvals:auto-review");
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("renders agent messages as Markdown with an explicit streaming boundary", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-markdown-"));
     try {
