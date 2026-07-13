@@ -433,6 +433,27 @@ describe("forkSession", () => {
     expect(child.meta.forkedFrom!.throughSeq).toBe(boundary);
   });
 
+  test("cwd option forks into another project (history follows source, project follows caller)", () => {
+    const source = store.createSession({ cwd: "/tmp/proj-a", title: "demo" });
+    playTurn(source, "t1");
+
+    const child = store.forkSession(source.id, { cwd: "/tmp/proj-b" });
+    expect(child.meta.cwd).toBe("/tmp/proj-b");
+    expect(child.meta.forkedFrom!.batonSessionId).toBe(source.id);
+    expect(child.readEvents()).toHaveLength(source.readEvents().length);
+    // 落盘目录跟着目标 project 走，listSessions({cwd}) 才能按目录扫到
+    expect(existsSync(join(root, "projects", projectDirName("/tmp/proj-b"), child.id))).toBe(true);
+    expect(store.listSessions({ cwd: "/tmp/proj-b" }).map((m) => m.batonSessionId)).toEqual([child.id]);
+    expect(store.listSessions({ cwd: "/tmp/proj-a" }).map((m) => m.batonSessionId)).toEqual([source.id]);
+  });
+
+  test("without cwd option the fork stays in the source project", () => {
+    const source = store.createSession({ cwd: "/tmp/proj-a" });
+    const child = store.forkSession(source.id);
+    expect(child.meta.cwd).toBe("/tmp/proj-a");
+    expect(store.listSessions({ cwd: "/tmp/proj-a" })).toHaveLength(2);
+  });
+
   test("forking an empty session yields an empty history", () => {
     const source = store.createSession({ cwd: "/tmp/proj" });
     const child = store.forkSession(source.id);

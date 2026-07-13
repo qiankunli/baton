@@ -118,9 +118,10 @@ if (openedAtStartup) {
         onPick={(batonSessionId) => {
           try {
             if (intent === "fork") {
-              // fork 落盘发生在选中之后：选错 / Esc 不产生副本
-              const child = store.forkSession(batonSessionId);
-              startChat(openBatonSession(store, { cwd: child.meta.cwd, sessionId: child.id }));
+              // fork 落盘发生在选中之后：选错 / Esc 不产生副本。
+              // cwd 用启动 baton 时的目录（跨 project fork）：源可以来自任意 project
+              const child = store.forkSession(batonSessionId, { cwd: requestedCwd });
+              startChat(openBatonSession(store, { cwd: requestedCwd, sessionId: child.id }));
             } else {
               startChat(openBatonSession(store, { cwd: requestedCwd, sessionId: batonSessionId }));
             }

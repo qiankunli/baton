@@ -27,7 +27,9 @@ Usage:
                         ctrl+c quit; starts fresh if there is no session yet)
   baton fork [bs_xxx|--last]
                         fork a BatonSession (full-history copy, fresh provider
-                        sessions) and open the fork; without an id shows the
+                        sessions) and open the fork; the fork lives in the
+                        current project (cwd or --cwd) even when the source
+                        belongs to another one; without an id shows the
                         session list to pick the source (--last forks the
                         latest in cwd)
   baton sessions [--tree]
@@ -116,7 +118,8 @@ async function run(command: string): Promise<void> {
       }
       let childId: string;
       try {
-        childId = store.forkSession(sourceId).id;
+        // 跨 project fork：历史跟源 session 走，fork 后的 project 跟命令执行位置走
+        childId = store.forkSession(sourceId, { cwd }).id;
         console.log(`forked ${sourceId} → ${childId}`);
       } catch (err) {
         console.error(err instanceof Error ? err.message : String(err));

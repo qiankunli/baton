@@ -46,6 +46,21 @@ recovery 同时覆盖 fork：源会话若正在运行（或曾崩溃），复制
 
 child 的 provider 通过补课看到的是紧凑 turn 摘要（预算内优先保最近，默认 4KB 字符），不是全量事件回放。这与既有跨 provider 接力的保真度一致，不是 fork 引入的新损耗；但用户直觉可能预期"fork = 完整带走上下文"，故显式记录。完整历史仍在 child 的 `session.jsonl` 里，随时可被更高保真的注入策略消费。
 
+### 跨 project fork：历史跟源走，project 跟发起位置走
+
+session 按 cwd 归入 project 只是**存放与发现的组织方式**，不是历史的属性；而 fork 的本质是"把一段逻辑历史带到新的工作现场继续"。所以两者各自跟随自己的锚点：
+
+核心场景是跨仓排查：开发 project-a 时，排查过程发现它实际调用的 project-b 存在 bug。用户进入 project-b（包括另一个 monorepo）执行 `baton fork <project-a-session>`，即可把已经形成的调用关系、现象和判断上下文带到 project-b 继续修复，不必重新向 agent 解释问题。这里 project 由 fork 命令的执行 cwd 定义；跨 project 不是额外模式，而是源 session 的 cwd 与发起 cwd 不同所自然产生的结果。
+
+- **历史跟源 session 走**：复制的前缀、谱系（`forkedFrom`）都来自源，与源在哪个 project 无关。
+- **project 归属跟 fork 发起位置走**：`cd project-b && baton fork bs_from_project_a`，fork 落在 project-b（`--cwd` 可覆盖）；picker fork 用启动 baton 时的 cwd。底层 `forkSession` 未显式指定目标 cwd 时仍沿用源 cwd，保持已有调用兼容。
+
+这天然覆盖同 project fork（发起位置 == 源 project 时退化为原行为），所以不需要 `--to` 之类的显式参数。`resume` 则相反：回到会话原本的 project——resume 是"继续那个现场"，fork 是"带走历史开新现场"。
+
+实现上只需在 fork 时把 `meta.cwd` 与落盘目录（`projectDirName(cwd)`）一起换成目标 cwd：runtime 执行工具、footer 展示、`listSessions({cwd})` 发现全都以 `meta.cwd` 为真相源，自动跟随；child 本就不 resume 源的原生 ProviderSession（fresh native + 全量补课），换 cwd 不影响上下文重建。注意落盘目录与 `meta.cwd` 必须同源，否则按目录扫描的 `listSessions({cwd})` 会漏掉该会话。
+
+跨 project fork 只迁移会话上下文，不复制代码或工作区状态；源 project 的文件路径出现在历史里时，child 的 provider 需自行判断在新 cwd 下是否仍有效。
+
 ### 面向 /side 的预留
 
 - `forkSession(sourceSessionId, { throughSeq })`：运行中 fork 只需传入"当前 active turn 之前"的水位，无需新入口。
