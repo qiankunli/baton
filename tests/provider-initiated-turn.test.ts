@@ -86,9 +86,10 @@ describe("observed turn presentation", () => {
     });
     let view = protocol.getView();
     expect(view.busy).toBe(true);
-    // per-turn 行：每个 observed turn 一行，id 携带 turnId
-    const line = view.runStatus?.find((item) => item.id === "run:observed:t_obs");
+    expect(view.runStatus).toHaveLength(1);
+    const line = view.runStatus?.[0];
     expect(line).toBeDefined();
+    expect(line?.id).toBe("run:observed:t_obs");
     expect(line?.author).toBe("claude");
     expect(line?.label).toContain("background");
     // Esc 中断的是 driven turn，observed turn v1 不可打断：不给误导性 hint
@@ -102,11 +103,12 @@ describe("observed turn presentation", () => {
     });
     view = protocol.getView();
     expect(view.busy).toBe(false);
-    expect(view.runStatus?.some((item) => item.id.startsWith("run:observed"))).toBe(false);
+    expect(view.runStatus).toHaveLength(1);
+    expect(view.runStatus?.[0]).toMatchObject({ author: "codex", label: "default · idle" });
     await protocol.exit();
   });
 
-  test("concurrent observed turns each get their own run-status line", async () => {
+  test("concurrent observed turns still project a single latest run-status line", async () => {
     const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
     for (const turnId of ["t_obs1", "t_obs2"]) {
       session.append({
@@ -118,7 +120,8 @@ describe("observed turn presentation", () => {
     }
     let view = protocol.getView();
     expect(view.busy).toBe(true);
-    expect(view.runStatus?.filter((item) => item.id.startsWith("run:observed:"))).toHaveLength(2);
+    expect(view.runStatus).toHaveLength(1);
+    expect(view.runStatus?.[0]?.id).toBe("run:observed:t_obs2");
 
     // 一个收口不影响另一个（单槽时代任何 idle 都会全局清空）
     session.append({
@@ -129,8 +132,8 @@ describe("observed turn presentation", () => {
     });
     view = protocol.getView();
     expect(view.busy).toBe(true);
-    expect(view.runStatus?.filter((item) => item.id.startsWith("run:observed:"))).toHaveLength(1);
-    expect(view.runStatus?.some((item) => item.id === "run:observed:t_obs2")).toBe(true);
+    expect(view.runStatus).toHaveLength(1);
+    expect(view.runStatus?.[0]?.id).toBe("run:observed:t_obs2");
     await protocol.exit();
   });
 });

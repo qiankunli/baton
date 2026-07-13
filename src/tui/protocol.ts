@@ -25,7 +25,12 @@ import {
 import type { BatonConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
 import { textOf, type DiffBlock, type PromptBlock } from "../events/types.ts";
-import { createProviderAdapter, providerSessionKey, providerShortName } from "../providers/registry.ts";
+import {
+  createProviderAdapter,
+  providerDefinitionFor,
+  providerSessionKey,
+  providerShortName,
+} from "../providers/registry.ts";
 import { openBatonSession } from "../session/open.ts";
 import { BatonSessionRuntime } from "../session/runtime.ts";
 import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from "../store/reduce.ts";
@@ -461,47 +466,41 @@ export class BatonChatProtocol implements ChatProtocol {
     // 应答经 runtime 的 resolver 注册表回到 adapter 的 await 点
     const approval = v.pendingPermissions.values().next().value;
     const question = v.pendingQuestions.values().next().value;
-    const selectedModel = this.runtime.currentModel(this.agent) ?? "default";
-    const selectedBusy = active === this.agent;
-    // Agent Status（贴 composer 顶部）：主行=当前输入目标（provider · model）常驻，
-    // 运行相位（语义合成在 baton：phase/retry/thinking）仅 busy 时附加；idle 显式常驻，
-    // 让用户在中断后能确认 provider 已真正收口。跳秒由组件按 startedAt 自理。
-    // 输入目标 ≠ 正在运行的 provider 时（运行中用 /codex 或 /claude 切换），运行者单独一行——
-    // 未来 provider 上报的子 agent 状态也走附加行（best-effort），行形状已就绪。
+    const observedRuns = [...v.activeTurns.values()].filter((turn) => turn.origin === "provider");
+    const observedRun = observedRuns.at(-1);
+    // baton 当前只呈现一条 Agent Status：driven turn 优先，其次是 provider 自发的
+    // background turn，完全空闲时才回落到当前输入目标。多运行者并发尚未进入产品范围，
+    // 不应提前把同一 provider 画成 idle + background 两行。
     const activeTurnId = this.runtime.activeTurnId;
-    const runStatus: RunStatusItem[] = [
-      selectedBusy
-        ? {
-            id: `agent:${this.agent}`,
-            author: providerAuthor(this.agent),
-            label: `${selectedModel} · ${runStatusLabel(v, activeTurnId)}`,
+    const statusProvider = active ?? observedRun?.provider ?? this.agent;
+    const statusProviderId = providerDefinitionFor(statusProvider)?.id;
+    const statusModel = statusProviderId ? (this.runtime.currentModel(statusProviderId) ?? "default") : "default";
+    const runStatus: RunStatusItem[] = active
+      ? [
+          {
+            id: `run:${active}`,
+            author: providerAuthor(active),
+            label: `${statusModel} · ${runStatusLabel(v, activeTurnId)}`,
             startedAt: this.runtime.activeStartedAt,
             hint: "Esc to interrupt",
-          }
-        : { id: `agent:${this.agent}`, author: providerAuthor(this.agent), label: `${selectedModel} · idle` },
-    ];
-    if (active !== undefined && !selectedBusy) {
-      runStatus.push({
-        id: `run:${active}`,
-        author: providerAuthor(active),
-        label: runStatusLabel(v, activeTurnId),
-        startedAt: this.runtime.activeStartedAt,
-        hint: "Esc to interrupt",
-      });
-    }
-    // observed turn（provider 自发回合，如后台任务唤醒）：每个各占一行——driven turn
-    // 运行时并发的后台回合同样要呈现，否则 agent 在"静默"状态下说话。无 hint——Esc
-    // 中断的是 runtime 队列里的 driven turn，管不到 provider 自己发起的回合
-    // （v1 不支持打断 observed turn）。
-    const observedRuns = [...v.activeTurns.values()].filter((turn) => turn.origin === "provider");
-    for (const run of observedRuns) {
-      runStatus.push({
-        id: `run:observed:${run.turnId}`,
-        author: providerAuthor(run.provider),
-        label: `${runStatusLabel(v, run.turnId)} · background`,
-        startedAt: run.startedAt,
-      });
-    }
+          },
+        ]
+      : observedRun
+        ? [
+            {
+              id: `run:observed:${observedRun.turnId}`,
+              author: providerAuthor(statusProvider),
+              label: `${statusModel} · ${runStatusLabel(v, observedRun.turnId)} · background`,
+              startedAt: observedRun.startedAt,
+            },
+          ]
+        : [
+            {
+              id: `agent:${this.agent}`,
+              author: providerAuthor(this.agent),
+              label: `${statusModel} · idle`,
+            },
+          ];
     const busy = active !== undefined || observedRuns.length > 0;
     // plan 互补显示（design §5.9）：同一时刻只出现在一个地方——进行中归 pin（现在时），
     // 盖棺归 transcript（过去时）。pin 显示期间 transcript 不渲染该 plan 卡（避免同屏两份、
