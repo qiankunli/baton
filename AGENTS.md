@@ -89,6 +89,7 @@ baton/
 ## References
 
 - `docs/design.md` — 完整设计与竞品定位
+- `docs/backlog.md` — 暂缓能力与演进触发条件（何时该做、为什么现在不做）
 - `docs/provider-interaction-design.md` — chat-tui 与 Adapter 的交互抽象方案
 - `docs/resume-fork.md` — resume/fork 语义（fork=同一段逻辑历史的复制，不做 ID remap）、会话锁与 crash recovery
 - `docs/session-paths.md` — 主线/草稿 path 设计稿：会话树（森林表示）、写令牌、context-import 收录原语与两步走实施
