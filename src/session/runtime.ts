@@ -460,10 +460,11 @@ export class BatonSessionRuntime {
         budgetChars: this.options.mentionBudgetChars,
       });
       let blocks = turn.blocks;
+      let syncBlocks: PromptBlock[] | undefined;
       // 水位（syncedSeq）只在注入时前进到本批 throughSeq（并发正确性的关键：
       // throughSeq 固定在注入时点，turn 运行期间其它 provider 落盘的事件 seq 必然
       // 大于它，下一次注入自然回补；finalize 推尾水位则会永久越过它们）。
-      let prependedCatchUp: typeof catchUp = null;
+      let submitCatchUp: typeof catchUp = null;
       if (catchUp) {
         const syncBlock: PromptBlock = {
           type: "text",
@@ -479,9 +480,14 @@ export class BatonSessionRuntime {
           });
           slot.freshNative = false;
         } else {
-          // prepend 注入随本 turn 的 submit 送达；水位在 admission 通过后才推进
-          blocks = [syncBlock, { type: "text", text: "\n\n" }, ...blocks];
-          prependedCatchUp = catchUp;
+          // 随本 turn 的 submit 送达（原生 side-channel 或 prepend）；两种形态共享
+          // 同一水位语义：admission 通过后才推进，失败则下次重注入
+          if (slot.adapter.capabilities.sync?.supported) {
+            syncBlocks = [syncBlock];
+          } else {
+            blocks = [syncBlock, { type: "text", text: "\n\n" }, ...blocks];
+          }
+          submitCatchUp = catchUp;
         }
       }
 
@@ -490,16 +496,18 @@ export class BatonSessionRuntime {
         turnId: turn.turnId,
         messageId: turn.messageId,
         blocks,
+        ...(syncBlocks ? { syncBlocks } : {}),
       });
-      if (prependedCatchUp) {
-        // admission 通过 ⇒ prepend 的 sync 块已进入 provider 输入：视为同步到 throughSeq。
+      if (submitCatchUp) {
+        // admission 通过 ⇒ 随 submit 送达的 sync 块（syncBlocks 或 prepend）已进入 provider
+        // 输入：视为同步到 throughSeq。
         // admission 失败走 catch 上抛，水位不动，下次重新注入。
         session.setProviderSession(key, {
           ...session.meta.providerSessions[key],
           provider: key,
           providerSessionId:
             session.meta.providerSessions[key]?.providerSessionId ?? this.nativeSessionId(slot),
-          syncedSeq: prependedCatchUp.throughSeq,
+          syncedSeq: submitCatchUp.throughSeq,
         });
         slot.freshNative = false;
       }

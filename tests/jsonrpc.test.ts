@@ -62,7 +62,7 @@ describe("JsonRpcPeer", () => {
     await expect(p).rejects.toThrow(/closed/);
   });
 
-  // 启动期请求（initialize / thread resume/start / inject_items）卡死不能永久占住
+  // 启动期请求（initialize / thread resume/start）卡死不能永久占住
   // turn 队列：preparing 的退出路径依赖显式超时兜底
   test("request with timeoutMs rejects when no response arrives", async () => {
     const { peer } = pair();

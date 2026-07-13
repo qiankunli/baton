@@ -64,12 +64,28 @@ class ManualAdapter implements AgentAdapter {
   async close(_ref: ProviderSessionRef): Promise<void> {}
 }
 
-/** 支持 syncContext 的变体（claude 形态：增量走原生历史注入，不占 prompt） */
+/** 支持 syncContext 的变体（急切注入形态：resolve 即送达，不占 prompt） */
 class SyncableManualAdapter extends ManualAdapter {
   synced: string[] = [];
 
   async syncContext(_ref: ProviderSessionRef, blocks: PromptBlock[]): Promise<void> {
     this.synced.push(textOf(blocks));
+  }
+}
+
+/** 声明 capabilities.sync 的变体（codex 形态：catch-up 走 submit 的 syncBlocks side-channel） */
+class SyncBlocksManualAdapter extends ManualAdapter {
+  override readonly capabilities: AdapterCapabilities = { prompt: {}, sync: { supported: true } };
+  syncPayloads: string[] = [];
+  failNextSubmit = false;
+
+  override async submit(ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+    if (this.failNextSubmit) {
+      this.failNextSubmit = false;
+      throw new Error("admission down");
+    }
+    if (input.syncBlocks?.length) this.syncPayloads.push(textOf(input.syncBlocks));
+    return super.submit(ref, input);
   }
 }
 
@@ -169,5 +185,36 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     expect(adapter.prompts[1]).not.toContain("baton-sync");
     adapter.finish();
     await second;
+  });
+
+  test("sync-capable adapter receives syncBlocks side-channel; watermark advances after admission", async () => {
+    completedTurn(session, "claude-code", "t_claude", "earlier claude work");
+
+    const adapter = new SyncBlocksManualAdapter("codex");
+    const runtime = new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+
+    // 第一次 submit admission 失败：sync 视为未送达，水位不动
+    adapter.failNextSubmit = true;
+    await expect(runtime.submit("codex", [{ type: "text", text: "hello" }])).rejects.toThrow("admission down");
+    expect(session.meta.providerSessions["codex"]?.syncedSeq ?? 0).toBe(0);
+
+    // 重试：sync 走 side-channel（不混入 prompt 正文），admission 通过后水位推进到
+    // 本次注入时点的 summary 尾（含失败 turn 自己的 summary：亲历即已同步）
+    const injectionTail = lastSummarySeq(session);
+    const second = runtime.submit("codex", [{ type: "text", text: "hello again" }]);
+    await Bun.sleep(1);
+    expect(adapter.prompts[0]).toBe("hello again");
+    expect(adapter.syncPayloads[0]).toContain("<baton-sync>");
+    expect(adapter.syncPayloads[0]).toContain("earlier claude work");
+    expect(session.meta.providerSessions["codex"]?.syncedSeq).toBe(injectionTail);
+    adapter.finish();
+    await second;
+
+    // 第三轮：无新的他方进展 → 不重复注入
+    const third = runtime.submit("codex", [{ type: "text", text: "again" }]);
+    await Bun.sleep(1);
+    expect(adapter.syncPayloads).toHaveLength(1);
+    adapter.finish();
+    await third;
   });
 });
