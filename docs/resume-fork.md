@@ -52,6 +52,8 @@ session 按 cwd 归入 project 只是**存放与发现的组织方式**，不是
 
 核心场景是跨仓排查：开发 project-a 时，排查过程发现它实际调用的 project-b 存在 bug。用户进入 project-b（包括另一个 monorepo）执行 `baton fork <project-a-session>`，即可把已经形成的调用关系、现象和判断上下文带到 project-b 继续修复，不必重新向 agent 解释问题。这里 project 由 fork 命令的执行 cwd 定义；跨 project 不是额外模式，而是源 session 的 cwd 与发起 cwd 不同所自然产生的结果。
 
+这也是 session 归 Baton 管理、而非委托给 provider 原生 session 的直接收益：部分 provider 不允许原生 fork 跨 project，Baton 则在自身层复制逻辑历史，再到目标 cwd 创建 fresh ProviderSession 并补齐上下文，因此不依赖 provider 的跨 project fork 能力，也不修改其原生 session 文件。BatonSession 是历史真相源，ProviderSession 只是特定工作现场下的执行载体与 resume 加速路径；否则 Baton 的能力会退化成各 provider 原生能力的交集。
+
 - **历史跟源 session 走**：复制的前缀、谱系（`forkedFrom`）都来自源，与源在哪个 project 无关。
 - **project 归属跟 fork 发起位置走**：`cd project-b && baton fork bs_from_project_a`，fork 落在 project-b（`--cwd` 可覆盖）；picker fork 用启动 baton 时的 cwd。底层 `forkSession` 未显式指定目标 cwd 时仍沿用源 cwd，保持已有调用兼容。
 
