@@ -36,6 +36,14 @@ export interface PromptInput {
   /** 用户消息的 baton message ID（m_ 前缀） */
   messageId: string;
   blocks: PromptBlock[];
+  /**
+   * 跨 provider catch-up 注入（不属于用户输入正文，不进正典历史）。仅当 adapter 声明
+   * `capabilities.sync` 时由 runtime 传入，adapter 用原生 side-channel 随本次 submit
+   * 送达（codex: `turn/start.additionalContext`）——独立注入 user message 会污染原生
+   * 历史，text prepend 则把注入混进用户消息并暴露给 UserPromptSubmit hook。
+   * 契约：与本 turn 一起送达；admission 失败视为未送达（runtime 水位不动，下次重注入）。
+   */
+  syncBlocks?: PromptBlock[];
 }
 
 /** submit 的回执：只代表 admission 通过，不代表 turn 完成（design §4.1） */
@@ -65,6 +73,13 @@ export interface AdapterCapabilities {
     resourceLink?: CapabilityMarker;
   };
   steer?: CapabilityMarker;
+  /**
+   * submit 原生承载 `PromptInput.syncBlocks`（side-channel 注入）。与 ContextSynchronizable
+   * 互斥使用：syncContext 是"急切注入、resolve 即送达"（水位立即推进）；sync 是"随下一次
+   * submit 送达"（水位在 admission 通过后推进，语义同 prepend 路径）。都未声明时 runtime
+   * 回落为把 sync 块 prepend 进 prompt 文本。
+   */
+  sync?: CapabilityMarker;
   commands?: CapabilityMarker;
   config?: CapabilityMarker;
   interactions?: {

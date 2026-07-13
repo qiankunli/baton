@@ -55,13 +55,51 @@ describe("Codex model capability", () => {
     expect(turnParams?.model).toBe("gpt-5");
   });
 
-  test("injects BatonSession context into model-visible thread history", async () => {
+  test("delivers BatonSession catch-up via turn/start.additionalContext", async () => {
+    // 曾走 thread/inject_items 注入独立 user message：会污染 codex 原生历史（悬空
+    // user message），改为随本 turn 的 additionalContext side-channel 送达。
     const adapter = new CodexAdapter({ approvalHandler });
-    let request: { method: string; params: unknown } | undefined;
+    let turnParams: Record<string, unknown> | undefined;
     const peer = {
-      request: async (method: string, params: unknown) => {
-        request = { method, params };
-        return {};
+      request: async (method: string, params: Record<string, unknown>) => {
+        if (method === "turn/start") {
+          turnParams = params;
+          return { turn: { id: "turn-1", status: "inProgress" } };
+        }
+        throw new Error(`unexpected request: ${method}`);
+      },
+    };
+    const runtime = { threadId: "thread-1", peer };
+    (
+      adapter as unknown as { threads: Map<string, typeof runtime> }
+    ).threads.set("thread-1", runtime);
+    const ref = { provider: "codex", providerSessionId: "thread-1" };
+
+    expect(adapter.capabilities.sync?.supported).toBe(true);
+    await adapter.submit(ref, {
+      turnId: "t_1",
+      messageId: "m_1",
+      blocks: [{ type: "text", text: "hello" }],
+      syncBlocks: [{ type: "text", text: "handoff" }],
+    });
+    await Bun.sleep(0); // turn/start 在 submit 回执后异步发出，等微任务刷新
+
+    expect(turnParams?.input).toEqual([{ type: "text", text: "hello" }]);
+    expect(turnParams?.additionalContext).toEqual({
+      "baton-sync": { value: "handoff", kind: "untrusted" },
+    });
+  });
+
+  test("omits additionalContext when there is no catch-up", async () => {
+    const adapter = new CodexAdapter({ approvalHandler });
+    let turnParams: Record<string, unknown> | undefined;
+    const peer = {
+      request: async (method: string, params: Record<string, unknown>) => {
+        if (method === "turn/start") {
+          turnParams = params;
+          return { turn: { id: "turn-1", status: "inProgress" } };
+        }
+        throw new Error(`unexpected request: ${method}`);
       },
     };
     const runtime = { threadId: "thread-1", peer };
@@ -69,23 +107,12 @@ describe("Codex model capability", () => {
       adapter as unknown as { threads: Map<string, typeof runtime> }
     ).threads.set("thread-1", runtime);
 
-    await adapter.syncContext(
+    await adapter.submit(
       { provider: "codex", providerSessionId: "thread-1" },
-      [{ type: "text", text: "handoff" }],
+      { turnId: "t_1", messageId: "m_1", blocks: [{ type: "text", text: "hello" }] },
     );
+    await Bun.sleep(0);
 
-    expect(request).toEqual({
-      method: "thread/inject_items",
-      params: {
-        threadId: "thread-1",
-        items: [
-          {
-            type: "message",
-            role: "user",
-            content: [{ type: "input_text", text: "handoff" }],
-          },
-        ],
-      },
-    });
+    expect(turnParams && "additionalContext" in turnParams).toBe(false);
   });
 });

@@ -9,7 +9,6 @@ import type {
   ContentBlock,
   DiffBlock,
   PermissionOption,
-  PromptBlock,
   QuestionPrompt,
   StopReason,
 } from "../../events/types.ts";
@@ -201,9 +200,9 @@ export interface CodexAdapterOptions {
 }
 
 /**
- * 启动期与上下文注入请求的显式超时：这些请求发生在 turn 提交之前，卡死会永久占住
- * 全局 turn 队列（preparing 状态的可取消性也依赖它兜底退出）。turn/start 刻意不设——
- * 老版本 app-server 会合法地阻塞到 turn 结束。
+ * 启动期请求（initialize / thread resume/start）的显式超时：这些请求发生在 turn 提交
+ * 之前，卡死会永久占住全局 turn 队列（preparing 状态的可取消性也依赖它兜底退出）。
+ * turn/start 刻意不设——老版本 app-server 会合法地阻塞到 turn 结束。
  */
 const STARTUP_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -270,7 +269,11 @@ export class CodexAdapter implements AgentAdapter {
   readonly provider = "codex";
   // 当前 adapter 最终只发送 text（design.md §3.1）；可选能力接口落地并验证后才声明
   // 对应 marker——契约测试钉住"声明支持就必须实现对应接口"。
-  readonly capabilities: AdapterCapabilities = { prompt: {}, steer: { supported: true } };
+  // sync：catch-up 走 turn/start.additionalContext（experimental API，initialize 已声明
+  // experimentalApi）。曾用 thread/inject_items 注入独立 user message，但那会污染 codex
+  // 原生历史（rollout 里出现无对应回合的悬空 user message）；additionalContext 由 codex
+  // 以 contextual fragment 形态随本 turn 入史，且不过 UserPromptSubmit hook。
+  readonly capabilities: AdapterCapabilities = { prompt: {}, steer: { supported: true }, sync: { supported: true } };
   private threads = new Map<string, ThreadRuntime>();
 
   constructor(private options: CodexAdapterOptions) {}
@@ -318,25 +321,6 @@ export class CodexAdapter implements AgentAdapter {
     return { provider: this.provider, providerSessionId: threadId, resumed: opened.resumed };
   }
 
-  async syncContext(ref: ProviderSessionRef, blocks: PromptBlock[]): Promise<void> {
-    const rt = this.mustThread(ref);
-    await rt.peer.request(
-      "thread/inject_items",
-      {
-        threadId: rt.threadId,
-        items: [
-          {
-            type: "message",
-            role: "user",
-            content: [{ type: "input_text", text: textOf(blocks) }],
-          },
-        ],
-      },
-      // 注入发生在 submit 之前：卡死会占住队列且无 turn 可 cancel，必须有界
-      { timeoutMs: STARTUP_REQUEST_TIMEOUT_MS },
-    );
-  }
-
   async listModels(ref: ProviderSessionRef): Promise<ModelOption[]> {
     const rt = this.mustThread(ref);
     return codexModels(await rt.peer.request("model/list", { limit: 200 }));
@@ -369,12 +353,17 @@ export class CodexAdapter implements AgentAdapter {
     // 的事实，且入参 blocks 可能含 <baton-sync> prepend，不能进正典历史）；adapter 只在
     // steer 成功时补 delivery:"steer" 的用户消息。
 
+    // 跨 provider catch-up 随本 turn 送达：additionalContext 按 key 的 contextual
+    // fragment（untrusted → user 语义）在 codex 侧与 prompt 同回合入史。admission 失败
+    // 即未送达，runtime 水位不动、下次重注入（PromptInput.syncBlocks 契约）。
+    const syncText = input.syncBlocks?.length ? textOf(input.syncBlocks) : undefined;
     // fast-submit：turn/start 的响应立即返回 status=inProgress 的 Turn（旧版本才会阻塞到结束）。
     // 因此响应只用于拿 codex turn id 和捕获终态；正常结束以 turn/completed 通知为准。
     void rt.peer
       .request("turn/start", {
         threadId: rt.threadId,
         input: [{ type: "text", text: textOf(input.blocks) }],
+        ...(syncText ? { additionalContext: { "baton-sync": { value: syncText, kind: "untrusted" } } } : {}),
         ...(rt.model ? { model: rt.model } : {}),
         // 不显式开启则 codex 不发 item/reasoning/* 通知，中间过程对用户不可见
         summary: "auto",

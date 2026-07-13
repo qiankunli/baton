@@ -155,7 +155,7 @@ interface NativeSessionIdentifiable { nativeSessionId(ref: ProviderSessionRef): 
 ```
 
 - **ClaudeAdapter**：SDK `query()` 流直接转内部事件；`canUseTool` 回调转 ApprovalRequest；SDK 返回的 `session_id` 存为 providerSessionId，resume 走 SDK resume 参数。流顺序、取消、resume cursor 的处理细节参考 tutti `claude-sdk-sidecar/src/main.ts`。
-- **CodexAdapter**：`initialize` → `thread/start` → `turn/start`；`item/agentMessage/delta` 等通知转内部事件；`requestApproval` 转 ApprovalRequest；`turn/interrupt` 实现 cancel。方法集与审批状态机参考 tutti `codex_appserver_adapter.go`；用官方 schema 做强类型校验并 pin codex 版本区间。
+- **CodexAdapter**：`initialize` → `thread/start` → `turn/start`；`item/agentMessage/delta` 等通知转内部事件；`requestApproval` 转 ApprovalRequest；`turn/interrupt` 实现 cancel。方法集与审批状态机参考 tutti `codex_appserver_adapter.go`；用官方 schema 做强类型校验并 pin codex 版本区间。跨 provider catch-up 走 `turn/start.additionalContext` side-channel 随本 turn 送达（不用 `thread/inject_items` 注独立 user message——会在原生 rollout 留下无对应回合的悬空消息）。
 
 ### 5.2 内部事件模型：对齐 ACP v2 词汇表，wire 不用 ACP
 
