@@ -3,7 +3,7 @@
 > 状态：Proposal；更新：2026-07-11。
 > 本文用于记录动工前的边界、取舍和演进顺序。落地后以 `src/**` 中的类型、reducer 与契约测试为事实来源；本文保留 why，并删减已经能从单处代码直接读出的具体形状。
 
-> 用户输入从 Composer 到 queue / steer / interrupt 的产品语义，本身就是 Adapter 行为契约的一部分；`user-input-lifecycle.md` 是该主题的专项设计与状态跟踪入口。本文继续给出完整交互面的总体分层、结构契约和 provider 映射，两者不是互斥边界。
+> 用户输入从 Composer 到 queue / steer / interrupt 的产品语义，本身就是 Adapter 行为契约的一部分；`user-input-lifecycle.md` 是该主题的专项设计与状态跟踪入口。对偶地，provider 输出从 wire 归一到终态收口（含丢事件自愈、静默悬挂对账）见 `provider-output-lifecycle.md`。本文继续给出完整交互面的总体分层、结构契约和 provider 映射，三者不是互斥边界。
 
 本文解决两个问题：
 

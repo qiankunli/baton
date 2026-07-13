@@ -152,19 +152,7 @@ interface NativeSessionIdentifiable { nativeSessionId(ref: ProviderSessionRef): 
 
 内部事件 schema 直接采用 ACP v2 语义——`state_update`（running / idle / requires_action + stopReason）、按 `messageId` 的消息 upsert + chunk 追加、`tool_call_update` upsert（首次即创建）、`plan_update`。这套词汇本来就是为归一化此类流设计的；ACP v2 成熟后加一个通用 AcpAdapter 即近似 1:1 接入长尾 CLI。baton 扩展事件（如 turn-summary）用 `_baton_` 前缀，遵守 ACP 的扩展约定。
 
-**中间过程的最大公约数规范**：agent 的中间过程（思考、工具调用、文件改动、命令输出、计划）由 baton 统一定义，各 provider adapter 负责把原生形态归一进来——渲染层与存储层不允许出现 provider 分支：
-
-| 中间过程 | 统一事件 | codex 原生形态 | claude 原生形态 |
-|---|---|---|---|
-| 思考 | `agent_thought(_chunk)` | `item/reasoning/*`（需 `summary:"auto"` 显式开启，completed 带全文兜底） | `thinking_delta` 流 |
-| 工具调用生命周期 | `tool_call_update`（kind/status/title upsert） | `item/started` / `item/completed` | `tool_use` / `tool_result` |
-| 文件改动 | tool_call content 里的 **diff 内容块**（`changes[]` + 可选 `patch`，形状对齐 ACP v2） | fileChange item 的 `changes[].diff` | Edit/Write/MultiEdit 入参合成 |
-| 命令实时输出 | `tool_call_content_chunk` | `item/commandExecution/outputDelta` | 无此能力（输出随 tool_result 一次性到达） |
-| 计划 | `plan_update` | `turn/plan/updated` | `TodoWrite` 工具调用归一（并抑制其工具卡） |
-| 运行阶段（compacting…） | `_baton_run_status`（phase 开放字符串，null 清除） | `contextCompaction` item started/completed（并抑制其工具卡） | `system/status` 消息（SDKStatus 原生就是 phase-or-null 形状） |
-| hook 拦截 / 空回合 | `_baton_notice`（warning；不改生命周期，终态仍走 `state_update`） | `hook/completed` 通知（仅 userPromptSubmit/sessionStart 的 blocked/stopped——它们会让 codex 静默空结束、prompt 不进原生历史；其余 hook 事件是流程控制语义不上报）+ completed 且零产出的 turn 合成空回合警示 | 无此形态（SDK 进程内 hook 报错走 error 流） |
-
-归一是"最大公约数 + raw 保真"：形状统一，粒度差异（如 claude 是原始思考流、codex 是 reasoning 摘要）不掩盖，细节永远在信封 `raw` 里。
+**中间过程的最大公约数规范**：agent 的中间过程（思考、工具调用、文件改动、命令输出、计划、运行阶段、空回合）由 baton 统一定义为上述事件，各 provider adapter 负责把原生形态归一进来——渲染层与存储层不允许出现 provider 分支。归一是"最大公约数 + raw 保真"：形状统一，粒度差异（如 claude 是原始思考流、codex 是 reasoning 摘要）不掩盖，细节永远在信封 `raw` 里。各家原生形态到统一事件的逐项映射、终态收口与丢事件自愈见 `docs/provider-output-lifecycle.md` §2–§3；本节不复制易随 provider schema 变化的映射表。
 
 信封结构（session.jsonl 每行一条）：
 
@@ -279,6 +267,7 @@ Footer            常驻状态栏（usage、队列计数、plan 进度摘要、c
 ## 8. 参考
 
 - `docs/user-input-lifecycle.md`：用户输入从 Composer 到 queue / steer / interrupt 的产品语义、当前状态与重点场景
+- `docs/provider-output-lifecycle.md`：provider 输出/感知从 wire 归一到终态收口的语义、丢事件/乱序自愈、静默悬挂对账（reconcile 能力）与重点场景
 - `docs/provider-interaction-design.md`：基于 pi-tui/pi-agent、OpenCode、Codex 与 ACP v2 的输入、输出、用户交互和 Adapter 抽象方案
 
 - [tutti](https://github.com/tutti-os/tutti)：打通机制参考实现。重点：`docs/architecture/agent-reference-mention-resolution.md`（@ 解析）、`docs/architecture/tutti-agent-integration-plan.md`（事件流全景）、`packages/agent/daemon/runtime/adapter.go`（Adapter 模式）、`codex_appserver_adapter.go`（Codex 接入）、`claude-sdk-sidecar/`（Claude SDK 用法）、`acp_pending.go`（审批状态机）、`services/tuttid/service/cli/providers/agentcontext/compact_output.go`（紧凑投影）

@@ -26,6 +26,7 @@ baton/
 ├── docs/
 │   ├── design.md            # 完整设计：问题域总表、架构、关键决策 why、里程碑
 │   ├── user-input-lifecycle.md # 用户输入：queue/steer/recall/interrupt 生命周期与待决场景
+│   ├── provider-output-lifecycle.md # provider 输出/感知：归一、终态收口、丢事件自愈与对账
 │   ├── provider-interaction-design.md # 输入/输出、用户交互与 Adapter 协议演进方案
 │   └── resume-fork.md       # resume/fork 语义、会话锁与 crash recovery 的 why
 ├── src/
@@ -92,6 +93,7 @@ baton/
 
 - `docs/design.md` — 完整设计与竞品定位
 - `docs/user-input-lifecycle.md` — 用户输入生命周期、当前 provider 能力与三类 interrupt/steer 时序场景
+- `docs/provider-output-lifecycle.md` — provider 输出/感知生命周期：事件归一、终态硬约定、丢事件/乱序自愈、静默悬挂对账（reconcile 能力，Codex `thread/read.status` / Claude `backgroundTasks`）
 - `docs/backlog.md` — 暂缓能力与演进触发条件（何时该做、为什么现在不做）
 - `docs/provider-interaction-design.md` — chat-tui 与 Adapter 的交互抽象方案
 - `docs/resume-fork.md` — resume/fork 语义（fork=同一段逻辑历史的复制，不做 ID remap）、会话锁与 crash recovery
