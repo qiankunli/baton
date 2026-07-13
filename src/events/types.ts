@@ -120,7 +120,13 @@ export interface MessageChunk {
   content: ContentBlock;
 }
 
-export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed" | (string & {});
+/**
+ * 工具终态词汇。declined 是一等成员而非 failed 的别名：它表示"被用户/策略拒绝、
+ * 操作没有执行"，展示待遇（⊘/warning 色）与后续动作（重发并授权）都不同于执行出错。
+ * adapter 边界负责把 provider 词汇翻译到这里，且必须白名单式映射——只有明确的成功值
+ * 才映射 completed，未知终态悲观归 failed；乐观兜底曾把 codex 的 declined 渲染成绿勾。
+ */
+export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed" | "declined" | (string & {});
 
 export type ToolKind =
   | "read"

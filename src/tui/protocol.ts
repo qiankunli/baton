@@ -510,10 +510,10 @@ export class BatonChatProtocol implements ChatProtocol {
 
 // baton 的状态类型是开放联合（容忍未知 wire 值），chat-tui 是闭集；
 // 未知值回落到与旧 TUI 相同的展示形态（工具 ⋯ / 计划 ☐）。
-const TOOL_STATUSES = new Set(["pending", "in_progress", "completed", "failed"]);
+const TOOL_STATUSES = new Set(["pending", "in_progress", "completed", "failed", "declined"]);
 const PLAN_STATUSES = new Set(["pending", "in_progress", "completed"]);
 
-function normalizeToolStatus(status: string): "pending" | "in_progress" | "completed" | "failed" {
+function normalizeToolStatus(status: string): "pending" | "in_progress" | "completed" | "failed" | "declined" {
   return (TOOL_STATUSES.has(status) ? status : "in_progress") as ReturnType<typeof normalizeToolStatus>;
 }
 
@@ -533,6 +533,13 @@ function diffOpOf(operation: string): DiffOp {
   if (operation === "update") return "modify";
   if (operation === "rename") return "move";
   return DIFF_OPS.has(operation as DiffOp) ? (operation as DiffOp) : "modify";
+}
+
+/** 命令卡标题的时态即事实：declined 的命令没有跑过，不能写 Ran */
+function executeTitleOf(status: ReturnType<typeof normalizeToolStatus>): string {
+  if (status === "in_progress") return "Running";
+  if (status === "declined") return "Declined";
+  return "Ran";
 }
 
 /** 工具状态 → chat-tui 展示块；命令源码和 diff 保持结构化，避免组件层猜字符串。 */
@@ -570,7 +577,7 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
     id: tc.toolCallId,
     kind: "tool",
     author: providerAuthor(tc.provider),
-    title: tc.kind === "execute" ? (status === "in_progress" ? "Running" : "Ran") : rawTitle,
+    title: tc.kind === "execute" ? executeTitleOf(status) : rawTitle,
     status,
     content: content.length > 0 ? content : undefined,
   };

@@ -79,6 +79,7 @@ baton/
 - provider 中间过程按“最大公约数 + raw 保真”归一：Adapter 统一思考、工具、文件改动、命令输出、计划等展示与存储形状，粒度差异留在事件信封 `raw` 中；渲染层与存储层不出现 provider 分支。
 - provider 是开放扩展点：当前先以 Claude Code / Codex 打样；新增 provider 应通过 registry + AgentAdapter 能力接入，不把 provider 分支下沉到 BatonSession core。
 - **凭证零持有**：provider 进程继承用户环境与 HOME，复用各家 CLI 已有登录态；baton 不复制、托管或另建账号凭证体系。
+- **审批诚实性是产品不变量**：危险操作的决策必须进 TUI 闭环、工具终态展示必须诚实（declined 是一等终态，不是 failed 或 completed 的别名）。谁拉起 provider 谁保证审批路由到 baton（启动参数由 adapter 注入，不托付用户配置）；adapter 翻译终态只走白名单，未知值悲观处理；审批被 provider 侧策略旁路时必须发对账 notice 而非静默渲染。
 - **用户安装与开发运行时分离**：普通用户统一通过 npm 安装，包内 launcher 自带所需 runtime，不暴露 Bun 前置条件；仓库开发仍使用 Bun，避免为分发方式改写开发工具链。
 - 同一 BatonSession 内的 provider 接力由 baton 自动完成；`@` 只承担跨 BatonSession / turn / 产物的显式引用。
 - session / turn / message 的 ID 必须稳定可外部引用；fork 复制的前缀与源**共享对象 ID**（同一段逻辑历史，git-branch 语义），跨会话引用 turn/message 时以 `bs_ + 对象 ID` 限定消歧，why 见 `docs/resume-fork.md`。

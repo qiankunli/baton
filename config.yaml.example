@@ -7,6 +7,9 @@ defaultAgent: codex
 claudeExecutable: claude
 
 # Codex must run in headless app-server mode.
+# baton injects `-c approvals_reviewer="user"` automatically so approvals reach
+# the baton TUI instead of a provider-side auto reviewer; add your own
+# approvals_reviewer entry here only if you deliberately want to override that.
 codexCommand:
   - codex
   - app-server
