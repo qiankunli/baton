@@ -15,8 +15,8 @@ describe("BatonChatProtocol exit", () => {
       const store = new SessionStore(root);
       const session = store.createSession({ cwd: "/repo" });
       const calls: string[] = [];
-      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => {
-        calls.push("quit");
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, (sessionId) => {
+        calls.push(`quit:${sessionId}`);
       });
 
       const internals = protocol as unknown as {
@@ -31,7 +31,7 @@ describe("BatonChatProtocol exit", () => {
       };
 
       await protocol.exit();
-      expect(calls).toEqual(["runtime", "lock", "quit"]);
+      expect(calls).toEqual(["runtime", "lock", `quit:${session.id}`]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

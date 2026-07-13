@@ -73,10 +73,13 @@ const renderer = await createCliRenderer({ exitOnCtrlC: false, targetFps: 30, au
 // OpenTUI 默认透明背景不会擦除变空的 cell，滚动/重排后会残留上一帧字符。
 renderer.setBackgroundColor(batonTheme.overlayBackground ?? "#24283b");
 const root = createRoot(renderer);
-const quit = () => {
+const quit = (sessionId?: string) => {
   // OpenTUI owns raw mode and mouse tracking; restore both before process.exit,
   // whose forced exit does not run OpenTUI's beforeExit cleanup handler.
   renderer.destroy();
+  if (sessionId) {
+    console.log(`\nResume this session with:\nbaton resume ${sessionId}\n\nFork this session with:\nbaton fork ${sessionId}`);
+  }
   process.exit(0);
 };
 

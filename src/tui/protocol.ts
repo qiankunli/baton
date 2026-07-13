@@ -106,7 +106,7 @@ export class BatonChatProtocol implements ChatProtocol {
     private readonly store: SessionStore,
     private readonly config: BatonConfig,
     opened: { session: SessionHandle; resumed: boolean; recovered?: boolean },
-    private readonly quit: () => void,
+    private readonly quit: (sessionId?: string) => void,
   ) {
     this.session = opened.session;
     this.agent = config.defaultAgent;
@@ -256,7 +256,7 @@ export class BatonChatProtocol implements ChatProtocol {
     await this.runtime.close();
     this.unsubscribeSession();
     this.session.releaseLock();
-    this.quit();
+    this.quit(this.session.id);
   }
 
   resolvePicker(id: string, value: string | null): void {
