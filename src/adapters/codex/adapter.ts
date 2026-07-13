@@ -39,6 +39,14 @@ interface CodexTurn {
   turnId: string;
   /** 保证物理终态重复到达（响应与 turn/completed 通知都可能带终态）时只终结一次 */
   finalized: boolean;
+  /**
+   * 本 turn 是否产生过任何可见产出（消息/思考/工具/计划/审批…）。completed 且零产出
+   * 是异常（prompt 在进模型前被丢弃，如 UserPromptSubmit hook 拦截），不能静默当正常
+   * end_turn——事故形态是用户看到 baton 回 idle 但消息像被吞掉。
+   */
+  sawOutput?: boolean;
+  /** UserPromptSubmit/SessionStart hook 拦截信息：空回合的已知原因（hook/completed 通知报告） */
+  hookBlock?: { source: string; reason?: string };
 }
 
 interface ThreadRuntime {
@@ -198,6 +206,24 @@ export interface CodexAdapterOptions {
  * 老版本 app-server 会合法地阻塞到 turn 结束。
  */
 const STARTUP_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * 计入"turn 有产出"的事件 kind（空回合判定，见 CodexTurn.sawOutput）。
+ * usage/state 等记账类事件不算产出；`_baton_run_status`（compaction 等运行阶段）算——
+ * 纯 compaction turn 合法无消息产出，不应误报空回合。
+ */
+const OUTPUT_EVENT_KINDS: ReadonlySet<string> = new Set([
+  "agent_message",
+  "agent_message_chunk",
+  "agent_thought",
+  "agent_thought_chunk",
+  "tool_call_update",
+  "tool_call_content_chunk",
+  "plan_update",
+  "permission_request",
+  "question_request",
+  "_baton_run_status",
+]);
 
 interface CodexThreadPeer {
   request(method: string, params?: unknown, opts?: { timeoutMs?: number }): Promise<unknown>;
@@ -450,6 +476,9 @@ export class CodexAdapter implements AgentAdapter {
 
   /** 信封补齐。turn 终态类发射显式传所属 turn：迟到终态不能盖上共享 rt.turnId（已是最新 turn 的 id） */
   private emit(rt: ThreadRuntime, ev: Parameters<EventSink>[0], raw?: unknown, turn?: CodexTurn): void {
+    // 空回合判定的记账点：任何可见产出都经过这里，集中标记比在各通知分支手工标记可靠
+    const owner = turn ?? rt.activeTurn;
+    if (owner && !owner.finalized && OUTPUT_EVENT_KINDS.has(ev.kind)) owner.sawOutput = true;
     rt.sink?.({ ...ev, provider: this.provider, providerSessionId: rt.threadId, turnId: turn?.turnId ?? rt.turnId, raw });
   }
 
@@ -460,6 +489,28 @@ export class CodexAdapter implements AgentAdapter {
   private finishTurn(rt: ThreadRuntime, turn: CodexTurn | undefined, turnStatus: string): void {
     if (!turn || turn.finalized) return;
     turn.finalized = true;
+    // 空回合显式上报：completed 但没有任何可见产出，说明 prompt 在进模型前被丢弃
+    // （codex core 对 hook 拦截等路径静默 return，prompt 也不进原生 history）。
+    // 事故：bs_01KXCNW0WVA11NZH2F8FKTCJ5E 连续空回合被静默当正常 end_turn，表现为"吞消息"。
+    if (turnStatus === "completed" && !turn.sawOutput) {
+      const hookBlock = turn.hookBlock;
+      this.emit(
+        rt,
+        {
+          kind: "_baton_notice",
+          provider: this.provider,
+          payload: {
+            level: "warning",
+            title: "Codex returned an empty turn (no output)",
+            detail: hookBlock
+              ? `prompt blocked by hook ${hookBlock.source}${hookBlock.reason ? `: ${hookBlock.reason}` : ""}`
+              : "prompt was likely dropped before reaching the model (e.g. blocked by a UserPromptSubmit hook) and is not part of the codex thread history",
+          },
+        },
+        undefined,
+        turn,
+      );
+    }
     this.emit(
       rt,
       {
@@ -663,6 +714,41 @@ export class CodexAdapter implements AgentAdapter {
         const turn = (p.turn ?? {}) as Record<string, unknown>;
         // 通知流单连接有序：此刻的 activeTurn 就是该通知所属的 turn
         this.finishTurn(rt, rt.activeTurn, String(turn.status ?? "completed"));
+        break;
+      }
+      case "hook/completed": {
+        // 只关心会吞掉整个 turn 的拦截：UserPromptSubmit / SessionStart 被 block 时
+        // codex core 静默空结束（prompt 不进 history、无任何 error 事件），block 原因只在
+        // 这条通知里。其余 hook 事件（stop/preToolUse…）的 block 是流程控制语义，不上报。
+        const run = (p.run ?? {}) as Record<string, unknown>;
+        const status = String(run.status ?? "");
+        const eventName = String(run.eventName ?? "");
+        if (
+          (status !== "blocked" && status !== "stopped") ||
+          (eventName !== "userPromptSubmit" && eventName !== "sessionStart")
+        ) {
+          break;
+        }
+        const entries = (Array.isArray(run.entries) ? run.entries : []) as Array<Record<string, unknown>>;
+        const reason =
+          entries.map((entry) => String(entry.text ?? "")).filter(Boolean).join("; ") ||
+          (run.statusMessage ? String(run.statusMessage) : "") ||
+          undefined;
+        const source = String(run.sourcePath ?? "unknown hook");
+        if (rt.activeTurn && !rt.activeTurn.finalized) rt.activeTurn.hookBlock = { source, reason };
+        this.emit(
+          rt,
+          {
+            kind: "_baton_notice",
+            provider: this.provider,
+            payload: {
+              level: "warning",
+              title: `Codex ${eventName} hook blocked the prompt`,
+              detail: reason ? `${source}: ${reason}` : source,
+            },
+          },
+          params,
+        );
         break;
       }
       default:
