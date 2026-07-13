@@ -677,3 +677,99 @@ describe("BatonChatProtocol steer submit", () => {
     }
   });
 });
+
+describe("BatonChatProtocol input history", () => {
+  function makeProtocol(prefix: string) {
+    const root = mkdtempSync(join(tmpdir(), prefix));
+    const store = new SessionStore(root);
+    const session = store.createSession({ cwd: "/repo" });
+    const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+    (protocol as unknown as { runtime: { submit: () => Promise<"completed"> } }).runtime.submit = async () => "completed";
+    return { root, store, session, protocol };
+  }
+
+  test("↑ walks newest→oldest and stops at the oldest; ↓ returns then restores empty draft", async () => {
+    const { root, protocol } = makeProtocol("baton-hist-walk-");
+    try {
+      await protocol.submit("first");
+      await protocol.submit("second");
+      await protocol.submit("third");
+      expect(protocol.historyPrev("")).toEqual({ text: "third" });
+      expect(protocol.historyPrev("third")).toEqual({ text: "second" });
+      expect(protocol.historyPrev("second")).toEqual({ text: "first" });
+      expect(protocol.historyPrev("first")).toBeNull(); // 已到最旧，停住
+      expect(protocol.historyNext("first")).toEqual({ text: "second" });
+      expect(protocol.historyNext("second")).toEqual({ text: "third" });
+      expect(protocol.historyNext("third")).toEqual({ text: "" }); // 越过最新 → 恢复空草稿
+      expect(protocol.historyNext("")).toBeNull(); // 未在浏览
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("editing a recalled entry stops navigation (null → cursor move)", async () => {
+    const { root, protocol } = makeProtocol("baton-hist-edit-");
+    try {
+      await protocol.submit("a");
+      await protocol.submit("b");
+      expect(protocol.historyPrev("")).toEqual({ text: "b" });
+      expect(protocol.historyPrev("b-edited")).toBeNull();
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("stash restores a half-typed draft when ↓ passes the newest entry", async () => {
+    const { root, protocol } = makeProtocol("baton-hist-stash-");
+    try {
+      await protocol.submit("one");
+      expect(protocol.historyPrev("typed draft")).toEqual({ text: "one" });
+      expect(protocol.historyNext("one")).toEqual({ text: "typed draft" });
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("adjacent duplicate submissions collapse into one entry", async () => {
+    const { root, protocol } = makeProtocol("baton-hist-dedup-");
+    try {
+      await protocol.submit("same");
+      await protocol.submit("same");
+      await protocol.submit("other");
+      expect(protocol.historyPrev("")).toEqual({ text: "other" });
+      expect(protocol.historyPrev("other")).toEqual({ text: "same" });
+      expect(protocol.historyPrev("same")).toBeNull(); // 只有一条 "same"
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("seeds history from a resumed session's persisted user messages", () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-hist-seed-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      session.append({
+        kind: "user_message",
+        provider: "claude-code",
+        turnId: "t_1",
+        payload: { messageId: "m_1", content: [{ type: "text", text: "seeded one" }] },
+      });
+      session.append({
+        kind: "user_message",
+        provider: "claude-code",
+        turnId: "t_2",
+        payload: { messageId: "m_2", content: [{ type: "text", text: "seeded two" }] },
+      });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+      expect(protocol.historyPrev("")).toEqual({ text: "seeded two" });
+      expect(protocol.historyPrev("seeded two")).toEqual({ text: "seeded one" });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
