@@ -60,6 +60,8 @@ mentionBudgetChars: 4096
 showThoughts: true
 ```
 
+所有配置项及说明见 [`config.yaml.example`](config.yaml.example)。
+
 如果 Claude Code 使用自定义可执行文件，可以在配置中设置 `claudeExecutable`，或通过环境变量临时覆盖（`BATON_CLAUDE_BIN=/path/to/claude baton`）。配置优先级为：环境变量 > `config.yaml` > 默认值。
 
 ## 使用
@@ -114,17 +116,6 @@ baton 的数据默认保存在 `~/.baton/`：
 ```
 
 `session.jsonl` 是用于渲染、恢复、provider 接力和跨会话引用的持久逻辑历史。各 agent 的原生会话仍由 Claude Code / Codex 管理；baton 只保存其 ID 用于加速 resume，不会修改原生 session 文件。
-
-## 开发
-
-```bash
-bun install
-bun run check        # TypeScript 类型检查 + 单元测试
-bun run repl -- --agent codex
-bun run tui
-```
-
-项目架构、事件模型、Adapter 设计和后续里程碑见 [docs/design.md](docs/design.md)。
 
 ## License
 

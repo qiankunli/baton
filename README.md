@@ -60,6 +60,8 @@ mentionBudgetChars: 4096
 showThoughts: true
 ```
 
+See [`config.yaml.example`](config.yaml.example) for all available options and usage notes.
+
 If Claude Code uses a custom executable, set `claudeExecutable` in the configuration or override it temporarily with an environment variable (`BATON_CLAUDE_BIN=/path/to/claude baton`). Configuration precedence: environment variables > `config.yaml` > defaults.
 
 ## Usage
@@ -114,17 +116,6 @@ baton stores its data in `~/.baton/` by default:
 ```
 
 `session.jsonl` is the durable logical history used for rendering, recovery, provider handoff, and cross-session references. Claude Code and Codex still manage their private native sessions; baton stores their IDs only to accelerate resume and never modifies their native session files.
-
-## Development
-
-```bash
-bun install
-bun run check        # TypeScript type checking + unit tests
-bun run repl -- --agent codex
-bun run tui
-```
-
-See [docs/design.md](docs/design.md) for the architecture, event model, Adapter design, and roadmap.
 
 ## License
 
