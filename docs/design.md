@@ -171,6 +171,7 @@ interface NativeSessionIdentifiable { nativeSessionId(ref: ProviderSessionRef): 
 | 命令实时输出 | `tool_call_content_chunk` | `item/commandExecution/outputDelta` | 无此能力（输出随 tool_result 一次性到达） |
 | 计划 | `plan_update` | `turn/plan/updated` | `TodoWrite` 工具调用归一（并抑制其工具卡） |
 | 运行阶段（compacting…） | `_baton_run_status`（phase 开放字符串，null 清除） | `contextCompaction` item started/completed（并抑制其工具卡） | `system/status` 消息（SDKStatus 原生就是 phase-or-null 形状） |
+| hook 拦截 / 空回合 | `_baton_notice`（warning；不改生命周期，终态仍走 `state_update`） | `hook/completed` 通知（仅 userPromptSubmit/sessionStart 的 blocked/stopped——它们会让 codex 静默空结束、prompt 不进原生历史；其余 hook 事件是流程控制语义不上报）+ completed 且零产出的 turn 合成空回合警示 | 无此形态（SDK 进程内 hook 报错走 error 流） |
 
 归一是"最大公约数 + raw 保真"：形状统一，粒度差异（如 claude 是原始思考流、codex 是 reasoning 摘要）不掩盖，细节永远在信封 `raw` 里。
 
