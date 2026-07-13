@@ -407,3 +407,28 @@ describe("per-turn run state aggregation", () => {
     expect(state.activeTurns.get("t1")?.origin).toBe("provider");
   });
 });
+
+describe("approval review receipts (auto-review)", () => {
+  test("archives by toolCallId, latest decision wins", () => {
+    const state = reduceEvents([
+      ev("approval_review_update", { toolCallId: "tc_1", decision: "in_progress" }),
+      ev("approval_review_update", {
+        toolCallId: "tc_1",
+        decision: "approved",
+        riskLevel: "high",
+        userAuthorization: "medium",
+        rationale: "reversible edit",
+        actionType: "applyPatch",
+      }),
+    ]);
+    const receipt = state.approvalReviews.get("tc_1");
+    expect(receipt?.decision).toBe("approved");
+    expect(receipt?.riskLevel).toBe("high");
+    expect(receipt?.rationale).toBe("reversible edit");
+  });
+
+  test("ignores receipts without a toolCallId (nothing to attach to)", () => {
+    const state = reduceEvents([ev("approval_review_update", { decision: "denied" })]);
+    expect(state.approvalReviews.size).toBe(0);
+  });
+});

@@ -27,6 +27,7 @@ baton/
 │   ├── design.md            # 完整设计：问题域总表、架构、关键决策 why、里程碑
 │   ├── user-input-lifecycle.md # 用户输入：queue/steer/recall/interrupt 生命周期与待决场景
 │   ├── provider-output-lifecycle.md # provider 输出/感知：归一、终态收口、丢事件自愈与对账
+│   ├── approval-lifecycle.md # 审批/用户确认：审批诚实、force reviewer=user、auto-review 委托与回执
 │   ├── provider-interaction-design.md # 输入/输出、用户交互与 Adapter 协议演进方案
 │   └── resume-fork.md       # resume/fork 语义、会话锁与 crash recovery 的 why
 ├── src/

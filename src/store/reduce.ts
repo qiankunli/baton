@@ -3,6 +3,7 @@
 
 import type {
   AnyEventEnvelope,
+  ApprovalReviewUpdate,
   AvailableCommand,
   ContentBlock,
   ContextUsageUpdate,
@@ -95,6 +96,11 @@ export interface SessionState {
   /** 附带 envelope turnId（payload 本身不含）：request → 所属 turn 的 requires_action 派生需要归属关系 */
   pendingPermissions: Map<string, PermissionRequest & { turnId?: string }>;
   pendingQuestions: Map<string, QuestionRequest & { turnId?: string }>;
+  /**
+   * auto-review 回执，按被审操作 toolCallId 归档（最新决策覆盖）。与 pendingPermissions
+   * 正交：这是“已被 reviewer 决策”的留痕，不是待决。投影层据此给对应工具卡加审计呈现。
+   */
+  approvalReviews: Map<string, ApprovalReviewUpdate>;
   usage: UsageTotal;
   /** provider command 完整快照：available_commands_update 整体替换，不做增量合并 */
   availableCommands: AvailableCommand[];
@@ -124,6 +130,7 @@ export function emptySessionState(): SessionState {
     plans: new Map(),
     pendingPermissions: new Map(),
     pendingQuestions: new Map(),
+    approvalReviews: new Map(),
     usage: {
       inputTokens: 0,
       outputTokens: 0,
@@ -311,6 +318,13 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       const turnId = state.pendingPermissions.get(p.requestId)?.turnId;
       state.pendingPermissions.delete(p.requestId);
       unflagRequiresAction(state, turnId);
+      break;
+    }
+    case "approval_review_update": {
+      // 归档回执，按被审操作 id 最新覆盖（started→completed 同一 id）。无 toolCallId 无处可挂，
+      // 忽略——不复活/凭空造工具卡。纯留痕，不参与 requires_action 派生。
+      const p = ev.payload;
+      if (p.toolCallId) state.approvalReviews.set(p.toolCallId, p);
       break;
     }
     case "question_request": {

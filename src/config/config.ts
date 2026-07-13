@@ -16,6 +16,12 @@ export interface BatonConfig {
   claudeExecutable?: string;
   /** codex 启动命令（headless 必须是 app-server 形态） */
   codexCommand: string[];
+  /**
+   * codex 审批人（approvals_reviewer）。缺省 = baton 强制 "user"（用户始终是审批人）；
+   * 显式设为 "auto_review" 才 opt-in 委托给 codex reviewer——该 turn 审批卡不再触发，
+   * baton 只观测 auto-review 回执。见 docs/approval-lifecycle.md。用户命令里已写死则不受此项影响。
+   */
+  codexApprovalReviewer?: "user" | "auto_review";
   /** @ 引用与同会话 provider 同步的摘要预算（字符） */
   mentionBudgetChars: number;
   /** 是否在时间线里显示 agent 的思考过程（reasoning 流） */
@@ -75,6 +81,11 @@ export function loadConfig(rootDir?: string): BatonConfig {
   if (typeof merged.showThoughts !== "boolean") {
     merged.showThoughts = DEFAULT_CONFIG.showThoughts;
   }
+  // 只接受已知取值，其余（含缺省）落回 undefined = adapter 走强制 "user"
+  merged.codexApprovalReviewer =
+    merged.codexApprovalReviewer === "auto_review" || merged.codexApprovalReviewer === "user"
+      ? merged.codexApprovalReviewer
+      : undefined;
   if (process.env.BATON_CLAUDE_BIN) merged.claudeExecutable = process.env.BATON_CLAUDE_BIN;
   return merged;
 }
