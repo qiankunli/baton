@@ -1,0 +1,143 @@
+# 用户输入生命周期
+
+本文是 `provider-interaction-design.md` 中**用户输入主题的专项设计与统一跟踪入口**，聚焦产品输入语义、Adapter 必须满足的行为契约、当前实现状态与待决场景。产品语义是 Adapter 协议契约的一部分：一条输入从 Composer 到 provider、再到完成或中断时应发生什么，决定 Adapter 需要暴露和保持哪些能力；`provider-interaction-design.md` 则继续承载输入、输出、用户确认等完整交互面的总体分层与结构契约。
+
+## 1. 理念与概念
+
+原始需求不是“把一段文本发出去”，而是保证用户意图在并发时序下仍然清晰：
+
+1. 输入不能静默丢失，baton 必须如实区分它是进入当前 turn、排队等待，还是被撤回。
+2. steer 与 follow-up 不是同一种投递。steer 在当前 turn 的安全边界生效；follow-up 在当前 turn 结束后开启新 turn。
+3. interrupt 作用于当前 provider turn，但不能顺带抹掉用户明确希望继续执行的后续输入。
+4. 是否可撤回应由输入生命周期决定，不能只凭 UI 看起来“provider 还没干活”猜测。
+
+为讨论方便，本文使用以下产品状态；它们描述语义，不预先冻结代码 enum：
+
+| 阶段 | owner | 是否进入正典历史 | 当前语义 |
+|---|---|---|---|
+| draft | chat-tui Composer | 否 | 用户仍可编辑 |
+| queued follow-up | BatonSessionRuntime | 否 | 等待当前 driven turn 结束；可召回编辑 |
+| admitted prompt | runtime + Store | 是 | 已从队列取走并形成 driven turn；当前只能 interrupt，不能 recall |
+| accepted steer | Adapter + Store | 是 | provider 已接受为当前 turn 的追加用户消息；当前不再保留独立队列实体 |
+| finalized | Store | 是 | turn 已以明确 stop reason 收口 |
+
+Turn 是一段有始有终的 provider 活动，不等于“一条用户消息”：一个 driven turn 包含初始 prompt，也可能包含零到多条 same-turn steer。
+
+## 2. 当前主流程
+
+### 2.1 普通提交
+
+普通输入先交给 BatonSessionRuntime。runtime 以 driven turn 全局串行：输入留在队列时可召回；一旦出队，runtime 立即把原始用户消息和 running 状态写入事件流，再准备或调用 provider。这样 provider 冷启动不会让输入在界面上消失，崩溃恢复也始终有一条完整历史。
+
+### 2.2 provider 忙时的第二条输入
+
+当前默认策略是：没有更早的 follow-up 排队、输入目标就是活跃 provider，且 Adapter 声明 steer 能力时，优先尝试 same-turn steer。provider 接受后，输入以 `delivery: steer` 绑定当前 turn；拒绝、竞态或传输失败则如实降级为 queued follow-up。
+
+若不满足 steer 条件，输入直接成为 queued follow-up。已有 follow-up 时不允许后来输入通过 steer 插队，以保留用户已经建立的顺序。
+
+### 2.3 interrupt
+
+Esc 在无局部浮层占用时被翻译成 `cancel` intent。runtime 只中断当前 driven turn：
+
+- provider 尚在 preparing、尚未提交 prompt 时，runtime 立即合成 cancelled 终态；
+- provider 已接收 turn 时，Adapter 映射到原生 interrupt，并以 provider 的 cancelled 终态或 cancel 宽限路径收口；
+- turn finalize 后，runtime 自动推进仍在队列中的 follow-up。
+
+当前 interrupt 不会把 active prompt 放回 Composer，也不会为已经成功 steer 的输入重新创建 follow-up。
+
+## 3. 当前能力
+
+| 能力 | baton 统一语义 / 入口 | Claude Code | Codex | 当前状态 |
+|---|---|---|---|---|
+| 普通文本 | `PromptBlock[]` → `submit()` | SDK `query()` | `turn/start` | 已支持；当前 Adapter 最终发送 text |
+| 图片等富输入 | `PromptBlock` 可表达 image/resource | 原生协议可表达 | `UserInput` 可表达 | 未接入；TUI Composer 与 Adapter 仍按纯文本处理 |
+| 模型切换 | `/model` → `ModelConfigurable` | 下一次 `query()` 配置 | 下一次 `turn/start` override | 已支持；不改变正在运行的 turn |
+| baton slash command | command registry → baton core | 不下发 provider | 不下发 provider | 已支持已注册命令；未知命令不做文本透传 |
+| provider command | command discovery + Adapter capability | 原生可发现 | 需显式映射 | 未支持 |
+| interrupt | `AgentAdapter.cancel()` | `Query.interrupt()` | `turn/interrupt` | 已支持当前 driven turn |
+| queued follow-up | runtime 全局 FIFO | provider 无感知 | provider 无感知 | 已支持；当前 turn 结束后开启下一 turn |
+| same-turn steer | `Steerable` capability；拒绝时降级 follow-up | 未声明 | `turn/steer(expectedTurnId)` | Codex 条件支持；Claude 自动走 follow-up |
+
+## 4. 三个重点场景
+
+### S1：query1 发出后立即 Esc，未真正执行时回到输入框
+
+**目标**：若 provider 尚未真正开始处理 query1，Esc 撤回 query1 并恢复到 Composer；一旦已经开始处理，Esc 才是 interrupt。
+
+**当前结论：未支持，暂缓；但可做的切片只有一个。** query1 一出队就成为 admitted prompt。即使仍在 provider 冷启动阶段，Esc 也会留下 cancelled turn，而不会恢复 draft。只有仍在 runtime 队列中的输入可用召回操作回到 Composer。
+
+需要先纠正一个常见误解：“真正开始处理”按**首个输出 / 首个工具调用 / 首个副作用**去判定，是一条跨 provider 不可靠的脏边界——没有输出不代表模型没处理，出现输出也可能早于副作用。这类边界不应作为撤回依据。
+
+真正可靠、且 provider 无关的边界只有一个：**preparing 窗口**（`cancelActive()` 中 `!slot.ref`，即 provider 冷启动尚未 admit）。这段时间 baton 一个字节都没发给 provider，边界完全由 baton 自己拥有。因此若将来重启 S1，应当**只做这一刀**：preparing 窗口内的 Esc 把 query1 还原为 draft，冷启动完成后即视为已 admit、不再可撤回；不要去碰“首个输出”那类边界。
+
+即便只做这一刀，仍要先决定：
+
+1. 已落盘的 user_message / running 用何种 append-only 事件标记为 recalled（历史不可删除）；
+2. 恢复 Composer 与后台冷启动完成之间发生竞态时，以哪一侧为准。
+
+### S2：query1 回答中提交 query2，优先原生 steer
+
+**目标**：query2 在 provider 支持时进入 query1 的当前原生 turn，而不是永远由 baton 排队到 query1 完成。
+
+**当前结论：Codex 条件满足时已支持；不是跨 provider 保证。**
+
+Codex 成功路径会调用原生 `turn/steer`，并把 query2 作为当前 turn 的 steer 用户消息落盘。以下情况会改为 queued follow-up：
+
+- 当前输入目标不是正在运行的 provider；
+- 已有更早的 follow-up 排队；
+- provider 尚未建立可定向的 active turn；
+- Adapter 未声明 steer（当前 Claude 即如此）；
+- provider 拒绝、turn 已过期或 wire 调用失败。
+
+baton 保证 effective delivery 如实：只有 provider 确认接受才记录 steer，否则明确提示已降级 follow-up。
+
+### S3：query2 已提交后 Esc，打断 query1 并继续 query2
+
+**目标**：Esc 停止 query1 的回答，但保留用户的新意图 query2，并让 provider 随后继续处理 query2。
+
+**当前结论：产品语义待定，不作为独立 P1 缺口；当前默认可接受。**
+
+分两条路径看当前行为：
+
+- Claude 或 Codex steer 降级路径：query2 仍在 runtime 队列。Esc 终结 query1 后，finalize 会自然推进 query2。
+- Codex steer 成功路径：query2 已成为 query1 同一原生 turn 的一部分，runtime 队列为空。Esc 的 `turn/interrupt` 会终结整个 turn，baton 没有独立 query2 实体可以继续提交。
+
+关键判断：**Esc 在“已存在第二条意图”时的语义本身是未定义的，这不是 steer 引入的独有缺陷。** 用户按 Esc 可能想“全停”，也可能想“停 query1、继续 query2”——两种意图都合理：
+
+- steer 成功路径按“全停”解，query2 随 turn 一并中断；
+- queued 路径按“继续 query2”解，query1 停、query2 照跑。
+
+即两条路径各自坐实了二义中的一端，且都无法在不问用户的前提下判定哪端“正确”。因此**不应**为此写时序特判去“interrupt 后重发最新 steer”：provider 可能已消费 steer 并产生部分副作用，重发会重复执行；接受回执只证明进入当前 turn，不证明模型已处理到它——重发是在拿重复副作用赌一个拿不到的信号。
+
+正确且唯一的解法是 §5 的统一 pending-input 生命周期：把每条输入（含 steer）保留为有稳定 ID、可查询消费状态的实体，再由它统一决定 Esc 的迁移。在那之前，当前“整 turn 打断 + interrupted notice + 不静默丢 / 不静默重”是可接受的默认。
+
+## 5. 收敛方向与验收
+
+后续实现优先补齐一个统一的 pending input 生命周期，而不是继续在 submit、steer、Esc handler 中增加时序特判。该模型至少要显式表达：
+
+- requested delivery 与 effective delivery；
+- 输入属于 draft、queued follow-up、当前 turn 的 steer，还是已 finalize；
+- recall、interrupt、provider reject 和 turn race 各自允许的状态迁移；
+- steer 被 provider 接受后，baton 是否以及何时仍有权把它重新排队。
+
+验收矩阵：
+
+| 场景 | 预期 |
+|---|---|
+| preparing 窗口内 Esc | query1 回到 Composer，provider 不执行；历史有明确 recalled 语义（S1 唯一可做切片） |
+| preparing 窗口后（已 admit）Esc | query1 以 cancelled 收口，不伪装成 recall |
+| Codex active + 无既有队列 + query2 | 原生 steer；同一 turn；effective delivery 可见 |
+| steer rejected / stale / wire failure | query2 只入队一次，当前 turn 结束后执行 |
+| query2 queued 后 Esc | query1 cancelled，随后 query2 开新 turn |
+| query2 steer 成功后 Esc | 整 turn 打断，query2 随之中断；不静默重发。最终语义待统一 pending-input 生命周期定 |
+| Claude 未声明 steer | query2 保持 follow-up，不伪装成 steer |
+
+## 6. 代码与测试锚点
+
+- `src/tui/protocol.ts`：busy submit 的 steer / follow-up 选择，Esc intent 到 runtime 的映射。
+- `src/session/runtime.ts`：队列、active driven turn、steer 降级、cancel 与 finalize。
+- `src/adapters/codex/adapter.ts`：`turn/steer` / `turn/interrupt` 原生映射。
+- `src/adapters/claude/adapter.ts`：当前只声明普通 prompt，cancel 映射 SDK interrupt。
+- `tests/steer.test.ts`、`tests/codex-steer.test.ts`：same-turn steer 与降级契约。
+- `tests/lifecycle.test.ts`、`tests/turn-intake.test.ts`：interrupt 后队列推进与 preparing cancel。
+- `tests/tui-protocol.test.ts`：busy 输入默认 delivery 的 UI 编排。
