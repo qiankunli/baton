@@ -153,16 +153,16 @@ describe("BatonChatProtocol view projection", () => {
     changed: () => void;
   };
 
-  test("idle agent status keeps the input target visible without run phase", async () => {
+  test("idle agent status explicitly confirms the provider is no longer running", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-agentstatus-"));
     try {
       const store = new SessionStore(root);
       const session = store.createSession({ cwd: "/repo" });
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
       const view = protocol.getView();
-      // 主行常驻：idle 退化为目标标识（provider · model），无相位/计时/中断提示
+      // 主行常驻：idle 显式可见，无计时/中断提示
       expect(view.runStatus).toHaveLength(1);
-      expect(view.runStatus?.[0]).toMatchObject({ author: "codex", label: "default" });
+      expect(view.runStatus?.[0]).toMatchObject({ author: "codex", label: "default · idle" });
       expect(view.runStatus?.[0]?.startedAt).toBeUndefined();
       expect(view.runStatus?.[0]?.hint).toBeUndefined();
       expect(view.footer).toStartWith(`session: ${session.id}  `);
