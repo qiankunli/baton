@@ -11,6 +11,7 @@ import type {
   PermissionOption,
   QuestionPrompt,
   StopReason,
+  ToolCallStatus,
 } from "../../events/types.ts";
 import { textOf } from "../../events/types.ts";
 import type {
@@ -69,6 +70,12 @@ interface ThreadRuntime {
   model?: string;
   /** 上次 tokenUsage.total 快照，差分成 usage_update 增量 */
   prevUsage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningOutputTokens: number };
+  /**
+   * 收到过 requestApproval 的 item：declined 终态的对账依据——某 item 被拒但从未
+   * 问过 baton，说明有 provider 侧策略（如 auto-review）替用户做了决定，必须显式
+   * 提示而不是静默渲染。启动参数注入（codexLaunchCommand）防已知配置，这里防未知。
+   */
+  approvalSeenItemIds?: Set<string>;
 }
 
 function codexModels(result: unknown): ModelOption[] {
@@ -181,6 +188,41 @@ function completedToolContent(itemType: string, item: Record<string, unknown>): 
   return undefined;
 }
 
+/**
+ * codex item 终态 → 内部 ToolCallStatus，白名单式：只有名单上的值有明确待遇，
+ * 未知终态一律悲观归 failed（宁可红了让人看一眼，不能默认绿勾——declined 曾
+ * 因"非 failed 即 completed"的乐观兜底被渲染成成功）。status 字段缺失时按
+ * completed 处理：item/completed 方法名本身就是完成语义，缺字段不是词汇漂移。
+ */
+const CODEX_TERMINAL_STATUS: Record<string, ToolCallStatus> = {
+  completed: "completed",
+  failed: "failed",
+  declined: "declined",
+};
+
+export function codexToolTerminalStatus(rawStatus: unknown): ToolCallStatus {
+  if (rawStatus === undefined || rawStatus === null || rawStatus === "") return "completed";
+  return CODEX_TERMINAL_STATUS[String(rawStatus)] ?? "failed";
+}
+
+/**
+ * 审批路由权归 adapter：baton 的产品前提是"危险操作的决策必须进 TUI 闭环"，而
+ * codex 侧的 auto-review 配置（~/.codex/config.toml 的 approvals_reviewer）会把
+ * 审批请求转给自动 reviewer、静默替用户拒绝，requestApproval 根本不会发给 baton。
+ * 这种正确性攸关的启动参数由拉起进程的一方保证，不托付给每台机器的用户配置；
+ * 用户命令里已显式写 approvals_reviewer 时尊重其覆盖（逃生口）。
+ */
+export function codexLaunchCommand(command?: string[]): string[] {
+  const base = command && command.length > 0 ? [...command] : ["codex", "app-server"];
+  if (base.some((arg) => arg.includes("approvals_reviewer"))) return base;
+  // 只对认识的命令形态说 codex 的方言：注入锚定 app-server 子命令（-c 是全局
+  // 配置覆盖，须位于子命令前）。没有 app-server 的命令（测试假进程、不透明
+  // wrapper）不乱动——猜错位置比不注入更糟。
+  const subcommandAt = base.indexOf("app-server");
+  if (subcommandAt < 0) return base;
+  return [...base.slice(0, subcommandAt), "-c", 'approvals_reviewer="user"', ...base.slice(subcommandAt)];
+}
+
 function stopReasonOf(turnStatus: string): StopReason {
   switch (turnStatus) {
     case "completed":
@@ -279,7 +321,7 @@ export class CodexAdapter implements AgentAdapter {
   constructor(private options: CodexAdapterOptions) {}
 
   async open(opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
-    const [cmd, ...args] = this.options.command ?? ["codex", "app-server"];
+    const [cmd, ...args] = codexLaunchCommand(this.options.command);
     const child = spawn(cmd as string, args, {
       cwd: opts.cwd,
       // 继承 HOME 等本机环境：凭证零持有，复用 ~/.codex 登录态（design §5.1）
@@ -618,6 +660,24 @@ export class CodexAdapter implements AgentAdapter {
             params,
           );
         } else if (itemType) {
+          const status = method === "item/started" ? "in_progress" : codexToolTerminalStatus(item.status);
+          // 对账：declined 却从未向 baton 发过 requestApproval → 决策权被 provider 侧
+          // 策略（auto-review 等）截走了，用户全程不知情。显式提示，不静默渲染。
+          if (status === "declined" && !rt.approvalSeenItemIds?.has(String(item.id))) {
+            this.emit(
+              rt,
+              {
+                kind: "_baton_notice",
+                provider: this.provider,
+                payload: {
+                  level: "warning",
+                  title: "Approval bypassed by provider-side policy",
+                  detail: `codex declined "${toolTitleOf(item)}" without asking you — check approvals_reviewer / auto-review in codex config`,
+                },
+              },
+              params,
+            );
+          }
           this.emit(
             rt,
             {
@@ -627,12 +687,7 @@ export class CodexAdapter implements AgentAdapter {
                 toolCallId: String(item.id),
                 title: toolTitleOf(item),
                 kind: toolKindOf(itemType),
-                status:
-                  method === "item/started"
-                    ? "in_progress"
-                    : String(item.status ?? "") === "failed"
-                      ? "failed"
-                      : "completed",
+                status,
                 // completed 携带的完整结果覆盖流式 chunk，兼作 outputDelta 丢失时的自愈点。
                 content:
                   method === "item/completed"
@@ -754,6 +809,12 @@ export class CodexAdapter implements AgentAdapter {
       case "item/permissions/requestApproval":
       case "execCommandApproval":
       case "applyPatchApproval": {
+        // 登记"问过 baton"的 item：declined 对账（见 approvalSeenItemIds）以此判定
+        // 拒绝是否出自用户之手。v1 两代方法用 callId 指代 item，一并登记。
+        for (const idField of [p.itemId, p.callId]) {
+          if (idField === undefined) continue;
+          (rt.approvalSeenItemIds ??= new Set()).add(String(idField));
+        }
         const requestId = String(p.approvalId ?? p.itemId ?? p.callId ?? newId("ar"));
         const title = approvalTitleOf(method, p);
         const request = {

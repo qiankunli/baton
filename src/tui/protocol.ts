@@ -510,10 +510,10 @@ export class BatonChatProtocol implements ChatProtocol {
 
 // baton 的状态类型是开放联合（容忍未知 wire 值），chat-tui 是闭集；
 // 未知值回落到与旧 TUI 相同的展示形态（工具 ⋯ / 计划 ☐）。
-const TOOL_STATUSES = new Set(["pending", "in_progress", "completed", "failed"]);
+const TOOL_STATUSES = new Set(["pending", "in_progress", "completed", "failed", "declined"]);
 const PLAN_STATUSES = new Set(["pending", "in_progress", "completed"]);
 
-function normalizeToolStatus(status: string): "pending" | "in_progress" | "completed" | "failed" {
+function normalizeToolStatus(status: string): "pending" | "in_progress" | "completed" | "failed" | "declined" {
   return (TOOL_STATUSES.has(status) ? status : "in_progress") as ReturnType<typeof normalizeToolStatus>;
 }
 
@@ -570,7 +570,15 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
     id: tc.toolCallId,
     kind: "tool",
     author: providerAuthor(tc.provider),
-    title: tc.kind === "execute" ? (status === "in_progress" ? "Running" : "Ran") : rawTitle,
+    // declined 的命令没有跑过，标题不能写 Ran（时态即事实）
+    title:
+      tc.kind === "execute"
+        ? status === "in_progress"
+          ? "Running"
+          : status === "declined"
+            ? "Declined"
+            : "Ran"
+        : rawTitle,
     status,
     content: content.length > 0 ? content : undefined,
   };
