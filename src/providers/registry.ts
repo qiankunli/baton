@@ -1,13 +1,12 @@
-// provider identity 的唯一权威：canonical id、wire/持久化 key、展示名、认色、
-// adapter 工厂全部挂在 ProviderDefinition 上。三套取值的对齐关系（id "claude" /
-// sessionKey "claude-code" / shortName "claude"）只在这里声明一次，
-// 任何按名字分发、贴标签、着色的代码都必须经本模块归一，不得手写字面量映射。
+// provider 运行时定义的唯一权威：轻量身份（id + aliases）来自 ids.ts，
+// wire/持久化 key、展示名、认色和 adapter 工厂在这里组装成 ProviderDefinition。
+// 任何按名字分发、贴标签、着色的代码都必须经本模块归一。
 
 import { ClaudeAdapter } from "../adapters/claude/adapter.ts";
 import { CodexAdapter } from "../adapters/codex/adapter.ts";
 import type { AgentAdapter, ApprovalHandler, QuestionHandler } from "../adapters/types.ts";
 import type { BatonConfig } from "../config/config.ts";
-import { PROVIDERS, parseProvider, type ProviderName } from "./ids.ts";
+import { PROVIDER_IDENTITIES, PROVIDERS, parseProvider, type ProviderName } from "./ids.ts";
 
 export { PROVIDERS, parseProvider, type ProviderName };
 
@@ -20,6 +19,8 @@ export interface ProviderAdapterOptions {
 export interface ProviderDefinition<Id extends string = string> {
   /** canonical id：用户侧词汇（slash command、--agent、config.defaultAgent） */
   id: Id;
+  /** 用户侧简写；输入时归一到 id，不进入事件或持久化 */
+  aliases: readonly string[];
   /** picker / 帮助文案里的展示长名 */
   label: string;
   /**
@@ -38,7 +39,7 @@ export interface ProviderDefinition<Id extends string = string> {
 /** 首批内置 provider；扩展支持只在这里注册，不进入 BatonSession core。 */
 export const PROVIDER_REGISTRY = [
   {
-    id: "codex",
+    ...PROVIDER_IDENTITIES.codex,
     label: "Codex",
     sessionKey: "codex",
     shortName: "codex",
@@ -47,7 +48,7 @@ export const PROVIDER_REGISTRY = [
       new CodexAdapter({ approvalHandler, questionHandler, command: config.codexCommand }),
   },
   {
-    id: "claude",
+    ...PROVIDER_IDENTITIES.claude,
     label: "Claude Code",
     sessionKey: "claude-code",
     shortName: "claude",
@@ -58,13 +59,13 @@ export const PROVIDER_REGISTRY = [
 ] as const satisfies readonly ProviderDefinition<ProviderName>[];
 
 /**
- * 按 canonical id **或** wire key 归一到 definition：消费方拿到的 provider 值
- * 可能来自用户输入（"claude"）也可能来自事件/持久化（"claude-code"），
- * 两个命名空间的反向映射只在这里。未知输入返回 undefined（provider 是开放扩展点）。
+ * 按 canonical id、alias **或** wire key 归一到 definition。
+ * 未知输入返回 undefined（provider 是开放扩展点）。
  */
 export function providerDefinitionFor(idOrSessionKey: string): ProviderDefinition | undefined {
+  const canonicalId = parseProvider(idOrSessionKey);
   return PROVIDER_REGISTRY.find(
-    (candidate) => candidate.id === idOrSessionKey || candidate.sessionKey === idOrSessionKey,
+    (candidate) => candidate.id === canonicalId || candidate.sessionKey === idOrSessionKey,
   );
 }
 

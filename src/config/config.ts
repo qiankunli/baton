@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 import { parse, stringify } from "yaml";
 
-import { PROVIDERS, type ProviderName } from "../providers/ids.ts";
+import { parseProvider, type ProviderName } from "../providers/ids.ts";
 
 export interface BatonConfig {
   /** 打开 TUI / REPL 时的默认 agent（canonical provider id） */
@@ -65,9 +65,10 @@ export function loadConfig(rootDir?: string): BatonConfig {
         ? fromFile.codexCommand
         : DEFAULT_CONFIG.codexCommand,
   };
-  if (!(PROVIDERS as readonly string[]).includes(merged.defaultAgent)) {
-    merged.defaultAgent = DEFAULT_CONFIG.defaultAgent;
-  }
+  merged.defaultAgent =
+    typeof merged.defaultAgent === "string"
+      ? (parseProvider(merged.defaultAgent) ?? DEFAULT_CONFIG.defaultAgent)
+      : DEFAULT_CONFIG.defaultAgent;
   if (!Number.isFinite(merged.mentionBudgetChars) || merged.mentionBudgetChars <= 0) {
     merged.mentionBudgetChars = DEFAULT_CONFIG.mentionBudgetChars;
   }

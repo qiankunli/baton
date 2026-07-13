@@ -86,12 +86,20 @@ describe("BatonChatProtocol status command", () => {
 });
 
 describe("BatonChatProtocol provider commands", () => {
-  test("switches the input target directly and rejects arguments", async () => {
+  test("switches the input target and sends a trailing message in one action", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-provider-command-"));
     try {
       const store = new SessionStore(root);
       const session = store.createSession({ cwd: "/repo" });
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+      const submitted: Array<{ provider: string; text: string }> = [];
+      const internals = protocol as unknown as {
+        runtime: { submit: (provider: string, blocks: Array<{ type: string; text?: string }>) => Promise<"completed"> };
+      };
+      internals.runtime.submit = async (provider, blocks) => {
+        submitted.push({ provider, text: blocks[0]?.text ?? "" });
+        return "completed";
+      };
 
       await protocol.command("claude", "");
       expect(protocol.getView().runStatus?.[0]).toMatchObject({ author: "claude" });
@@ -99,7 +107,26 @@ describe("BatonChatProtocol provider commands", () => {
       await protocol.command("codex", "");
       expect(protocol.getView().runStatus?.[0]).toMatchObject({ author: "codex" });
 
-      expect(protocol.command("claude", "extra")).rejects.toThrow("/claude takes no arguments");
+      await protocol.submit("/cc review this");
+      expect(protocol.getView().runStatus?.[0]).toMatchObject({ author: "claude" });
+      expect(submitted).toEqual([{ provider: "claude", text: "review this" }]);
+
+      await protocol.submit("/cx fix it");
+      expect(submitted.at(-1)).toEqual({ provider: "codex", text: "fix it" });
+
+      await protocol.command("claude", "explain it");
+      expect(submitted.at(-1)).toEqual({ provider: "claude", text: "explain it" });
+
+      await protocol.command("codex", "implement it");
+      expect(submitted.at(-1)).toEqual({ provider: "codex", text: "implement it" });
+
+      await protocol.submit("/c ambiguous");
+      expect(submitted).toHaveLength(4);
+      expect(protocol.getView().transcript.at(-1)).toMatchObject({
+        id: "_baton_provider_route_error",
+        author: "baton",
+        text: expect.stringContaining('provider prefix "/c" is ambiguous; matches codex, claude'),
+      });
       await protocol.exit();
     } finally {
       rmSync(root, { recursive: true, force: true });

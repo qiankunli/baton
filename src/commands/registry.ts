@@ -1,7 +1,7 @@
 // Baton 只实现自己承诺的命令，不透传各 provider TUI 的私有 slash command。
 // `/` 控制 baton/provider；`@` 只引用 baton session/turn/产物。
 
-import { PROVIDERS, parseProvider, type ProviderName } from "../providers/ids.ts";
+import { providerPrefixMatches, PROVIDERS, parseProvider, type ProviderName } from "../providers/ids.ts";
 
 export { PROVIDERS, parseProvider, type ProviderName };
 
@@ -48,3 +48,28 @@ export const COMMANDS: readonly CommandDefinition[] = [
   },
   { name: "exit", description: "Exit baton", scope: "baton", runPolicy: "always" },
 ];
+
+export interface MatchedProviderRoute {
+  kind: "matched";
+  provider: ProviderName;
+  message: string;
+}
+
+export interface AmbiguousProviderRoute {
+  kind: "ambiguous";
+  token: string;
+  providers: ProviderName[];
+}
+
+export type ProviderRoute = MatchedProviderRoute | AmbiguousProviderRoute;
+
+/** 未命中 baton command 时，将开头的 `/provider` token 按 id + aliases 唯一前缀路由。 */
+export function parseProviderRoute(input: string): ProviderRoute | null {
+  const match = /^\/([a-z-]+)(?:\s+([\s\S]*))?$/i.exec(input.trim());
+  if (!match) return null;
+  const token = match[1]?.toLowerCase() ?? "";
+  const providers = providerPrefixMatches(token);
+  if (providers.length === 0) return null;
+  if (providers.length > 1) return { kind: "ambiguous", token, providers };
+  return { kind: "matched", provider: providers[0]!, message: match[2]?.trim() ?? "" };
+}

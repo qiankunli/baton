@@ -15,7 +15,13 @@ import type {
   QuestionAnswers,
 } from "chat-tui";
 
-import { COMMANDS, parseProvider, type CommandName, type ProviderName } from "../commands/registry.ts";
+import {
+  COMMANDS,
+  parseProvider,
+  parseProviderRoute,
+  type CommandName,
+  type ProviderName,
+} from "../commands/registry.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
 import { textOf, type DiffBlock, type PromptBlock } from "../events/types.ts";
@@ -163,6 +169,28 @@ export class BatonChatProtocol implements ChatProtocol {
   // ===== 输入：TUI → baton =====
 
   async submit(text: string): Promise<void> {
+    const route = parseProviderRoute(text);
+    if (route?.kind === "ambiguous") {
+      this.status = null;
+      this.commandOutput = this.batonTranscriptItem(
+        "_baton_provider_route_error",
+        `Error: provider prefix "/${route.token}" is ambiguous; matches ${route.providers.join(", ")}. Use a longer provider name or alias.`,
+      );
+      this.changed();
+      return;
+    }
+    if (route?.kind === "matched") {
+      this.agent = route.provider;
+      this.status = null;
+      this.commandOutput = null;
+      this.changed();
+      if (!route.message) return;
+      return this.submitMessage(route.message);
+    }
+    return this.submitMessage(text);
+  }
+
+  private async submitMessage(text: string): Promise<void> {
     const target = this.agent;
     this.status = null;
     this.commandOutput = null;
@@ -203,6 +231,14 @@ export class BatonChatProtocol implements ChatProtocol {
 
   async command(name: string, argument: string): Promise<void> {
     if (name !== "status") this.commandOutput = null;
+    const provider = parseProvider(name);
+    if (provider) {
+      this.agent = provider;
+      this.status = null;
+      this.changed();
+      if (argument) await this.submitMessage(argument);
+      return;
+    }
     const command = name as CommandName;
     switch (command) {
       case "exit":
@@ -228,14 +264,6 @@ export class BatonChatProtocol implements ChatProtocol {
         if (argument) throw new Error("/status takes no arguments");
         this.status = null;
         this.commandOutput = this.sessionStatusItem();
-        this.changed();
-        return;
-      }
-      case "codex":
-      case "claude": {
-        if (argument) throw new Error(`/${command} takes no arguments`);
-        this.agent = command;
-        this.status = null;
         this.changed();
         return;
       }
@@ -390,7 +418,12 @@ export class BatonChatProtocol implements ChatProtocol {
       `Turns: ${this.state.turnSummaries.length} - tokens in ${this.state.usage.inputTokens} / out ${this.state.usage.outputTokens}`,
       `State: ${active ? `running (${active})` : "idle"} - queue ${this.runtime.queueLength}`,
     ].join("\n");
-    return { type: "message", id: "_baton_status", role: "agent", author: "baton", text, format: "plain" };
+    return this.batonTranscriptItem("_baton_status", text);
+  }
+
+  /** baton 自身也是 transcript author；这类 UI 反馈不写入 provider 会话历史。 */
+  private batonTranscriptItem(id: string, text: string): TranscriptItem {
+    return { type: "message", id, role: "agent", author: "baton", text, format: "plain" };
   }
 
   /** /sessions 会话内切换浮层；行投影与启动 session picker 共用 sessionPickerOptions */

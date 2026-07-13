@@ -47,6 +47,11 @@ describe("config", () => {
     expect(config.codexCommand).toEqual(["codex", "app-server"]);
   });
 
+  test("provider aliases are normalized to canonical ids", () => {
+    writeFileSync(configPath(root), "defaultAgent: cc\n");
+    expect(loadConfig(root).defaultAgent).toBe("claude");
+  });
+
   test("invalid values fall back to defaults", () => {
     writeFileSync(configPath(root), "defaultAgent: gpt5\nmentionBudgetChars: -1\ncodexCommand: []\n");
     const config = loadConfig(root);

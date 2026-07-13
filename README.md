@@ -69,8 +69,11 @@ If Claude Code uses a custom executable, set `claudeExecutable` in the configura
 Start the TUI and type a prompt to send it.
 
 ```text
-/claude              Switch to Claude Code
-/codex               Switch to Codex
+/claude or /cc       Switch to Claude Code
+/codex or /cx        Switch to Codex
+/cc <message>        Switch to Claude Code and send the message immediately
+/cx <message>        Switch to Codex and send the message immediately
+/cla <message>       Unique provider-name prefixes work too
 /model               Open the model picker for the active provider
 /model <id>          Select the model used by subsequent turns
 /sessions            Open the BatonSession picker
@@ -81,6 +84,8 @@ Esc                   Interrupt the current turn
 /exit                 Exit
 ```
 
+Ambiguous prefixes such as `/c <message>` are not sent to a provider; baton reports the matching providers in the transcript.
+
 Common CLI commands:
 
 ```bash
@@ -88,8 +93,8 @@ baton                              # Start the TUI
 baton --cwd /path/to/project       # Start in a specific project directory
 baton -c                           # Continue the latest session in this directory
 baton -s bs_01...                  # Open a specific BatonSession
-baton repl --agent codex           # Start the headless REPL with Codex
-baton repl --agent claude          # Start the headless REPL with Claude
+baton repl --agent codex           # Start the headless REPL with Codex (alias: cx)
+baton repl --agent claude          # Start the headless REPL with Claude (alias: cc)
 baton sessions                     # List sessions available for reference
 baton help                         # Show full help
 ```
