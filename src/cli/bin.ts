@@ -20,7 +20,7 @@ Usage:
   baton [--cwd <dir>] [-c|--continue] [-s|--session <id>]
                         start the chat TUI; creates a new BatonSession by default,
                         -c continues the latest session in the cwd, -s opens a
-                        specific session; /provider switches provider
+                        specific session; /codex and /claude switch provider
   baton repl [--agent codex|claude] [--cwd <dir>]   headless REPL
   baton resume [bs_xxx] resume a BatonSession in the TUI; without an id shows a
                         session list first (enter resume · esc new session ·

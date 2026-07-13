@@ -5,7 +5,7 @@ import { PROVIDERS, parseProvider, type ProviderName } from "../providers/ids.ts
 
 export { PROVIDERS, parseProvider, type ProviderName };
 
-export type CommandName = "provider" | "model" | "sessions" | "status" | "new" | "exit";
+export type CommandName = ProviderName | "model" | "sessions" | "status" | "new" | "exit";
 
 export interface CommandDefinition {
   name: CommandName;
@@ -16,12 +16,12 @@ export interface CommandDefinition {
 }
 
 export const COMMANDS: readonly CommandDefinition[] = [
-  {
-    name: "provider",
-    description: "Select the input target (codex / claude)",
+  ...PROVIDERS.map((name) => ({
+    name,
+    description: `Switch the input target to ${name}`,
     scope: "baton",
     runPolicy: "always",
-  },
+  }) satisfies CommandDefinition),
   {
     name: "model",
     description: "Set the model for the current provider's next turns",
@@ -48,4 +48,3 @@ export const COMMANDS: readonly CommandDefinition[] = [
   },
   { name: "exit", description: "Exit baton", scope: "baton", runPolicy: "always" },
 ];
-

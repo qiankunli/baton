@@ -85,6 +85,28 @@ describe("BatonChatProtocol status command", () => {
   });
 });
 
+describe("BatonChatProtocol provider commands", () => {
+  test("switches the input target directly and rejects arguments", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-provider-command-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+
+      await protocol.command("claude", "");
+      expect(protocol.getView().runStatus?.[0]).toMatchObject({ author: "claude" });
+
+      await protocol.command("codex", "");
+      expect(protocol.getView().runStatus?.[0]).toMatchObject({ author: "codex" });
+
+      expect(protocol.command("claude", "extra")).rejects.toThrow("/claude takes no arguments");
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("BatonChatProtocol view projection", () => {
   type ViewInternals = {
     state: {

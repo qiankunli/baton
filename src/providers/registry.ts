@@ -18,7 +18,7 @@ export interface ProviderAdapterOptions {
 }
 
 export interface ProviderDefinition<Id extends string = string> {
-  /** canonical id：用户侧词汇（/provider、--agent、config.defaultAgent） */
+  /** canonical id：用户侧词汇（slash command、--agent、config.defaultAgent） */
   id: Id;
   /** picker / 帮助文案里的展示长名 */
   label: string;

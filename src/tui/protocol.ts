@@ -15,7 +15,7 @@ import type {
   QuestionAnswers,
 } from "chat-tui";
 
-import { COMMANDS, parseProvider, PROVIDERS, type CommandName, type ProviderName } from "../commands/registry.ts";
+import { COMMANDS, parseProvider, type CommandName, type ProviderName } from "../commands/registry.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
 import { textOf, type DiffBlock, type PromptBlock } from "../events/types.ts";
@@ -183,7 +183,8 @@ export class BatonChatProtocol implements ChatProtocol {
 
   async command(name: string, argument: string): Promise<void> {
     if (name !== "status") this.commandOutput = null;
-    switch (name as CommandName) {
+    const command = name as CommandName;
+    switch (command) {
       case "exit":
         return this.exit();
       case "new": {
@@ -210,18 +211,10 @@ export class BatonChatProtocol implements ChatProtocol {
         this.changed();
         return;
       }
-      case "provider": {
-        if (!argument) {
-          this.openPicker({
-            title: "Select provider",
-            options: PROVIDERS.map((p) => ({ name: p, description: `Switch to ${p}`, value: p })),
-            onSelect: (value) => this.setAgent(value),
-          });
-          return;
-        }
-        const provider = parseProvider(argument);
-        if (!provider) throw new Error(`Unknown provider: ${argument} (available: ${PROVIDERS.join(" / ")})`);
-        this.agent = provider;
+      case "codex":
+      case "claude": {
+        if (argument) throw new Error(`/${command} takes no arguments`);
+        this.agent = command;
         this.status = null;
         this.changed();
         return;
@@ -355,14 +348,6 @@ export class BatonChatProtocol implements ChatProtocol {
     this.changed();
   }
 
-  private setAgent(value: string): void {
-    const provider = parseProvider(value);
-    if (provider) {
-      this.agent = provider;
-      this.changed();
-    }
-  }
-
   private async configureModel(target: ProviderName, model: { id: string; label: string }): Promise<void> {
     await this.runtime.setModel(target, model.id);
     this.status = { text: `${target} model: ${model.label} (takes effect next turn)`, tone: "info" };
@@ -427,7 +412,7 @@ export class BatonChatProtocol implements ChatProtocol {
     const selectedBusy = active === this.agent;
     // Agent Status（贴 composer 顶部）：主行=当前输入目标（provider · model）常驻，
     // 运行相位（语义合成在 baton：phase/retry/thinking）仅 busy 时附加；跳秒由组件按 startedAt 自理。
-    // 输入目标 ≠ 正在运行的 provider 时（运行中切了 /provider），运行者单独一行——
+    // 输入目标 ≠ 正在运行的 provider 时（运行中用 /codex 或 /claude 切换），运行者单独一行——
     // 未来 provider 上报的子 agent 状态也走附加行（best-effort），行形状已就绪。
     const activeTurnId = this.runtime.activeTurnId;
     const runStatus: RunStatusItem[] = [
@@ -517,7 +502,7 @@ export class BatonChatProtocol implements ChatProtocol {
             ? "Enter steers current turn"
             : "Ctrl+J newline"
       })`,
-      header: `baton · session ${this.session.id}\ntype to chat · /provider switch · /sessions open · @bs_xxx reference another session\n`,
+      header: `baton · session ${this.session.id}\ntype to chat · /codex or /claude switch · /sessions open · @bs_xxx reference another session\n`,
       showThoughts: this.config.showThoughts,
     };
   }
