@@ -40,13 +40,13 @@ export function userVisibleText(text: string): string {
 }
 
 /**
- * Run status 文案合成（design §5.9）：运行阶段（compacting…）覆盖默认 thinking；
+ * Run status 文案合成（design §5.9）：显式阶段 / retry / 进行中工具依次覆盖默认 thinking；
  * willRetry 错误仅当它是最新事件时显示 retrying——其后一旦有任何事件即视为已恢复，
  * 避免"重试成功后 retrying 挂到 turn 结束"。
  * phase 按 turn 取（并发 turn 各有各的阶段）；turnId 缺省时退化为任一带 phase 的 turn。
  */
 export function runStatusLabel(
-  state: Pick<SessionState, "activeTurns" | "lastError" | "lastSeq">,
+  state: Pick<SessionState, "activeTurns" | "toolCalls" | "lastError" | "lastSeq">,
   turnId?: string,
 ): string {
   const phase =
@@ -55,6 +55,26 @@ export function runStatusLabel(
       : [...state.activeTurns.values()].find((turn) => turn.phase)?.phase;
   if (phase) return phase.title ?? `${phase.phase}…`;
   if (state.lastError?.willRetry && state.lastError.seq === state.lastSeq) return "retrying…";
+  const tool = [...state.toolCalls.values()]
+    .reverse()
+    .find(
+      (candidate) =>
+        (candidate.status === "pending" || candidate.status === "in_progress") &&
+        (turnId === undefined || candidate.turnId === turnId),
+    );
+  if (tool) {
+    const labels: Record<string, string> = {
+      read: "reading…",
+      edit: "editing…",
+      delete: "deleting…",
+      move: "moving…",
+      search: "searching…",
+      execute: "running command…",
+      think: "thinking…",
+      fetch: "fetching…",
+    };
+    return labels[tool.kind ?? ""] ?? `${tool.title?.split(":", 1)[0]?.trim() || "using tool"}…`;
+  }
   return "thinking…";
 }
 

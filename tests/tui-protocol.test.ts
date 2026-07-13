@@ -376,7 +376,7 @@ describe("toolTranscriptItem", () => {
 // 不经过 BatonChatProtocol）；/sessions 的会话内切换浮层仍由 protocol 承载。
 
 describe("runStatusLabel", () => {
-  const base = { activeTurns: new Map(), lastError: undefined, lastSeq: 5 };
+  const base = { activeTurns: new Map(), toolCalls: new Map(), lastError: undefined, lastSeq: 5 };
   const withPhase = (turnId: string, phase: { phase: string; title?: string }) => ({
     ...base,
     activeTurns: new Map([[turnId, { turnId, origin: "user" as const, state: "running" as const, phase }]]),
@@ -391,6 +391,27 @@ describe("runStatusLabel", () => {
       "Compacting context…",
     );
     expect(runStatusLabel(withPhase("t1", { phase: "warming" }), "t1")).toBe("warming…");
+  });
+
+  test("shows the current tool activity instead of generic thinking", () => {
+    const toolCalls = new Map([
+      [
+        "tc1",
+        {
+          toolCallId: "tc1",
+          turnId: "t1",
+          title: "Read: /repo/src/main.ts",
+          kind: "read",
+          status: "in_progress",
+          content: [],
+          locations: [],
+        },
+      ],
+    ]);
+    expect(runStatusLabel({ ...base, toolCalls }, "t1")).toBe("reading…");
+    expect(runStatusLabel({ ...base, toolCalls }, "t2")).toBe("thinking…");
+    toolCalls.get("tc1")!.status = "completed";
+    expect(runStatusLabel({ ...base, toolCalls }, "t1")).toBe("thinking…");
   });
 
   test("phase is per-turn: another turn's phase does not leak", () => {
