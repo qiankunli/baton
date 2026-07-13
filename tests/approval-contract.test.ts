@@ -40,6 +40,16 @@ describe("approval loop closes through the host (all adapters)", () => {
     });
     expect(events.map((e) => e.kind)).toEqual(["permission_request", "permission_resolved"]);
     expect(result).toEqual({ decision: "accept" });
+    expect(events[0]!.payload).toMatchObject({
+      title: "Run command?",
+      description: "bun install",
+      options: [
+        { optionId: "accept" },
+        { optionId: "acceptForSession" },
+        { optionId: "decline" },
+        { optionId: "cancel" },
+      ],
+    });
     const resolved = events[1]!.payload as { requestId: string; optionId: string };
     expect(resolved.optionId).toBe("accept");
   });

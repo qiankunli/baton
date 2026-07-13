@@ -495,7 +495,12 @@ export class BatonChatProtocol implements ChatProtocol {
         ? { id: this.picker.id, title: this.picker.title, options: this.picker.options }
         : null,
       approval: approval
-        ? { id: approval.requestId, title: approval.title, options: approval.options }
+        ? {
+            id: approval.requestId,
+            title: approval.title,
+            description: approval.description,
+            options: approval.options,
+          }
         : null,
       question: question
         ? {
@@ -512,7 +517,7 @@ export class BatonChatProtocol implements ChatProtocol {
           }
         : null,
       status: this.status,
-      footer: `session:${this.session.id}  in:${v.usage.inputTokens} out:${v.usage.outputTokens}  turns:${v.turnSummaries.length}  queue:${this.runtime.queueLength}${planActive ? `  plan:${planEntries.filter((entry) => entry.status === "completed").length}/${planEntries.length}` : ""}  cwd:${this.session.meta.cwd}`,
+      footer: `session: ${this.session.id}  in:${v.usage.inputTokens} out:${v.usage.outputTokens}  turns:${v.turnSummaries.length}  queue:${this.runtime.queueLength}${planActive ? `  plan:${planEntries.filter((entry) => entry.status === "completed").length}/${planEntries.length}` : ""}  cwd:${this.session.meta.cwd}`,
       // ↑ 召回提示只在"可召回"时出现：交互发生地是 composer（placeholder 天然只在空输入时可见）
       // busy 且可 steer 时提示 Enter 的实际语义（design §3.2：delivery 对用户可见、可预期）
       composerPlaceholder: `Message ${this.agent} (/ commands, @ mentions, ${
