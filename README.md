@@ -40,13 +40,13 @@ On top of these, three directions are on the roadmap (**none implemented yet**):
 Install baton with npm. You also need at least one supported agent installed and authenticated ([Codex CLI](https://github.com/openai/codex) / [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)).
 
 ```bash
-npm install -g @qiankunli/baton
+npm install -g @qiankun01/baton
 ```
 
 Or run it once without a global install:
 
 ```bash
-npx @qiankunli/baton
+npx @qiankun01/baton
 ```
 
 On first run, baton creates `~/.baton/config.yaml`:

@@ -4,7 +4,7 @@
 const { spawnSync } = require("node:child_process");
 const { dirname, join } = require("node:path");
 
-const packageName = "@qiankunli/baton";
+const packageName = "@qiankun01/baton";
 
 let bunPackage;
 try {

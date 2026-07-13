@@ -40,13 +40,13 @@ baton 是一个 terminal-native 的统一 coding agent 会话，受 [tutti](http
 使用 npm 安装 baton。此外需要安装并登录至少一个受支持的 agent（[Codex CLI](https://github.com/openai/codex) / [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)）。
 
 ```bash
-npm install -g @qiankunli/baton
+npm install -g @qiankun01/baton
 ```
 
 也可以不做全局安装，直接运行一次：
 
 ```bash
-npx @qiankunli/baton
+npx @qiankun01/baton
 ```
 
 首次运行会生成 `~/.baton/config.yaml`：
