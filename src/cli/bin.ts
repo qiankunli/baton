@@ -2,7 +2,7 @@
 // baton 统一命令入口（bun link 后全局可用）：
 //   baton            交互式 TUI（默认）
 //   baton tui        同上
-//   baton repl       headless REPL（--agent codex|claude）
+//   baton repl       headless REPL（--agent codex|cx|claude|cc）
 //   baton resume     继续 BatonSession（无参 = cwd 最近一个，同 -c）
 //   baton fork       fork BatonSession 并进入新会话
 //   baton sessions   列出本机 baton 会话
@@ -20,8 +20,8 @@ Usage:
   baton [--cwd <dir>] [-c|--continue] [-s|--session <id>]
                         start the chat TUI; creates a new BatonSession by default,
                         -c continues the latest session in the cwd, -s opens a
-                        specific session; /codex and /claude switch provider
-  baton repl [--agent codex|claude] [--cwd <dir>]   headless REPL
+                        specific session; /codex (/cx) and /claude (/cc) switch provider
+  baton repl [--agent codex|cx|claude|cc] [--cwd <dir>]   headless REPL
   baton resume [bs_xxx] resume a BatonSession in the TUI; without an id shows a
                         session list first (enter resume · esc new session ·
                         ctrl+c quit; starts fresh if there is no session yet)

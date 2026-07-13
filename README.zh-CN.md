@@ -69,8 +69,11 @@ showThoughts: true
 启动 TUI 后直接输入内容即可发送。
 
 ```text
-/claude              切换到 Claude Code
-/codex               切换到 Codex
+/claude 或 /cc        切换到 Claude Code
+/codex 或 /cx         切换到 Codex
+/cc <消息>           切换到 Claude Code 并立即发送消息
+/cx <消息>           切换到 Codex 并立即发送消息
+/cla <消息>          provider 名的唯一前缀也可使用
 /model               打开当前 provider 的模型选择器
 /model <id>          设置后续 turn 使用的模型
 /sessions            打开 BatonSession 选择器
@@ -81,6 +84,8 @@ Esc                   中断当前 turn
 /exit                 退出
 ```
 
+`/c <消息>` 这类歧义前缀不会发送给 provider；baton 会在 transcript 中列出匹配到的 provider。
+
 常用 CLI 命令：
 
 ```bash
@@ -88,8 +93,8 @@ baton                              # 启动 TUI
 baton --cwd /path/to/project       # 在指定项目目录启动
 baton -c                           # 继续当前目录最近的 BatonSession
 baton -s bs_01...                  # 打开指定 BatonSession
-baton repl --agent codex           # 使用 Codex 的 headless REPL
-baton repl --agent claude          # 使用 Claude 的 headless REPL
+baton repl --agent codex           # 使用 Codex 的 headless REPL（别名：cx）
+baton repl --agent claude          # 使用 Claude 的 headless REPL（别名：cc）
 baton sessions                     # 查看可引用的历史会话
 baton help                         # 查看完整帮助
 ```

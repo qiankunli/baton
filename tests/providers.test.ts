@@ -17,6 +17,8 @@ const approvalHandler = async () => ({ optionId: "deny" });
 describe("provider registry", () => {
   test("registers the first bundled providers and their native session keys", () => {
     expect(PROVIDERS).toEqual(["codex", "claude"]);
+    expect(PROVIDER_REGISTRY.find((provider) => provider.id === "codex")?.aliases).toEqual(["cx"]);
+    expect(PROVIDER_REGISTRY.find((provider) => provider.id === "claude")?.aliases).toEqual(["cc"]);
     expect(providerSessionKey("codex")).toBe("codex");
     expect(providerSessionKey("claude")).toBe("claude-code");
   });
@@ -30,6 +32,7 @@ describe("provider registry", () => {
   test("normalizes canonical id and wire key to one definition (三套命名空间的唯一汇合点)", () => {
     // 用户侧 "claude" 与事件/持久化侧 "claude-code" 归到同一个 definition
     expect(providerDefinitionFor("claude")).toBe(providerDefinitionFor("claude-code"));
+    expect(providerDefinitionFor("cc")).toBe(providerDefinitionFor("claude"));
     expect(providerDefinitionFor("claude")?.id).toBe("claude");
     expect(providerDefinitionFor("codex")?.sessionKey).toBe("codex");
     // provider 是开放扩展点：未知输入不 throw
@@ -47,9 +50,11 @@ describe("provider registry", () => {
     }
   });
 
-  test("parseProvider accepts canonical ids only (wire key 不是用户词汇)", () => {
+  test("parseProvider accepts canonical ids and user aliases (wire key 不是用户词汇)", () => {
     expect(parseProvider("claude")).toBe("claude");
     expect(parseProvider(" CODEX ")).toBe("codex");
+    expect(parseProvider("cc")).toBe("claude");
+    expect(parseProvider("CX")).toBe("codex");
     expect(parseProvider("claude-code")).toBeNull();
     expect(parseProvider("gpt")).toBeNull();
   });
