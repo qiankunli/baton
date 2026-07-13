@@ -109,12 +109,12 @@ baton stores its data in `~/.baton/` by default:
 ```text
 ~/.baton/
 ├── config.yaml
-└── sessions/<session-id>/
+└── projects/<cwd-escaped>/<session-id>/
     ├── meta.json
     └── session.jsonl
 ```
 
-`session.jsonl` is the durable logical history used for rendering, recovery, provider handoff, and cross-session references. Claude Code and Codex still manage their private native sessions; baton stores their IDs only to accelerate resume and never modifies their native session files.
+Sessions are grouped by working directory under `projects/`; the original `cwd` is stored in `meta.json`. `session.jsonl` is the durable logical history used for rendering, recovery, provider handoff, and cross-session references. Claude Code and Codex still manage their private native sessions; baton stores their IDs only to accelerate resume and never modifies their native session files.
 
 ## License
 
