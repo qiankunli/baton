@@ -13,6 +13,7 @@
   },
   "files": [
     "src",
+    "config.yaml.example",
     "README.md",
     "README.zh-CN.md"
   ],

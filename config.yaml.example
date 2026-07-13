@@ -1,0 +1,18 @@
+# Copy this file to ~/.baton/config.yaml and adjust the values you need.
+
+# Provider used when baton starts. Supported values: codex, claude.
+defaultAgent: codex
+
+# Optional: custom Claude Code executable, such as a company wrapper.
+claudeExecutable: claude
+
+# Codex must run in headless app-server mode.
+codexCommand:
+  - codex
+  - app-server
+
+# Maximum number of characters injected for session mentions and provider handoffs.
+mentionBudgetChars: 4096
+
+# Show agent reasoning in the timeline.
+showThoughts: true
