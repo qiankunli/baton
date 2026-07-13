@@ -28,6 +28,7 @@ baton/
 │   ├── user-input-lifecycle.md # 用户输入：queue/steer/recall/interrupt 生命周期与待决场景
 │   ├── provider-output-lifecycle.md # provider 输出/感知：归一、终态收口、丢事件自愈与对账
 │   ├── provider-interaction-design.md # 输入/输出、用户交互与 Adapter 协议演进方案
+│   ├── chat-cli-experience.md # 终端 chat 体验维度清单（归属层 + 现状），长期积累
 │   └── resume-fork.md       # resume/fork 语义、会话锁与 crash recovery 的 why
 ├── src/
 │   ├── events/              # 内部事件模型（词汇对齐 ACP v2）

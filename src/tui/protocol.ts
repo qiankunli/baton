@@ -132,6 +132,12 @@ export class BatonChatProtocol implements ChatProtocol {
   private listeners = new Set<() => void>();
   private view: ChatViewState;
   private unsubscribeSession: () => void;
+  // 输入历史（shell 式 ↑/↓ 回溯）：会话级，从事件流的 user 消息种入、提交时追加。
+  // 事件流是真相源——不另存磁盘文件；resume/切换会话后 loadState 重建 state 即可重新种入。
+  private history: string[] = [];
+  private historyCursor: number | null = null; // null = 未浏览（正在编辑草稿）
+  private historyStash: string | null = null; // 进入浏览前暂存的草稿，越过最新时恢复
+  private lastHistoryText: string | null = null; // 上次召回的条目，判定用户是否改动过
 
   constructor(
     private readonly store: SessionStore,
@@ -148,6 +154,7 @@ export class BatonChatProtocol implements ChatProtocol {
     // 投影单通道：live 与 resume 走同一条 reduce 路径（loadState 补历史 + subscribe 跟增量），
     // 不从 per-turn 回调取事件——provider 自发回合（observed turn）没有对应的 submit 调用。
     this.state = this.session.loadState();
+    this.seedHistoryFromState();
     this.unsubscribeSession = this.subscribeSession(this.session);
     this.view = this.buildView();
   }
@@ -196,6 +203,9 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   private async submitMessage(text: string): Promise<void> {
+    // 用户实际提交的内容进历史；一次新提交结束当前的 ↑ 浏览会话。
+    this.recordHistory(text);
+    this.resetHistoryNav();
     const target = this.agent;
     this.status = null;
     this.commandOutput = null;
@@ -351,11 +361,74 @@ export class BatonChatProtocol implements ChatProtocol {
   recallQueued(): { text: string } | null {
     const recalled = this.runtime.recallLatestQueued();
     if (!recalled) return null;
+    // 召回队列是另一种取回动作，结束进行中的历史浏览，避免游标错位。
+    this.resetHistoryNav();
     const provider = parseProvider(recalled.provider);
     if (provider) this.agent = provider;
     this.status = { text: `Recalled queued message for ${recalled.provider}; edit and resend`, tone: "info" };
     this.changed();
     return { text: userVisibleText(textOf(recalled.blocks)) };
+  }
+
+  /**
+   * ↑ 历史回溯（shell 式）。current 为输入框当前内容：首次进入浏览时暂存为草稿并跳到
+   * 最新一条；连续浏览时若 current 已偏离上次召回的条目，说明用户改过 → 返回 null 让
+   * TUI 放行为普通光标移动。已到最旧则停住（返回 null）。
+   */
+  historyPrev(current: string): { text: string } | null {
+    if (this.history.length === 0) return null;
+    if (this.historyCursor === null) {
+      this.historyStash = current;
+      this.historyCursor = this.history.length - 1;
+    } else {
+      if (this.lastHistoryText !== null && current !== this.lastHistoryText) return null;
+      if (this.historyCursor === 0) return null;
+      this.historyCursor -= 1;
+    }
+    const text = this.history[this.historyCursor]!;
+    this.lastHistoryText = text;
+    return { text };
+  }
+
+  /** ↓ 历史前进，与 historyPrev 对称；越过最新条目时恢复进入浏览前暂存的草稿并退出浏览。 */
+  historyNext(current: string): { text: string } | null {
+    if (this.historyCursor === null) return null;
+    if (this.lastHistoryText !== null && current !== this.lastHistoryText) return null;
+    if (this.historyCursor + 1 >= this.history.length) {
+      const stash = this.historyStash ?? "";
+      this.resetHistoryNav();
+      return { text: stash };
+    }
+    this.historyCursor += 1;
+    const text = this.history[this.historyCursor]!;
+    this.lastHistoryText = text;
+    return { text };
+  }
+
+  /** 追加一条输入历史（相邻去重、跳过空白）；提交与从事件流种入共用。 */
+  private recordHistory(text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (this.history[this.history.length - 1] === trimmed) return;
+    this.history.push(trimmed);
+  }
+
+  private resetHistoryNav(): void {
+    this.historyCursor = null;
+    this.historyStash = null;
+    this.lastHistoryText = null;
+  }
+
+  /** 从当前 state 的 user 消息重建输入历史（resume / 切换会话后重新种入 ↑ 回溯来源）。 */
+  private seedHistoryFromState(): void {
+    this.history = [];
+    for (const entry of this.state.timeline) {
+      if (entry.type !== "message") continue;
+      const msg = this.state.messages.get(entry.id);
+      if (!msg || msg.role !== "user") continue;
+      this.recordHistory(userVisibleText(textOf(msg.content)));
+    }
+    this.resetHistoryNav();
   }
 
   /** @ 候选源，注入给 ChatShell */
@@ -394,6 +467,7 @@ export class BatonChatProtocol implements ChatProtocol {
     this.commandOutput = null;
     this.runtime = this.createRuntime();
     this.state = next.session.loadState();
+    this.seedHistoryFromState();
     this.unsubscribeSession = this.subscribeSession(next.session);
     this.status = next.recovered
       ? { text: `Opened session ${next.session.id} (recovered an interrupted turn)`, tone: "info" }
