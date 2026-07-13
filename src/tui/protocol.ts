@@ -464,7 +464,8 @@ export class BatonChatProtocol implements ChatProtocol {
     const selectedModel = this.runtime.currentModel(this.agent) ?? "default";
     const selectedBusy = active === this.agent;
     // Agent Status（贴 composer 顶部）：主行=当前输入目标（provider · model）常驻，
-    // 运行相位（语义合成在 baton：phase/retry/thinking）仅 busy 时附加；跳秒由组件按 startedAt 自理。
+    // 运行相位（语义合成在 baton：phase/retry/thinking）仅 busy 时附加；idle 显式常驻，
+    // 让用户在中断后能确认 provider 已真正收口。跳秒由组件按 startedAt 自理。
     // 输入目标 ≠ 正在运行的 provider 时（运行中用 /codex 或 /claude 切换），运行者单独一行——
     // 未来 provider 上报的子 agent 状态也走附加行（best-effort），行形状已就绪。
     const activeTurnId = this.runtime.activeTurnId;
@@ -477,7 +478,7 @@ export class BatonChatProtocol implements ChatProtocol {
             startedAt: this.runtime.activeStartedAt,
             hint: "Esc to interrupt",
           }
-        : { id: `agent:${this.agent}`, author: providerAuthor(this.agent), label: selectedModel },
+        : { id: `agent:${this.agent}`, author: providerAuthor(this.agent), label: `${selectedModel} · idle` },
     ];
     if (active !== undefined && !selectedBusy) {
       runStatus.push({
