@@ -2,6 +2,7 @@ import {
   isContextSynchronizable,
   isModelConfigurable,
   isNativeSessionIdentifiable,
+  isReconcilable,
   isSteerable,
   type AgentAdapter,
   type ApprovalDecision,
@@ -62,6 +63,12 @@ interface TurnRecord {
   status: "active" | "finalized";
   startedAt: number;
   stopReason?: StopReason;
+  /** 停滞观测：命中该 turn 的任何事件都刷新（onAdapterEvent 单点 stamp） */
+  lastActivityTs: number;
+  /** 已发过 stall notice 且未清除——去重发射，并在活动恢复时补 cleared */
+  stalled?: boolean;
+  /** 对账探针在途——防止同一 turn 的多次 stall tick 重叠发起 reconcile */
+  reconciling?: boolean;
   /** driven 专属：入队原件（canSteer/steer 需要用户侧 provider 名）。finalize 后由 retire 释放 */
   turn?: QueuedTurn;
   /** driven 专属：finalize 时 resolve，释放 drain 循环推进队列。finalize 后由 retire 释放 */
@@ -106,12 +113,40 @@ export interface BatonSessionRuntimeOptions {
    * 合法的长任务不应被误杀）。
    */
   cancelGraceMs?: number;
+  /**
+   * 活跃 turn 静默多久算停滞。到期只发 `_baton_stall_notice`（可见 + 供对账
+   * reconcile 触发），**绝不 finalize**——见 StallNotice 与 §4.1。默认较大以避免误报。
+   */
+  stallThresholdMs?: number;
+  /** 停滞扫描间隔；仅在有活跃 turn 时运行，全部收口后自停 */
+  stallPollMs?: number;
 }
 
 const DEFAULT_CANCEL_GRACE_MS = 10_000;
+const DEFAULT_STALL_THRESHOLD_MS = 120_000;
+const DEFAULT_STALL_POLL_MS = 10_000;
+const RECONCILE_TIMEOUT_MS = 15_000;
 
 /** 打断标记文案：cancelled 终态时落一条 notice，TUI 时间线醒目提示（对齐 Codex 的体验） */
 export const INTERRUPTED_NOTICE_TITLE = "Conversation interrupted — tell the agent what to do differently";
+
+/** 探针超时护栏：对账本身若挂住不能反过来拖住 runtime，超时按 reject 处理（读作 unknown）。 */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("reconcile probe timeout")), ms);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 /**
  * 一个 BatonSession 的唯一 turn 编排入口：统一负责 provider 恢复、上下文追平与全局串行。
@@ -152,6 +187,8 @@ export class BatonSessionRuntime {
    */
   private readonly pendingApprovals = new Map<string, (d: ApprovalDecision) => void>();
   private readonly pendingQuestions = new Map<string, (d: QuestionDecision) => void>();
+  /** 停滞扫描器：懒启动（有活跃 turn 才跑）、无活跃 turn 时自停、close 时清除 */
+  private stallMonitor?: ReturnType<typeof setInterval>;
 
   constructor(private readonly options: BatonSessionRuntimeOptions) {}
 
@@ -356,6 +393,7 @@ export class BatonSessionRuntime {
   }
 
   async close(): Promise<void> {
+    this.stopStallMonitor();
     const closing: Promise<void>[] = [];
     for (const slot of this.slots.values()) {
       if (slot.ref) closing.push(slot.adapter.close(slot.ref).catch(() => {}));
@@ -404,11 +442,13 @@ export class BatonSessionRuntime {
       provider: providerKey,
       status: "active",
       startedAt: Date.now(),
+      lastActivityTs: Date.now(),
       turn,
       release,
     };
     this.turns.set(turn.turnId, record);
     this.activeDrivenTurnId = turn.turnId;
+    this.ensureStallMonitor();
     const knownProviderSessionId = this.options.session.meta.providerSessions[providerKey]?.providerSessionId;
     this.onAdapterEvent(slot, {
       kind: "user_message",
@@ -539,6 +579,9 @@ export class BatonSessionRuntime {
    */
   private onAdapterEvent(slot: ProviderSlot, ev: AnyNewEvent): void {
     const envelope = this.options.session.append(ev) as AnyEventEnvelope;
+    // 停滞观测：命中活跃 turn 的任何事件都刷新进展时钟；曾停滞则补 cleared 撤除提示。
+    // 放在这里（唯一事件入口）保证不漏，且在下面的生命周期路由之前先刷新。
+    this.refreshActivity(envelope.turnId);
     if (envelope.kind === "state_update") {
       const p = envelope.payload;
       if (p.state === "running" && p.origin === "provider" && envelope.turnId) {
@@ -551,7 +594,9 @@ export class BatonSessionRuntime {
             provider: slot.adapter.provider,
             status: "active",
             startedAt: Date.now(),
+            lastActivityTs: Date.now(),
           });
+          this.ensureStallMonitor();
         }
       } else if (p.state === "idle") {
         // 终态一律按 baton turn id 查表路由（不看 slot）。无 turnId 的终态：
@@ -722,6 +767,100 @@ export class BatonSessionRuntime {
 
   private snapshot(turn: QueuedTurn): QueuedTurnSnapshot {
     return { id: turn.id, turnId: turn.turnId, provider: turn.provider, blocks: [...turn.blocks] };
+  }
+
+  /** 刷新 turn 进展时钟；曾停滞的 turn 在活动恢复时补发 cleared 撤除提示。 */
+  private refreshActivity(turnId: string | undefined): void {
+    if (!turnId) return;
+    const record = this.turns.get(turnId);
+    if (!record || record.status !== "active") return;
+    record.lastActivityTs = Date.now();
+    if (record.stalled) {
+      record.stalled = false;
+      this.options.session.append({
+        kind: "_baton_stall_notice",
+        provider: record.provider,
+        turnId,
+        payload: { stalledMs: 0, cleared: true },
+      });
+      this.changed();
+    }
+  }
+
+  /** 懒启动停滞扫描器（幂等）。只在有活跃 turn 时创建，checkStalls 无活跃 turn 时自停。 */
+  private ensureStallMonitor(): void {
+    if (this.stallMonitor) return;
+    const pollMs = this.options.stallPollMs ?? DEFAULT_STALL_POLL_MS;
+    this.stallMonitor = setInterval(() => this.checkStalls(), pollMs);
+    // 扫描器不应阻止进程退出（headless / 测试）——真正的收口靠事件与 close()
+    this.stallMonitor.unref?.();
+  }
+
+  /**
+   * 扫描活跃 turn，静默超阈值发一次 `_baton_stall_notice`（按 record.stalled 去重）。
+   * 纯观测——不 finalize、不 cancel（§4.1 不设强制 finalize watchdog）。无活跃 turn 时自停。
+   */
+  private checkStalls(): void {
+    const threshold = this.options.stallThresholdMs ?? DEFAULT_STALL_THRESHOLD_MS;
+    const now = Date.now();
+    let active = 0;
+    for (const record of this.turns.values()) {
+      if (record.status !== "active") continue;
+      active++;
+      const gap = now - record.lastActivityTs;
+      if (gap < threshold) continue;
+      if (!record.stalled) {
+        record.stalled = true;
+        this.options.session.append({
+          kind: "_baton_stall_notice",
+          provider: record.provider,
+          turnId: record.turnId,
+          payload: { stalledMs: gap },
+        });
+        this.changed();
+      }
+      // 每个停滞 tick 尝试对账（有能力时）。放在标记之后——即便对账让它自愈，
+      // 用户也已（短暂）看到过 stall；reconciling 去重防重叠，探针 idle 才收口。
+      void this.reconcileStalled(record);
+    }
+    if (active === 0) this.stopStallMonitor();
+  }
+
+  /**
+   * 对账：turn 停滞时查 provider 侧真实运行态，把"猜"升级成"问"。
+   * - `idle` → provider 已结束、baton 漏了终态：合成 idle 走正常 finalize（自愈，含 summary）；
+   * - 其余（active / waiting_* / unknown / 探针失败）→ 保留 stall 提示，交用户 cancel。
+   * **只有 idle 裁决才收口**——不确定一律不动终态，守住"悲观不静默判死"。未声明 reconcile
+   * 能力的 provider（如 Claude）直接返回，只走停滞提示。
+   */
+  private async reconcileStalled(record: TurnRecord): Promise<void> {
+    const adapter = record.slot.adapter;
+    const ref = record.slot.ref;
+    if (!ref || !adapter.capabilities.reconcile || !isReconcilable(adapter)) return;
+    if (record.reconciling) return;
+    record.reconciling = true;
+    try {
+      const verdict = await withTimeout(adapter.reconcile(ref, record.turnId), RECONCILE_TIMEOUT_MS);
+      if (record.status !== "active") return; // 期间已被真实终态收口，裁决作废
+      if (verdict.state === "idle") {
+        this.onAdapterEvent(record.slot, {
+          kind: "state_update",
+          provider: record.provider,
+          turnId: record.turnId,
+          payload: { state: "idle", stopReason: "reconciled" },
+        });
+      }
+    } catch {
+      // 探针超时/报错 = unknown：保守不收口，保留 stall 提示。
+    } finally {
+      record.reconciling = false;
+    }
+  }
+
+  private stopStallMonitor(): void {
+    if (!this.stallMonitor) return;
+    clearInterval(this.stallMonitor);
+    this.stallMonitor = undefined;
   }
 
   private changed(): void {

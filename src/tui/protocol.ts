@@ -55,6 +55,13 @@ export function runStatusLabel(
   state: Pick<SessionState, "activeTurns" | "toolCalls" | "lastError" | "lastSeq">,
   turnId?: string,
 ): string {
+  // 停滞观测优先于一切阶段/工具文案：卡住的 turn 若还显示 "running command…" 会误导
+  // （停滞观测，见 docs/provider-output-lifecycle.md §5）。这里只呈现，不改 runState/busy。
+  const stalled =
+    turnId !== undefined
+      ? state.activeTurns.get(turnId)?.stalled
+      : [...state.activeTurns.values()].some((turn) => turn.stalled);
+  if (stalled) return "no response — may be stuck";
   const phase =
     turnId !== undefined
       ? state.activeTurns.get(turnId)?.phase

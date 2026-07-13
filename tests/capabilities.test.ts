@@ -29,6 +29,7 @@ const CAPABILITY_CONTRACT: Record<string, string[]> = {
   "interactions.permission": ["respond"],
   "interactions.question": ["respond"],
   "interactions.elicitation": ["respond"],
+  reconcile: ["reconcile"],
 };
 
 function capabilityAt(adapter: AgentAdapter, path: string): unknown {

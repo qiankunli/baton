@@ -290,6 +290,20 @@ export interface Notice {
 }
 
 /**
+ * turn 静默停滞观测事件（停滞观测，见 docs/provider-output-lifecycle.md §5）。turnId 在信封上。
+ * 纯观测：标记"活跃 turn 长时间无任何事件"，供投影提示与后续对账（reconcile）触发。
+ * **绝不驱动 finalize**——provider-interaction-design.md §4.1 明确不设强制 finalize 的
+ * watchdog（合法长任务不该被误杀）；收口只由真实终态、reconcile 的 idle 裁决或用户
+ * cancel 触发。stalled 是可自愈的观测态：活动恢复即发 cleared=true 撤除提示。
+ */
+export interface StallNotice {
+  /** 触发时已静默的毫秒数（cleared 事件为 0） */
+  stalledMs: number;
+  /** true = 停滞解除（活动恢复或已收口），投影据此清除提示 */
+  cleared?: boolean;
+}
+
+/**
  * 短寿命运行阶段快照（compacting…），见 docs/design.md §5.2 归一表"运行阶段"行。
  * phase 开放字符串（forward-compat）；null = 阶段结束，投影层回落默认 thinking。
  * 刻意不塞 state_update：那是驱动 busy/idle finalize 的生命周期语义（§5.9）。
@@ -353,6 +367,7 @@ export type EventPayloadMap = {
   context_usage_update: ContextUsageUpdate;
   _baton_error_update: ErrorUpdate;
   _baton_notice: Notice;
+  _baton_stall_notice: StallNotice;
   _baton_run_status: RunStatusUpdate;
   _baton_turn_summary: TurnSummary;
 };
