@@ -116,8 +116,9 @@ interface AgentAdapter {
   - 已提升：`ApprovalReviewUpdate` 带 `reviewId`（`arv_` 前缀），reduce 按 reviewId 归档、首见入 timeline；adapter 只在 reviewer 终态铸一条回执；无 target 的 review 也留痕、同一操作多次决策各自成条；未知 decision fail-closed 到 failed。详见 `approval-lifecycle.md` §3。
   - 待续：`reviewer / authority` 尚未建模为显式字段（当前 reviewer 恒为 codex auto-review）；多 provider 出现不同 reviewer 时再按 §5 判据提升。
 
-- **封闭终态词表 + 共享保守归一器**——把不变量 #2 从"每种事件各自发明白名单"变成一处结构保证（未知终态 → 保守态的单一 helper）。
-  - 现状：tool 终态已保守（fail-closed），但审批 review decision 的 `else → in_progress`、`StopReason` 的开放 string union 仍在破它。
+- **封闭终态词表 + 共享保守归一器（已落地）**——不变量 #2 从"每种事件各自发明白名单"收成一处结构保证：`closedTerminal(raw, table, fallback, emptyAs?)`（`src/adapters/normalize.ts`）在 adapter 边界把 provider 开放 / UNSTABLE 终态映射到内部闭集，未知一律保守回落。
+  - 已提升：codex tool 终态（→ `ToolCallStatus`）与 auto-review decision（→ 闭合三态 `approved/denied/aborted`）都走此原语在 adapter 边界收口；`ApprovalReviewUpdate.decision` 已收窄为闭合 union，reduce / 投影不再面对开放值。新 provider 的终态翻译复用此原语即得 fail-closed 纪律。
+  - 关于 `StopReason`：**有意保持开放**（forward-compat 元数据）。它不破坏"每个 turn 恰好收口一次"——`idle` 无条件发出、turn 照常 finalize；唯一分支（`role==="driven" && stopReason==="cancelled"`）是正向判定，未知值安全落到默认路径。故不强行封闭，原始 reason 透传供展示 / @ 引用。
 
 - **展示态双轴（chat-tui 侧，纯展示取舍）**——lifecycle/outcome（completed / failed / declined）与 tone/severity（warning…）正交。
   - 现状：`TranscriptBlockStatus` 单一 union 同时承担进度与"跑了但需留痕"，两个语义共用一个颜色 token。

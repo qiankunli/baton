@@ -209,8 +209,11 @@ export interface ApprovalReviewUpdate {
   reviewId: string;
   /** 被审操作对应的 tool call / item id（对齐 codex targetItemId）；缺省表示无具体目标（如网络策略审查） */
   toolCallId?: string;
-  /** reviewer 终态决策；未知值按 fail-closed 保守呈现（不当成"审核中"） */
-  decision: "approved" | "denied" | "aborted" | (string & {});
+  /**
+   * reviewer 终态决策，**闭合三态**：adapter 边界已 fail-closed 收口（未知 → aborted），
+   * 内部不再面对开放值。approved→留痕、denied→拒绝、aborted→未决/异常（投影呈 failed）。
+   */
+  decision: "approved" | "denied" | "aborted";
   /** provider 给出时透传的风险等级 */
   riskLevel?: "low" | "medium" | "high" | "critical" | (string & {});
   /** reviewer 评估的授权等级（非“回退给用户”，不改变委托语义） */

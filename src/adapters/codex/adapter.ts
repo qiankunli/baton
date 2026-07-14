@@ -5,6 +5,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { newId } from "../../events/ids.ts";
+import { closedTerminal } from "../normalize.ts";
 import type {
   ContentBlock,
   DiffBlock,
@@ -191,10 +192,9 @@ function completedToolContent(itemType: string, item: Record<string, unknown>): 
 }
 
 /**
- * codex item 终态 → 内部 ToolCallStatus，白名单式：只有名单上的值有明确待遇，
- * 未知终态一律悲观归 failed（宁可红了让人看一眼，不能默认绿勾——declined 曾
- * 因"非 failed 即 completed"的乐观兜底被渲染成成功）。status 字段缺失时按
- * completed 处理：item/completed 方法名本身就是完成语义，缺字段不是词汇漂移。
+ * codex item 终态 → 内部 ToolCallStatus，白名单式（走 closedTerminal 统一纪律）：只有名单上
+ * 的值有明确待遇，未知终态一律悲观归 failed；status 缺失按 completed（item/completed 方法名
+ * 本身即完成语义，缺字段不是词汇漂移）。
  */
 const CODEX_TERMINAL_STATUS: Record<string, ToolCallStatus> = {
   completed: "completed",
@@ -203,9 +203,19 @@ const CODEX_TERMINAL_STATUS: Record<string, ToolCallStatus> = {
 };
 
 export function codexToolTerminalStatus(rawStatus: unknown): ToolCallStatus {
-  if (rawStatus === undefined || rawStatus === null || rawStatus === "") return "completed";
-  return CODEX_TERMINAL_STATUS[String(rawStatus)] ?? "failed";
+  return closedTerminal(rawStatus, CODEX_TERMINAL_STATUS, "failed", "completed");
 }
+
+/**
+ * codex auto-review 终态 → 内部 ApprovalReviewUpdate.decision（闭合三态）。在 adapter 边界收口：
+ * 未知 / 空（含 UNSTABLE 的 inProgress 混入 completed）一律保守归 aborted（投影呈 failed），
+ * 绝不乐观当 approved。闭合值进事件流后，reduce / 投影不再面对开放 decision。
+ */
+const CODEX_REVIEW_DECISION: Record<string, "approved" | "denied" | "aborted"> = {
+  approved: "approved",
+  denied: "denied",
+  aborted: "aborted",
+};
 
 /**
  * 审批路由权归 adapter：默认 reviewer=user，让危险操作进入 TUI 闭环；只有用户显式
@@ -729,8 +739,7 @@ export class CodexAdapter implements AgentAdapter {
         // 带独立 reviewId 的审计回执（kernel.md §6）。这样无需关联 started/completed，无 target /
         // 同一操作多次决策都各自成条。codex 不给 review 自身 id，reviewId 由 adapter 铸。
         if (method.endsWith("/completed")) {
-          const rawStatus = String(review.status ?? "");
-          const decision = rawStatus === "inProgress" ? "in_progress" : rawStatus || "aborted";
+          const decision = closedTerminal(review.status, CODEX_REVIEW_DECISION, "aborted");
           this.emit(
             rt,
             {
