@@ -23,6 +23,14 @@ baton 是一个 terminal-native 的统一 coding agent 会话，受 [tutti](http
 - **上下文收录**：主线不是全量流水账，而是用户认可的正典历史。草稿会话出了成果后，由用户决定将结论合入主线还是丢弃；丢弃不等于删除，草稿仍持久、可再引用。
 - **事件驱动的长期 loop**：监听代码提交、PR 合并等外部事件，重新唤醒对应会话继续后续工作，让 agent 不止活在交互式终端里。
 
+## 架构速览
+
+baton 是一条双向流水线：chat-tui 只承载 `intent`/`render`，runtime 拥有 `PendingInput` 与 driven-turn 队列，adapter 把各 provider 的 wire 归一成同一条事件流，`session.jsonl` 落盘持久化。事件流是唯一真相源，UI 是它的投影。
+
+![baton 内核：一条双向流水线](docs/kernel-pipeline.png)
+
+稳定内核（核心概念、不变量、流水线、provider 扩展契约）见 [`docs/kernel.md`](docs/kernel.md)。
+
 ## 功能
 
 - 在同一个终端界面中使用 Claude Code 和 Codex

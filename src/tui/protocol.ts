@@ -722,8 +722,8 @@ function approvalReviewTranscriptItem(review: ApprovalReviewUpdate): TranscriptI
     review.userAuthorization ? `authorization: ${review.userAuthorization}` : undefined,
   ].filter(Boolean);
   const suffix = facts.length > 0 ? ` (${facts.join(", ")})` : "";
-  // decision 是终态回执；一个状态只表达一种语义（approved→warning 留痕，denied→declined）；
-  // 未知决策 fail-closed 到 failed，不乐观回落成"审核中"（kernel.md §2 不变量 #2）。
+  // decision 已在 adapter 边界收口为闭合三态（kernel.md §2 不变量 #2）；一个状态只表达一种语义：
+  // approved→warning 留痕，denied→declined，aborted（未决/异常）→failed。此处对闭集穷尽映射。
   const status =
     review.decision === "approved" ? "warning" : review.decision === "denied" ? "declined" : "failed";
   return {
