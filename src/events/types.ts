@@ -173,10 +173,27 @@ export interface PlanUpdate {
   entries: PlanEntry[];
 }
 
+/**
+ * 审批选项的两根**正交**轴（同 §6 展示轴的双轴教训：混进单一 union 就会让两件事争用
+ * 一个状态位）。曾经的单字段 `kind` 把极性与范围压成一维，直接导致 codex 的
+ * "永久拉黑某 host"（network amendment action=deny）被映射成 `allow_always`——
+ * 最危险的选项长得最安全。
+ *
+ * **两轴都只是渲染提示**（定色、排序、确认力度），**不是授权语义的真相**：
+ * 授权"作用于什么"（本次调用 / 该工具 / 命令前缀 / host / 同一批文件）是 provider
+ * 方言，闭不了包——codex 自己的 `acceptForSession` 对 command 是"session 审批缓存"、
+ * 对 file change 是"同一批文件"。作用对象只由 `name` 承载（provider 原话，如
+ * "Allow and remember: make -C devloop bump-version"）。**UI 不得用两轴合成标签**，
+ * 合成出来的 "Allow · persistent" 必然丢掉作用对象。
+ */
 export interface PermissionOption {
   optionId: string;
+  /** provider 原话标签——**唯一权威的语义来源**，含作用对象。UI 展示它，不要重造。 */
   name: string;
-  kind: "allow_once" | "allow_always" | "reject_once" | "reject_always" | (string & {});
+  /** 极性：闭合、跨 provider 稳定。 */
+  polarity: "allow" | "reject";
+  /** 时间跨度：闭合三档。只表达"多久"，不表达"作用于什么"。 */
+  persistence: "once" | "session" | "persistent";
 }
 
 // Request ↔ Response 交互轴（provider 询问用户 ↔ 用户答复，见 provider-interaction-design.md

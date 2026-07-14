@@ -103,45 +103,25 @@ describe("codex terminal status whitelist", () => {
   });
 });
 
-describe("codex approval routing is pinned by the adapter", () => {
-  test("default and custom commands get approvals_reviewer=auto_review injected before app-server", () => {
-    expect(codexLaunchCommand(undefined)).toEqual([
-      "codex",
-      "-c",
-      'approvals_reviewer="auto_review"',
-      "app-server",
-    ]);
+describe("codex launch command is not a policy channel", () => {
+  // 审批路由曾经靠往 argv 注入 -c approvals_reviewer 实现：既盖掉用户的 codex 配置，
+  // 又反推不出生效值（企业 requirements 能把注入值打回）。现在它只负责挑二进制，
+  // 路由走 thread/start 原生参数（见 codex-session.test.ts）。
+  test("the command is passed through untouched", () => {
+    expect(codexLaunchCommand(undefined)).toEqual(["codex", "app-server"]);
     expect(codexLaunchCommand(["/opt/codex", "app-server", "--verbose"])).toEqual([
       "/opt/codex",
-      "-c",
-      'approvals_reviewer="auto_review"',
       "app-server",
       "--verbose",
     ]);
+    const escapeHatch = ["codex", "-c", 'approvals_reviewer="user"', "app-server"];
+    expect(codexLaunchCommand(escapeHatch)).toEqual(escapeHatch);
+    const wrapper = ["bun", "-e", "fake-server-script"];
+    expect(codexLaunchCommand(wrapper)).toEqual(wrapper);
   });
+});
 
-  test("explicit user review is injected while command-level overrides still win", () => {
-    expect(codexLaunchCommand(undefined, "user")).toEqual([
-      "codex",
-      "-c",
-      'approvals_reviewer="user"',
-      "app-server",
-    ]);
-    const command = ["codex", "-c", 'approvals_reviewer="auto_review"', "app-server"];
-    expect(codexLaunchCommand(command, "user")).toEqual(command);
-  });
-
-  test("an explicit approvals_reviewer in the user command is respected (escape hatch)", () => {
-    const command = ["codex", "-c", 'approvals_reviewer="agent"', "app-server"];
-    expect(codexLaunchCommand(command)).toEqual(command);
-  });
-
-  test("commands without the app-server subcommand are left untouched", () => {
-    // 假进程/不透明 wrapper：adapter 不理解其参数语言，猜错注入位置比不注入更糟
-    const command = ["bun", "-e", "fake-server-script"];
-    expect(codexLaunchCommand(command)).toEqual(command);
-  });
-
+describe("codex approval routing is pinned by the adapter", () => {
   test("declined without a prior requestApproval emits a bypass warning notice", () => {
     const { events, notify } = codexServerRequestHarness("decline");
     notify("item/completed", {
@@ -179,16 +159,84 @@ describe("codex approval routing is pinned by the adapter", () => {
 
     expect(events[0]?.payload).toMatchObject({
       options: [
-        { optionId: "accept", name: "Allow once", kind: "allow_once" },
+        { optionId: "accept", name: "Allow once", polarity: "allow", persistence: "once" },
         {
           optionId: "acceptWithExecpolicyAmendment:1",
+          // 作用对象（命令前缀）只在 name 里——两轴表达不了它，UI 也不许拿两轴合成标签
           name: "Allow and remember: make -C devloop bump-version",
-          kind: "allow_always",
+          polarity: "allow",
+          persistence: "persistent",
         },
-        { optionId: "cancel", name: "Deny and interrupt turn", kind: "reject_always" },
+        { optionId: "cancel", name: "Deny and interrupt turn", polarity: "reject", persistence: "once" },
       ],
     });
     expect(result).toEqual({ decision: structuredDecision });
+  });
+
+  test("a deny network amendment is a reject, not an allow", async () => {
+    // codex 会提议"永久拉黑某 host"（NetworkPolicyRuleAction::Deny）。极性压进单一 kind 的
+    // 年代，它被映射成 allow_always + "Allow and remember: deny evil.com"——最危险的选项
+    // 长得最安全。两轴把它钉成 reject。
+    const denyRule = {
+      applyNetworkPolicyAmendment: {
+        network_policy_amendment: { host: "evil.example.com", action: "deny" },
+      },
+    };
+    const { events, request } = codexServerRequestHarness("applyNetworkPolicyAmendment:0");
+    await request("item/commandExecution/requestApproval", {
+      threadId: "th1",
+      itemId: "cmd1",
+      command: "curl https://evil.example.com",
+      availableDecisions: [denyRule],
+    });
+    expect(events[0]?.payload).toMatchObject({
+      options: [
+        {
+          optionId: "applyNetworkPolicyAmendment:0",
+          name: "Deny and remember: evil.example.com",
+          polarity: "reject",
+          persistence: "persistent",
+        },
+      ],
+    });
+  });
+
+  test("an allow network amendment keeps allow polarity", async () => {
+    const allowRule = {
+      applyNetworkPolicyAmendment: {
+        network_policy_amendment: { host: "registry.npmjs.org", action: "allow" },
+      },
+    };
+    const { events, request } = codexServerRequestHarness("applyNetworkPolicyAmendment:0");
+    await request("item/commandExecution/requestApproval", {
+      threadId: "th1",
+      itemId: "cmd1",
+      command: "npm install",
+      availableDecisions: [allowRule],
+    });
+    expect(events[0]?.payload).toMatchObject({
+      options: [
+        {
+          optionId: "applyNetworkPolicyAmendment:0",
+          name: "Allow and remember: registry.npmjs.org",
+          polarity: "allow",
+          persistence: "persistent",
+        },
+      ],
+    });
+  });
+
+  test("availableDecisions baton cannot map at all fall back to an answerable card", async () => {
+    // 非空但一项都认不出（codex 改名 / 新增第三种 amendment）时，逐项映射会得到空数组
+    // → 零选项审批卡 → 用户无从作答、turn 永久挂起。宁可退回四选项也不能失去应答能力。
+    const { events, request } = codexServerRequestHarness("accept");
+    await request("item/commandExecution/requestApproval", {
+      threadId: "th1",
+      itemId: "cmd1",
+      command: "bun install",
+      availableDecisions: ["someFutureDecision", { unknownAmendment: {} }],
+    });
+    expect((events[0]?.payload as { options: unknown[] }).options).toHaveLength(4);
   });
 
   test("auto-review notifications emit authoritative receipts and suppress the heuristic warning", () => {

@@ -164,7 +164,7 @@ describe("BatonChatProtocol view projection", () => {
       expect(view.runStatus).toHaveLength(1);
       expect(view.runStatus?.[0]).toMatchObject({
         author: "codex",
-        label: "default · idle · approvals:auto-review",
+        label: "default · idle",
       });
       expect(view.runStatus?.[0]?.startedAt).toBeUndefined();
       expect(view.runStatus?.[0]?.hint).toBeUndefined();
@@ -241,7 +241,9 @@ describe("BatonChatProtocol view projection", () => {
 });
 
 describe("BatonChatProtocol transcript projection", () => {
-  test("renders auto-review receipts beside the target tool and keeps delegation globally visible", async () => {
+  // 委托状态是否可见改由 adapter 报告的生效路由驱动（见 session-runtime.test.ts）：
+  // 投影不再读 config——config 是意图，且投影层不得按 provider 分支（不变量 #3）。
+  test("renders auto-review receipts beside the target tool", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-auto-review-"));
     try {
       const store = new SessionStore(root);
@@ -265,8 +267,7 @@ describe("BatonChatProtocol transcript projection", () => {
           rationale: "Auto-review returned a low-risk allow decision.",
         },
       });
-      const config = { ...DEFAULT_CONFIG, codexApprovalReviewer: "auto_review" as const };
-      const protocol = new BatonChatProtocol(store, config, { session, resumed: false }, () => undefined);
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
 
       const toolIndex = protocol.getView().transcript.findIndex((item) => item.id === "tc1");
       // 展示双轴：approved 的 outcome 是 completed（审到底了，不被遮成 warning），
@@ -279,8 +280,6 @@ describe("BatonChatProtocol transcript projection", () => {
         title: "Automatic approval review approved (risk: low, authorization: unknown)",
         content: { type: "text", text: "Auto-review returned a low-risk allow decision." },
       });
-      expect(protocol.getView().runStatus?.[0]?.label).toContain("approvals:auto-review");
-      expect(protocol.getView().footer).not.toContain("approvals:auto-review");
       await protocol.exit();
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -507,8 +506,8 @@ describe("runStatusLabel", () => {
 
 describe("interaction eventization: pending projects from the event stream", () => {
   const APPROVAL_OPTIONS = [
-    { optionId: "allow", name: "Allow", kind: "allow_once" as const },
-    { optionId: "deny", name: "Deny", kind: "reject_once" as const },
+    { optionId: "allow", name: "Allow", polarity: "allow" as const, persistence: "once" as const },
+    { optionId: "deny", name: "Deny", polarity: "reject" as const, persistence: "once" as const },
   ];
 
   test("approval card follows permission_request/resolved events; stale answer is a hint, not a crash", async () => {

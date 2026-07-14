@@ -11,10 +11,12 @@ codexCommand:
   - codex
   - app-server
 
-# Codex approvals default to its automatic reviewer. Set user to keep approval
-# decisions in the baton TUI. Auto-review decisions remain visible as per-tool
-# audit receipts and in Agent Status.
-codexApprovalReviewer: auto_review # auto_review | user
+# Optional: who reviews Codex approvals. Leave unset (the default) to follow
+# Codex's own resolution — your ~/.codex/config.toml, profiles and any enterprise
+# requirements all apply, and Codex itself defaults to user. Set this only to
+# override that for baton-launched sessions. Delegated decisions stay visible as
+# per-tool audit receipts and in Agent Status.
+# codexApprovalReviewer: auto_review # auto_review | user
 
 # Maximum number of characters injected for session mentions and provider handoffs.
 mentionBudgetChars: 4096

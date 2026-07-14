@@ -28,6 +28,7 @@ import type {
   ProviderSessionRef,
   RequestHandler,
   SteerReceipt,
+  ApprovalRoute,
 } from "../types.ts";
 import { unsupportedPromptBlocks } from "../types.ts";
 import { JsonRpcPeer } from "./jsonrpc.ts";
@@ -55,6 +56,8 @@ interface ThreadRuntime {
   child: ChildProcessWithoutNullStreams;
   peer: JsonRpcPeer;
   threadId: string;
+  /** codex 回吐的生效审批路由（权威）；null = 本次没问出来，投影据此静默。 */
+  approvalRoute: ApprovalRoute | null;
   sink?: EventSink;
   /** 最近一次 submit 的 baton turn id：迟到通知（tokenUsage 等）也用它标注信封 */
   turnId?: string;
@@ -99,11 +102,19 @@ function codexModels(result: unknown): ModelOption[] {
   return models;
 }
 
+// codex CommandExecutionApprovalDecision / FileChangeApprovalDecision 的字符串成员。
+// 注意 cancel 的 "deny + 中断 turn"：中断属于 Control 轴，不是更强的拒绝范围——
+// 两轴上它与 decline 同为 (reject, once)，差别只由 name 承载。
 const FALLBACK_APPROVAL_OPTIONS: PermissionOption[] = [
-  { optionId: "accept", name: "Allow once", kind: "allow_once" },
-  { optionId: "acceptForSession", name: "Allow for this session", kind: "allow_always" },
-  { optionId: "decline", name: "Deny (agent continues)", kind: "reject_once" },
-  { optionId: "cancel", name: "Deny and interrupt turn", kind: "reject_always" },
+  { optionId: "accept", name: "Allow once", polarity: "allow", persistence: "once" },
+  {
+    optionId: "acceptForSession",
+    name: "Allow for this session",
+    polarity: "allow",
+    persistence: "session",
+  },
+  { optionId: "decline", name: "Deny (agent continues)", polarity: "reject", persistence: "once" },
+  { optionId: "cancel", name: "Deny and interrupt turn", polarity: "reject", persistence: "once" },
 ];
 
 interface CodexApprovalChoice {
@@ -127,8 +138,10 @@ function structuredApprovalChoice(decision: unknown, index: number): CodexApprov
     return {
       option: {
         optionId: `acceptWithExecpolicyAmendment:${index}`,
+        // 作用对象（命令前缀）只能进 name：它是 codex 方言，两轴表达不了。
         name: `Allow and remember: ${prefix}`,
-        kind: "allow_always",
+        polarity: "allow",
+        persistence: "persistent",
       },
       decision,
     };
@@ -136,14 +149,17 @@ function structuredApprovalChoice(decision: unknown, index: number): CodexApprov
   if (record.applyNetworkPolicyAmendment !== undefined) {
     const payload = record.applyNetworkPolicyAmendment as Record<string, unknown>;
     const amendment = payload?.network_policy_amendment as Record<string, unknown> | undefined;
-    const rule = amendment?.host
-      ? `${String(amendment.action ?? "allow")} ${String(amendment.host)}`
-      : "this network rule";
+    // action 可以是 deny——codex 会提议"永久拉黑某 host"。它与 allow 同为 amendment，
+    // 但极性相反；当成 allow 渲染会让最危险的选项长得最安全（曾经如此）。
+    const deny = String(amendment?.action ?? "allow") === "deny";
+    const verb = deny ? "Deny" : "Allow";
+    const target = amendment?.host ? String(amendment.host) : "this network rule";
     return {
       option: {
         optionId: `applyNetworkPolicyAmendment:${index}`,
-        name: `Allow and remember: ${rule}`,
-        kind: "allow_always",
+        name: `${verb} and remember: ${target}`,
+        polarity: deny ? "reject" : "allow",
+        persistence: "persistent",
       },
       decision,
     };
@@ -151,19 +167,25 @@ function structuredApprovalChoice(decision: unknown, index: number): CodexApprov
   return undefined;
 }
 
-/** Codex 给出精确候选时逐项映射；老版本缺字段才退回稳定的四选项。 */
+/**
+ * Codex 给出精确候选时逐项映射；缺字段（老版本）或**一项都认不出**时退回稳定四选项。
+ *
+ * 后半条是要害：availableDecisions 非空但全部不认识（codex 改了 decision 名、加了第三种
+ * amendment），逐项映射会得到空数组 → 审批卡零选项 → 用户无从作答，turn 永久挂起。
+ * 认不出就退回一定能作答的集合，宁可少一个精确选项也不能失去应答能力（不变量 #2）。
+ */
 export function codexApprovalChoices(params: Record<string, unknown>): CodexApprovalChoice[] {
   const available = params.availableDecisions;
-  if (!Array.isArray(available) || available.length === 0) {
-    return FALLBACK_APPROVAL_OPTIONS.map((option) => ({ option, decision: option.optionId }));
-  }
-  return available.flatMap((decision, index) => {
+  const fallback = () => FALLBACK_APPROVAL_OPTIONS.map((option) => ({ option, decision: option.optionId }));
+  if (!Array.isArray(available) || available.length === 0) return fallback();
+  const choices = available.flatMap((decision, index) => {
     const choice =
       typeof decision === "string"
         ? simpleApprovalChoice(decision)
         : structuredApprovalChoice(decision, index);
     return choice ? [choice] : [];
   });
+  return choices.length > 0 ? choices : fallback();
 }
 
 /** item.type → 内部 tool kind；agentMessage/reasoning/plan 不是 tool，单独处理 */
@@ -279,27 +301,25 @@ const CODEX_REVIEW_DECISION: Record<string, "approved" | "denied" | "aborted"> =
 };
 
 /**
- * 审批路由权归 adapter：默认 reviewer=auto_review，让越界审批由 reviewer 处理并以
- * 权威回执留痕；用户仍可显式切回 TUI 人工审批。启动参数由拉起进程的一方保证，不隐式
- * 继承机器上的全局设置；用户命令里已写 reviewer 时尊重其覆盖（逃生口）。
+ * 审批路由**不由 baton 定默认**：`thread/start` 原生收 `approvalsReviewer`，缺省
+ * （undefined）就交给 codex 自己解析——config.toml、profile、企业 requirements 全部照常
+ * 生效，baton 与 codex 天然一致。codex 自己的默认是 `user`（且 guardian feature 开着
+ * 也不变），baton 没有比上游更激进的理由。用户显式配了才传，作为 opt-in 委托。
+ *
+ * 曾经的做法是往 argv 注入 `-c approvals_reviewer=...`：既覆盖了用户的 codex 配置，
+ * 又反推不出生效值——企业 requirements（allowed_approvals_reviewers）能把注入的值打回，
+ * 让 footer 撒谎。生效值只认 thread/start|resume 响应的回吐（见 approvalRoute）。
  */
-export function codexLaunchCommand(
-  command?: string[],
-  approvalReviewer: "user" | "auto_review" = "auto_review",
-): string[] {
-  const base = command && command.length > 0 ? [...command] : ["codex", "app-server"];
-  if (base.some((arg) => arg.includes("approvals_reviewer"))) return base;
-  // 只对认识的命令形态说 codex 的方言：注入锚定 app-server 子命令（-c 是全局
-  // 配置覆盖，须位于子命令前）。没有 app-server 的命令（测试假进程、不透明
-  // wrapper）不乱动——猜错位置比不注入更糟。
-  const subcommandAt = base.indexOf("app-server");
-  if (subcommandAt < 0) return base;
-  return [
-    ...base.slice(0, subcommandAt),
-    "-c",
-    `approvals_reviewer="${approvalReviewer}"`,
-    ...base.slice(subcommandAt),
-  ];
+export function codexLaunchCommand(command?: string[]): string[] {
+  return command && command.length > 0 ? [...command] : ["codex", "app-server"];
+}
+
+/** codex 方言 → 归一路由。未知取值不猜（不变量 #2）。 */
+function approvalRouteOf(reviewer: unknown): ApprovalRoute | null {
+  if (reviewer === "user") return "user";
+  // guardian_subagent 是 auto_review 的 wire alias（codex ApprovalsReviewer serde alias）
+  if (reviewer === "auto_review" || reviewer === "guardian_subagent") return "delegated";
+  return null;
 }
 
 function stopReasonOf(turnStatus: string): StopReason {
@@ -361,19 +381,36 @@ function missingThread(error: unknown): boolean {
   return /thread.*not found|no rollout found|session.*not found/i.test(message);
 }
 
-/** 恢复优先；原生 thread 已丢失时新建，BatonSession 会在宿主层补齐历史。 */
+/** thread/start|resume 响应回吐的生效 reviewer（非可选字段）；缺失只降级为"不知道"。 */
+function routeFrom(response: unknown): ApprovalRoute | null {
+  const record = response && typeof response === "object" ? (response as Record<string, unknown>) : {};
+  return approvalRouteOf(record.approvalsReviewer);
+}
+
+/**
+ * 恢复优先；原生 thread 已丢失时新建，BatonSession 会在宿主层补齐历史。
+ *
+ * `approvalsReviewer` 只在用户显式配置时下发；resume 时同样如此——codex 会把 reviewer
+ * 随 thread 持久化，不传就沿用该 thread 原有的选择（thread_resume_preserves_persisted_
+ * approvals_reviewer）。响应回吐的才是生效值：企业 requirements 可能把请求值打回。
+ */
 export async function openCodexThread(
   peer: CodexThreadPeer,
-  opts: { cwd: string; resumeSessionId?: string },
-): Promise<{ threadId: string; resumed: boolean }> {
+  opts: { cwd: string; resumeSessionId?: string; approvalReviewer?: "user" | "auto_review" },
+): Promise<{ threadId: string; resumed: boolean; route: ApprovalRoute | null }> {
+  const reviewer = opts.approvalReviewer ? { approvalsReviewer: opts.approvalReviewer } : {};
   if (opts.resumeSessionId) {
     try {
       const response = await peer.request(
         "thread/resume",
-        { threadId: opts.resumeSessionId },
+        { threadId: opts.resumeSessionId, ...reviewer },
         { timeoutMs: STARTUP_REQUEST_TIMEOUT_MS },
       );
-      return { threadId: threadIdFrom(response, "thread/resume"), resumed: true };
+      return {
+        threadId: threadIdFrom(response, "thread/resume"),
+        resumed: true,
+        route: routeFrom(response),
+      };
     } catch (error) {
       if (!missingThread(error)) throw error;
     }
@@ -381,10 +418,10 @@ export async function openCodexThread(
 
   const response = await peer.request(
     "thread/start",
-    { cwd: opts.cwd },
+    { cwd: opts.cwd, ...reviewer },
     { timeoutMs: STARTUP_REQUEST_TIMEOUT_MS },
   );
-  return { threadId: threadIdFrom(response, "thread/start"), resumed: false };
+  return { threadId: threadIdFrom(response, "thread/start"), resumed: false, route: routeFrom(response) };
 }
 
 export class CodexAdapter implements AgentAdapter {
@@ -395,13 +432,18 @@ export class CodexAdapter implements AgentAdapter {
   // experimentalApi）。曾用 thread/inject_items 注入独立 user message，但那会污染 codex
   // 原生历史（rollout 里出现无对应回合的悬空 user message）；additionalContext 由 codex
   // 以 contextual fragment 形态随本 turn 入史，且不过 UserPromptSubmit hook。
-  readonly capabilities: AdapterCapabilities = { prompt: {}, steer: { supported: true }, sync: { supported: true } };
+  readonly capabilities: AdapterCapabilities = {
+    prompt: {},
+    steer: { supported: true },
+    sync: { supported: true },
+    approvalRouting: { supported: true },
+  };
   private threads = new Map<string, ThreadRuntime>();
 
   constructor(private options: CodexAdapterOptions) {}
 
   async open(opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
-    const [cmd, ...args] = codexLaunchCommand(this.options.command, this.options.approvalReviewer);
+    const [cmd, ...args] = codexLaunchCommand(this.options.command);
     const child = spawn(cmd as string, args, {
       cwd: opts.cwd,
       // 继承 HOME 等本机环境：凭证零持有，复用 ~/.codex 登录态（design §5.1）
@@ -412,7 +454,7 @@ export class CodexAdapter implements AgentAdapter {
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => peer.feed(chunk));
 
-    const rt: ThreadRuntime = { child, peer, threadId: "", sink };
+    const rt: ThreadRuntime = { child, peer, threadId: "", approvalRoute: null, sink };
     // transport 终结 = 该 session 所有在途工作的终结点：pending request 全部 reject，
     // 活跃 turn 必须在此合成终态，否则 runtime 永远等不到 idle（design §4.1 终态保证）。
     child.on("close", (code) => {
@@ -436,11 +478,17 @@ export class CodexAdapter implements AgentAdapter {
     );
     peer.notify("initialized", {});
 
-    const opened = await openCodexThread(peer, opts);
+    const opened = await openCodexThread(peer, { ...opts, approvalReviewer: this.options.approvalReviewer });
     const threadId = opened.threadId;
     rt.threadId = threadId;
+    rt.approvalRoute = opened.route;
     this.threads.set(threadId, rt);
     return { provider: this.provider, providerSessionId: threadId, resumed: opened.resumed };
+  }
+
+  /** ApprovalRoutable：报告 codex 回吐的生效路由，而非 baton 请求的值（企业策略可能打回）。 */
+  approvalRoute(ref: ProviderSessionRef): ApprovalRoute | null {
+    return this.threads.get(ref.providerSessionId)?.approvalRoute ?? null;
   }
 
   async listModels(ref: ProviderSessionRef): Promise<ModelOption[]> {

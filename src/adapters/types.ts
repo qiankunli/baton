@@ -82,6 +82,8 @@ export interface AdapterCapabilities {
   sync?: CapabilityMarker;
   commands?: CapabilityMarker;
   config?: CapabilityMarker;
+  /** 声明后必须实现 ApprovalRoutable：能报告审批请求当前路由给谁。 */
+  approvalRouting?: CapabilityMarker;
   interactions?: {
     permission?: CapabilityMarker;
     question?: CapabilityMarker;
@@ -161,6 +163,29 @@ export function isModelConfigurable(adapter: AgentAdapter): adapter is AgentAdap
     typeof candidate.setModel === "function" &&
     typeof candidate.currentModel === "function"
   );
+}
+
+/**
+ * 审批路由的归一值：`user` = 请求进 baton TUI；`delegated` = provider 侧 reviewer 代批
+ * （必须留下带 id 的回执，kernel §4 MUST NOT "静默持有审批授权"）。provider 的方言词
+ * （codex 的 `auto_review` / `guardian_subagent`）在 adapter 边界收口，不越界。
+ */
+export type ApprovalRoute = "user" | "delegated";
+
+export interface ApprovalRoutable {
+  /**
+   * 当前**实际生效**的审批路由。
+   *
+   * 必须是权威值——由 provider 自己解析后报告，不是 baton 从配置意图反推的。反推必错：
+   * codex 的 reviewer 解析链含云端下发的企业 requirements（`allowed_approvals_reviewers`），
+   * 能覆盖用户 config.toml 里写死的值、也能覆盖启动参数。无法确知时返回 null——
+   * 不知道就别声称（不变量 #2），投影据此静默而不是编一个。
+   */
+  approvalRoute(ref: ProviderSessionRef): ApprovalRoute | null;
+}
+
+export function isApprovalRoutable(adapter: AgentAdapter): adapter is AgentAdapter & ApprovalRoutable {
+  return typeof (adapter as Partial<ApprovalRoutable>).approvalRoute === "function";
 }
 
 /**

@@ -64,14 +64,13 @@ defaultAgent: codex
 codexCommand:
   - codex
   - app-server
-codexApprovalReviewer: auto_review
 mentionBudgetChars: 4096
 showThoughts: true
 ```
 
 所有配置项及说明见 [`config.yaml.example`](config.yaml.example)。
 
-Codex 审批默认交给自动 reviewer，并在 Agent Status 和对应工具旁保留逐条回执；设置 `codexApprovalReviewer: user` 可改回 Baton TUI 人工审批。
+Codex 审批默认跟随 Codex 自己的配置（`~/.codex/config.toml`、profile、企业策略照常生效，Codex 自身默认人工审批）。设置 `codexApprovalReviewer: auto_review` 才把审批委托给自动 reviewer——委托状态会常驻 Agent Status，每条自动决策也在对应工具旁留下回执。
 
 如果 Claude Code 使用自定义可执行文件，可以在配置中设置 `claudeExecutable`，或通过环境变量临时覆盖（`BATON_CLAUDE_BIN=/path/to/claude baton`）。配置优先级为：环境变量 > `config.yaml` > 默认值。
 

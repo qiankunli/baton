@@ -17,9 +17,10 @@ export interface BatonConfig {
   /** codex 启动命令（headless 必须是 app-server 形态） */
   codexCommand: string[];
   /**
-   * codex 审批人（approvals_reviewer）。缺省 = baton 强制 "auto_review"，由 reviewer
-   * 处理越界审批并留下回执；显式设为 "user" 才回到 TUI 人工审批。见
-   * docs/approval-lifecycle.md。用户命令里已写死则不受此项影响。
+   * codex 审批人（approvals_reviewer）。**缺省不设 = 跟随 codex 自己的解析**
+   * （~/.codex/config.toml、profile、企业 requirements 照常生效，codex 自身默认是 user）。
+   * 显式设了才作为 thread/start 参数下发，是一次 opt-in 覆盖。
+   * baton 不替 codex 定审批的安全默认。见 docs/approval-lifecycle.md。
    */
   codexApprovalReviewer?: "user" | "auto_review";
   /** @ 引用与同会话 provider 同步的摘要预算（字符） */
@@ -28,10 +29,10 @@ export interface BatonConfig {
   showThoughts: boolean;
 }
 
+// codexApprovalReviewer 有意不列：缺省就是"不下发、跟随 codex"。
 export const DEFAULT_CONFIG: BatonConfig = {
   defaultAgent: "codex",
   codexCommand: ["codex", "app-server"],
-  codexApprovalReviewer: "auto_review",
   mentionBudgetChars: 4096,
   showThoughts: true,
 };
@@ -42,14 +43,6 @@ export function batonRoot(rootDir?: string): string {
 
 export function configPath(rootDir?: string): string {
   return join(batonRoot(rootDir), "config.yaml");
-}
-
-function commandApprovalReviewer(command: string[]): "user" | "auto_review" | undefined {
-  const override = command.find((arg) => arg.includes("approvals_reviewer"));
-  if (!override) return undefined;
-  if (/approvals_reviewer\s*=\s*["']?(auto_review|guardian_subagent)/.test(override)) return "auto_review";
-  if (/approvals_reviewer\s*=\s*["']?user/.test(override)) return "user";
-  return undefined;
 }
 
 /** 不存在则写入默认配置，返回文件路径。只在入口调用一次，load 本身无副作用。 */
@@ -90,15 +83,13 @@ export function loadConfig(rootDir?: string): BatonConfig {
   if (typeof merged.showThoughts !== "boolean") {
     merged.showThoughts = DEFAULT_CONFIG.showThoughts;
   }
-  // 只接受已知取值，其余回到 baton 默认 reviewer，避免 wire 与 Agent Status 认知不一致。
-  const configuredReviewer =
-    merged.codexApprovalReviewer === "auto_review" || merged.codexApprovalReviewer === "user"
-      ? merged.codexApprovalReviewer
-      : DEFAULT_CONFIG.codexApprovalReviewer;
-  // codexCommand 是更底层的显式逃生口；投影也必须拿到实际生效值，避免 footer 误报委托状态。
-  merged.codexApprovalReviewer = merged.codexCommand.some((arg) => arg.includes("approvals_reviewer"))
-    ? commandApprovalReviewer(merged.codexCommand)
-    : configuredReviewer;
+  // 只接受已知取值；其余（含缺省）落回 undefined = 不下发、跟随 codex 自己的解析。
+  // 这里**不推导生效值**：曾经为了让 footer 准确，config 复刻了一遍 codex 的方言解析，
+  // 但那必然算错——企业 requirements 能覆盖用户配置和启动参数。生效值只由 codex 回吐，
+  // 见 CodexAdapter.approvalRoute。
+  if (merged.codexApprovalReviewer !== "auto_review" && merged.codexApprovalReviewer !== "user") {
+    merged.codexApprovalReviewer = undefined;
+  }
   if (process.env.BATON_CLAUDE_BIN) merged.claudeExecutable = process.env.BATON_CLAUDE_BIN;
   return merged;
 }
