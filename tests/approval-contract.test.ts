@@ -211,4 +211,21 @@ describe("codex approval routing is pinned by the adapter", () => {
     expect(receipt).toMatchObject({ toolCallId: "cmd1", decision: "aborted" });
     expect(receipt?.reviewId).toMatch(/^arv_/);
   });
+
+  test("auto-review with an explicit null targetItemId stays targetless (no fabricated \"null\" id)", () => {
+    // UNSTABLE wire 可能显式送 null；String(null) 会造出假 toolCallId "null"，
+    // 把回执挂到不存在的工具卡上。null 与缺失同义：无 target，照样留痕。
+    const { events, notify } = codexServerRequestHarness("decline");
+    notify("item/autoApprovalReview/completed", {
+      threadId: "th1",
+      targetItemId: null,
+      review: { status: "denied" },
+    });
+    const receipt = events.find((event) => event.kind === "approval_review_update")?.payload as {
+      toolCallId?: string;
+      decision?: string;
+    };
+    expect(receipt?.decision).toBe("denied");
+    expect(receipt).not.toHaveProperty("toolCallId");
+  });
 });
