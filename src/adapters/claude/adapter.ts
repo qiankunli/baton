@@ -110,7 +110,9 @@ export interface TaskEntry {
 
 /** tool_use 入参 → Task 操作；非 Task 写操作（含只读的 TaskList/TaskGet）返回 null */
 export function taskToolOp(toolName: string, input: Record<string, unknown>): TaskToolOp | null {
-  if (toolName === "TaskCreate") return { op: "create", subject: String(input.subject ?? "") };
+  if (toolName === "TaskCreate") {
+    return { op: "create", subject: String(input.subject ?? input.description ?? "") };
+  }
   if (toolName === "TaskUpdate") {
     // 真实 harness 的入参是 snake_case `task_id`（早期按 camelCase 假设实现，导致
     // update 全被丢弃、plan 永远停在 pending）；两种拼法都接受，防协议再漂移。
