@@ -409,10 +409,10 @@ describe("per-turn run state aggregation", () => {
 });
 
 describe("approval review receipts (auto-review)", () => {
-  test("archives by toolCallId, latest decision wins", () => {
+  test("archives by reviewId; multiple decisions on one target each survive", () => {
     const state = reduceEvents([
-      ev("approval_review_update", { toolCallId: "tc_1", decision: "in_progress" }),
       ev("approval_review_update", {
+        reviewId: "arv_1",
         toolCallId: "tc_1",
         decision: "approved",
         riskLevel: "high",
@@ -420,15 +420,23 @@ describe("approval review receipts (auto-review)", () => {
         rationale: "reversible edit",
         actionType: "applyPatch",
       }),
+      ev("approval_review_update", { reviewId: "arv_2", toolCallId: "tc_1", decision: "denied" }),
     ]);
-    const receipt = state.approvalReviews.get("tc_1");
-    expect(receipt?.decision).toBe("approved");
-    expect(receipt?.riskLevel).toBe("high");
-    expect(receipt?.rationale).toBe("reversible edit");
+    // 同一操作上的两条决策不再互相覆盖，各自成条。
+    expect(state.approvalReviews.size).toBe(2);
+    expect(state.approvalReviews.get("arv_1")?.decision).toBe("approved");
+    expect(state.approvalReviews.get("arv_1")?.rationale).toBe("reversible edit");
+    expect(state.approvalReviews.get("arv_2")?.decision).toBe("denied");
+    // 首见即进 timeline（一等公民）。
+    expect(state.timeline.filter((t) => t.type === "approval_review").map((t) => t.id)).toEqual([
+      "arv_1",
+      "arv_2",
+    ]);
   });
 
-  test("ignores receipts without a toolCallId (nothing to attach to)", () => {
-    const state = reduceEvents([ev("approval_review_update", { decision: "denied" })]);
-    expect(state.approvalReviews.size).toBe(0);
+  test("keeps receipts without a toolCallId (targetless review still leaves a trail)", () => {
+    const state = reduceEvents([ev("approval_review_update", { reviewId: "arv_9", decision: "denied" })]);
+    expect(state.approvalReviews.get("arv_9")?.decision).toBe("denied");
+    expect(state.timeline.some((t) => t.type === "approval_review" && t.id === "arv_9")).toBe(true);
   });
 });

@@ -716,30 +716,22 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
   };
 }
 
-function approvalReviewTranscriptItem(toolCallId: string, review: ApprovalReviewUpdate): TranscriptItem {
+function approvalReviewTranscriptItem(review: ApprovalReviewUpdate): TranscriptItem {
   const facts = [
     review.riskLevel ? `risk: ${review.riskLevel}` : undefined,
     review.userAuthorization ? `authorization: ${review.userAuthorization}` : undefined,
   ].filter(Boolean);
   const suffix = facts.length > 0 ? ` (${facts.join(", ")})` : "";
+  // decision 是终态回执；一个状态只表达一种语义（approved→warning 留痕，denied→declined）；
+  // 未知决策 fail-closed 到 failed，不乐观回落成"审核中"（kernel.md §2 不变量 #2）。
   const status =
-    review.decision === "approved"
-      ? "warning"
-      : review.decision === "denied"
-        ? "declined"
-        : review.decision === "aborted"
-          ? "failed"
-          : "in_progress";
-  const title =
-    review.decision === "in_progress"
-      ? "Reviewing approval…"
-      : `Automatic approval review ${review.decision}${suffix}`;
+    review.decision === "approved" ? "warning" : review.decision === "denied" ? "declined" : "failed";
   return {
     type: "block",
-    id: `approval-review:${toolCallId}`,
+    id: `approval-review:${review.reviewId}`,
     kind: "notice",
     status,
-    title,
+    title: `Automatic approval review ${review.decision}${suffix}`,
     content: review.rationale ? { type: "text", text: review.rationale } : undefined,
   };
 }
@@ -808,8 +800,12 @@ function buildTranscript(state: SessionState, pinnedPlanId?: string): Transcript
       const tc = state.toolCalls.get(entry.id);
       if (!tc) continue;
       items.push(toolTranscriptItem(tc));
-      const review = state.approvalReviews.get(tc.toolCallId);
-      if (review) items.push(approvalReviewTranscriptItem(tc.toolCallId, review));
+      continue;
+    }
+    if (entry.type === "approval_review") {
+      // 回执是 timeline 一等公民（自带位置），不再作为工具卡的附属查找。
+      const review = state.approvalReviews.get(entry.id);
+      if (review) items.push(approvalReviewTranscriptItem(review));
       continue;
     }
     const plan = state.plans.get(entry.id);

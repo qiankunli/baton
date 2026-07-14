@@ -725,29 +725,32 @@ export class CodexAdapter implements AgentAdapter {
         const action = (p.action ?? {}) as Record<string, unknown>;
         const targetItemId = p.targetItemId === undefined ? undefined : String(p.targetItemId);
         if (targetItemId) (rt.autoReviewedItemIds ??= new Set()).add(targetItemId);
-        const rawStatus = String(review.status ?? "");
-        const decision =
-          rawStatus === "inProgress"
-            ? "in_progress"
-            : rawStatus || (method.endsWith("/started") ? "in_progress" : "aborted");
-        this.emit(
-          rt,
-          {
-            kind: "approval_review_update",
-            provider: this.provider,
-            payload: {
-              ...(targetItemId ? { toolCallId: targetItemId } : {}),
-              decision,
-              ...(review.riskLevel !== undefined ? { riskLevel: String(review.riskLevel) } : {}),
-              ...(review.userAuthorization !== undefined
-                ? { userAuthorization: String(review.userAuthorization) }
-                : {}),
-              ...(review.rationale !== undefined ? { rationale: String(review.rationale) } : {}),
-              ...(action.type !== undefined ? { actionType: String(action.type) } : {}),
+        // 一等回执只在**终态**铸造：started 只驱动运行相位（见下方 run_status），completed 才落一条
+        // 带独立 reviewId 的审计回执（kernel.md §6）。这样无需关联 started/completed，无 target /
+        // 同一操作多次决策都各自成条。codex 不给 review 自身 id，reviewId 由 adapter 铸。
+        if (method.endsWith("/completed")) {
+          const rawStatus = String(review.status ?? "");
+          const decision = rawStatus === "inProgress" ? "in_progress" : rawStatus || "aborted";
+          this.emit(
+            rt,
+            {
+              kind: "approval_review_update",
+              provider: this.provider,
+              payload: {
+                reviewId: newId("arv"),
+                ...(targetItemId ? { toolCallId: targetItemId } : {}),
+                decision,
+                ...(review.riskLevel !== undefined ? { riskLevel: String(review.riskLevel) } : {}),
+                ...(review.userAuthorization !== undefined
+                  ? { userAuthorization: String(review.userAuthorization) }
+                  : {}),
+                ...(review.rationale !== undefined ? { rationale: String(review.rationale) } : {}),
+                ...(action.type !== undefined ? { actionType: String(action.type) } : {}),
+              },
             },
-          },
-          params,
-        );
+            params,
+          );
+        }
         this.emit(
           rt,
           {

@@ -184,10 +184,10 @@ describe("codex approval routing is pinned by the adapter", () => {
       item: { type: "commandExecution", id: "cmd1", status: "declined", command: "bun install" },
     });
 
+    // 只有终态（/completed）铸造一条权威回执；/started 只驱动运行相位，不落回执。
     const receipts = events.filter((event) => event.kind === "approval_review_update");
-    expect(receipts).toHaveLength(2);
-    expect(receipts[0]?.payload).toMatchObject({ toolCallId: "cmd1", decision: "in_progress" });
-    expect(receipts[1]?.payload).toMatchObject({
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]?.payload).toMatchObject({
       toolCallId: "cmd1",
       decision: "denied",
       riskLevel: "high",
@@ -195,15 +195,20 @@ describe("codex approval routing is pinned by the adapter", () => {
       rationale: "writes outside the workspace",
       actionType: "applyPatch",
     });
+    // 一等回执自带 reviewId（arv_ 前缀）。
+    expect((receipts[0]?.payload as { reviewId?: string }).reviewId).toMatch(/^arv_/);
     expect(events.find((event) => event.kind === "_baton_notice")).toBeUndefined();
   });
 
   test("auto-review tolerates missing unstable fields", () => {
     const { events, notify } = codexServerRequestHarness("decline");
     notify("item/autoApprovalReview/completed", { threadId: "th1", targetItemId: "cmd1" });
-    expect(events.find((event) => event.kind === "approval_review_update")?.payload).toEqual({
-      toolCallId: "cmd1",
-      decision: "aborted",
-    });
+    const receipt = events.find((event) => event.kind === "approval_review_update")?.payload as {
+      reviewId?: string;
+      toolCallId?: string;
+      decision?: string;
+    };
+    expect(receipt).toMatchObject({ toolCallId: "cmd1", decision: "aborted" });
+    expect(receipt?.reviewId).toMatch(/^arv_/);
   });
 });

@@ -254,6 +254,7 @@ describe("BatonChatProtocol transcript projection", () => {
         provider: "codex",
         turnId: "t1",
         payload: {
+          reviewId: "arv_test1",
           toolCallId: "tc1",
           decision: "approved",
           riskLevel: "low",
@@ -266,7 +267,7 @@ describe("BatonChatProtocol transcript projection", () => {
 
       const toolIndex = protocol.getView().transcript.findIndex((item) => item.id === "tc1");
       expect(protocol.getView().transcript[toolIndex + 1]).toMatchObject({
-        id: "approval-review:tc1",
+        id: "approval-review:arv_test1",
         kind: "notice",
         status: "warning",
         title: "Automatic approval review approved (risk: low, authorization: unknown)",

@@ -199,12 +199,18 @@ export interface PermissionResolved {
  * docs/approval-lifecycle.md §3）。与 permission_request/resolved 的交互待决流正交——
  * auto-review 开启时审批卡不触发，baton 只观测这条回执。归一自 codex
  * `item/autoApprovalReview/*`（**UNSTABLE**）：字段全部按可选容忍，原始形状保留在 envelope.raw。
+ *
+ * 一等审计对象：按自己的 `reviewId` 归档（kernel.md §6）。`reviewId` 让"无 target 的
+ * review"也能留痕、同一操作上的多次决策各自成条、不再靠被审 `toolCallId` 覆盖。回执只在
+ * reviewer 决策**终态**（codex `/completed`）铸造，`toolCallId` 是可选的被审目标。
  */
 export interface ApprovalReviewUpdate {
-  /** 被审操作对应的 tool call / item id（对齐 codex targetItemId），据此把回执挂到操作上 */
+  /** 本回执自身的稳定 id（`arv_` 前缀），adapter 在终态铸造；归档与投影的主键 */
+  reviewId: string;
+  /** 被审操作对应的 tool call / item id（对齐 codex targetItemId）；缺省表示无具体目标（如网络策略审查） */
   toolCallId?: string;
-  /** reviewer 决策：in_progress = 审核中（临时相位），其余为终态 */
-  decision: "in_progress" | "approved" | "denied" | "aborted" | (string & {});
+  /** reviewer 终态决策；未知值按 fail-closed 保守呈现（不当成"审核中"） */
+  decision: "approved" | "denied" | "aborted" | (string & {});
   /** provider 给出时透传的风险等级 */
   riskLevel?: "low" | "medium" | "high" | "critical" | (string & {});
   /** reviewer 评估的授权等级（非“回退给用户”，不改变委托语义） */
