@@ -162,7 +162,10 @@ describe("BatonChatProtocol view projection", () => {
       const view = protocol.getView();
       // 主行常驻：idle 显式可见，无计时/中断提示
       expect(view.runStatus).toHaveLength(1);
-      expect(view.runStatus?.[0]).toMatchObject({ author: "codex", label: "default · idle" });
+      expect(view.runStatus?.[0]).toMatchObject({
+        author: "codex",
+        label: "default · idle · approvals:auto-review",
+      });
       expect(view.runStatus?.[0]?.startedAt).toBeUndefined();
       expect(view.runStatus?.[0]?.hint).toBeUndefined();
       expect(view.footer).toStartWith(`session: ${session.id}  `);

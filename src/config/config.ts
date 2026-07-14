@@ -17,9 +17,9 @@ export interface BatonConfig {
   /** codex 启动命令（headless 必须是 app-server 形态） */
   codexCommand: string[];
   /**
-   * codex 审批人（approvals_reviewer）。缺省 = baton 强制 "user"（用户始终是审批人）；
-   * 显式设为 "auto_review" 才 opt-in 委托给 codex reviewer——该 turn 审批卡不再触发，
-   * baton 只观测 auto-review 回执。见 docs/approval-lifecycle.md。用户命令里已写死则不受此项影响。
+   * codex 审批人（approvals_reviewer）。缺省 = baton 强制 "auto_review"，由 reviewer
+   * 处理越界审批并留下回执；显式设为 "user" 才回到 TUI 人工审批。见
+   * docs/approval-lifecycle.md。用户命令里已写死则不受此项影响。
    */
   codexApprovalReviewer?: "user" | "auto_review";
   /** @ 引用与同会话 provider 同步的摘要预算（字符） */
@@ -31,6 +31,7 @@ export interface BatonConfig {
 export const DEFAULT_CONFIG: BatonConfig = {
   defaultAgent: "codex",
   codexCommand: ["codex", "app-server"],
+  codexApprovalReviewer: "auto_review",
   mentionBudgetChars: 4096,
   showThoughts: true,
 };
@@ -89,11 +90,11 @@ export function loadConfig(rootDir?: string): BatonConfig {
   if (typeof merged.showThoughts !== "boolean") {
     merged.showThoughts = DEFAULT_CONFIG.showThoughts;
   }
-  // 只接受已知取值，其余（含缺省）落回 undefined = adapter 走强制 "user"
+  // 只接受已知取值，其余回到 baton 默认 reviewer，避免 wire 与 Agent Status 认知不一致。
   const configuredReviewer =
     merged.codexApprovalReviewer === "auto_review" || merged.codexApprovalReviewer === "user"
       ? merged.codexApprovalReviewer
-      : undefined;
+      : DEFAULT_CONFIG.codexApprovalReviewer;
   // codexCommand 是更底层的显式逃生口；投影也必须拿到实际生效值，避免 footer 误报委托状态。
   merged.codexApprovalReviewer = merged.codexCommand.some((arg) => arg.includes("approvals_reviewer"))
     ? commandApprovalReviewer(merged.codexCommand)

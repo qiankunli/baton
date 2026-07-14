@@ -64,14 +64,14 @@ defaultAgent: codex
 codexCommand:
   - codex
   - app-server
-codexApprovalReviewer: user
+codexApprovalReviewer: auto_review
 mentionBudgetChars: 4096
 showThoughts: true
 ```
 
 See [`config.yaml.example`](config.yaml.example) for all available options and usage notes.
 
-Set `codexApprovalReviewer: auto_review` to delegate Codex approvals to its risk reviewer. Baton keeps the delegation visible in Agent Status and records each automatic decision beside its target tool; the default `user` keeps interactive approval cards in Baton.
+Codex approvals default to its risk reviewer. Baton keeps that delegation visible in Agent Status and records each automatic decision beside its target tool. Set `codexApprovalReviewer: user` to keep interactive approval cards in Baton instead.
 
 If Claude Code uses a custom executable, set `claudeExecutable` in the configuration or override it temporarily with an environment variable (`BATON_CLAUDE_BIN=/path/to/claude baton`). Configuration precedence: environment variables > `config.yaml` > defaults.
 

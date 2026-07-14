@@ -71,18 +71,18 @@ describe("config", () => {
     expect(loadConfig(root).claudeExecutable).toBe("/from/env");
   });
 
-  test("codexApprovalReviewer accepts known values and drops unknown", () => {
+  test("codexApprovalReviewer accepts known values and falls back on unknown", () => {
     writeFileSync(configPath(root), "codexApprovalReviewer: auto_review\n");
     expect(loadConfig(root).codexApprovalReviewer).toBe("auto_review");
     writeFileSync(configPath(root), "codexApprovalReviewer: user\n");
     expect(loadConfig(root).codexApprovalReviewer).toBe("user");
     writeFileSync(configPath(root), "codexApprovalReviewer: yolo\n");
-    expect(loadConfig(root).codexApprovalReviewer).toBeUndefined();
+    expect(loadConfig(root).codexApprovalReviewer).toBe("auto_review");
   });
 
-  test("codexApprovalReviewer defaults to undefined (adapter forces user)", () => {
+  test("codexApprovalReviewer defaults to auto_review", () => {
     writeFileSync(configPath(root), "defaultAgent: codex\n");
-    expect(loadConfig(root).codexApprovalReviewer).toBeUndefined();
+    expect(loadConfig(root).codexApprovalReviewer).toBe("auto_review");
   });
 
   test("codexCommand reviewer override becomes the effective value used by the UI", () => {

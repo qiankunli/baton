@@ -3,8 +3,8 @@
 //    以 permission_resolved 留痕并把决定回传 provider；
 // 2. 终态白名单——只有明确的成功值可以映射 completed，declined 是一等终态，
 //    未知终态悲观归 failed（乐观兜底曾把 codex declined 渲染成绿勾）；
-// 3. 审批路由收权——codex 默认钉死 reviewer=user；显式 auto-review 必须有权威回执，
-//    未知策略导致的 declined-without-approval 继续发对账 notice。
+// 3. 审批路由收权——codex 默认钉死 reviewer=auto_review 并留下权威回执；显式 user
+//    时人工选项必须服从 app-server 的 availableDecisions，未知旁路继续发对账 notice。
 import { describe, expect, test } from "bun:test";
 
 import { ClaudeAdapter } from "../src/adapters/claude/adapter.ts";
@@ -104,26 +104,31 @@ describe("codex terminal status whitelist", () => {
 });
 
 describe("codex approval routing is pinned by the adapter", () => {
-  test("default and custom commands get approvals_reviewer=user injected before app-server", () => {
-    expect(codexLaunchCommand(undefined)).toEqual(["codex", "-c", 'approvals_reviewer="user"', "app-server"]);
-    expect(codexLaunchCommand(["/opt/codex", "app-server", "--verbose"])).toEqual([
-      "/opt/codex",
-      "-c",
-      'approvals_reviewer="user"',
-      "app-server",
-      "--verbose",
-    ]);
-  });
-
-  test("explicit auto-review config is injected while command-level overrides still win", () => {
-    expect(codexLaunchCommand(undefined, "auto_review")).toEqual([
+  test("default and custom commands get approvals_reviewer=auto_review injected before app-server", () => {
+    expect(codexLaunchCommand(undefined)).toEqual([
       "codex",
       "-c",
       'approvals_reviewer="auto_review"',
       "app-server",
     ]);
-    const command = ["codex", "-c", 'approvals_reviewer="user"', "app-server"];
-    expect(codexLaunchCommand(command, "auto_review")).toEqual(command);
+    expect(codexLaunchCommand(["/opt/codex", "app-server", "--verbose"])).toEqual([
+      "/opt/codex",
+      "-c",
+      'approvals_reviewer="auto_review"',
+      "app-server",
+      "--verbose",
+    ]);
+  });
+
+  test("explicit user review is injected while command-level overrides still win", () => {
+    expect(codexLaunchCommand(undefined, "user")).toEqual([
+      "codex",
+      "-c",
+      'approvals_reviewer="user"',
+      "app-server",
+    ]);
+    const command = ["codex", "-c", 'approvals_reviewer="auto_review"', "app-server"];
+    expect(codexLaunchCommand(command, "user")).toEqual(command);
   });
 
   test("an explicit approvals_reviewer in the user command is respected (escape hatch)", () => {
@@ -156,6 +161,34 @@ describe("codex approval routing is pinned by the adapter", () => {
     });
     expect(events.find((e) => e.kind === "_baton_notice")).toBeUndefined();
     expect(events.find((e) => e.kind === "tool_call_update")?.payload).toMatchObject({ status: "declined" });
+  });
+
+  test("availableDecisions drive the card and preserve structured Codex decisions", async () => {
+    const structuredDecision = {
+      acceptWithExecpolicyAmendment: {
+        execpolicy_amendment: ["make", "-C", "devloop", "bump-version"],
+      },
+    };
+    const { events, request } = codexServerRequestHarness("acceptWithExecpolicyAmendment:1");
+    const result = await request("item/commandExecution/requestApproval", {
+      threadId: "th1",
+      itemId: "cmd1",
+      command: "make -C devloop bump-version PLUGIN=devloop",
+      availableDecisions: ["accept", structuredDecision, "cancel"],
+    });
+
+    expect(events[0]?.payload).toMatchObject({
+      options: [
+        { optionId: "accept", name: "Allow once", kind: "allow_once" },
+        {
+          optionId: "acceptWithExecpolicyAmendment:1",
+          name: "Allow and remember: make -C devloop bump-version",
+          kind: "allow_always",
+        },
+        { optionId: "cancel", name: "Deny and interrupt turn", kind: "reject_always" },
+      ],
+    });
+    expect(result).toEqual({ decision: structuredDecision });
   });
 
   test("auto-review notifications emit authoritative receipts and suppress the heuristic warning", () => {

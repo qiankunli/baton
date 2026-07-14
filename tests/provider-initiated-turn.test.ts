@@ -104,7 +104,10 @@ describe("observed turn presentation", () => {
     view = protocol.getView();
     expect(view.busy).toBe(false);
     expect(view.runStatus).toHaveLength(1);
-    expect(view.runStatus?.[0]).toMatchObject({ author: "codex", label: "default · idle" });
+    expect(view.runStatus?.[0]).toMatchObject({
+      author: "codex",
+      label: "default · idle · approvals:auto-review",
+    });
     await protocol.exit();
   });
 

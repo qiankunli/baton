@@ -99,12 +99,72 @@ function codexModels(result: unknown): ModelOption[] {
   return models;
 }
 
-const APPROVAL_OPTIONS: PermissionOption[] = [
+const FALLBACK_APPROVAL_OPTIONS: PermissionOption[] = [
   { optionId: "accept", name: "Allow once", kind: "allow_once" },
   { optionId: "acceptForSession", name: "Allow for this session", kind: "allow_always" },
   { optionId: "decline", name: "Deny (agent continues)", kind: "reject_once" },
   { optionId: "cancel", name: "Deny and interrupt turn", kind: "reject_always" },
 ];
+
+interface CodexApprovalChoice {
+  option: PermissionOption;
+  /** Codex wire decision；结构化方言只停留在 adapter 边界。 */
+  decision: unknown;
+}
+
+function simpleApprovalChoice(decision: string): CodexApprovalChoice | undefined {
+  const option = FALLBACK_APPROVAL_OPTIONS.find((candidate) => candidate.optionId === decision);
+  return option ? { option, decision } : undefined;
+}
+
+function structuredApprovalChoice(decision: unknown, index: number): CodexApprovalChoice | undefined {
+  if (!decision || typeof decision !== "object") return undefined;
+  const record = decision as Record<string, unknown>;
+  if (record.acceptWithExecpolicyAmendment !== undefined) {
+    const payload = record.acceptWithExecpolicyAmendment as Record<string, unknown>;
+    const amendment = payload?.execpolicy_amendment;
+    const prefix = Array.isArray(amendment) ? amendment.map(String).join(" ") : "this command prefix";
+    return {
+      option: {
+        optionId: `acceptWithExecpolicyAmendment:${index}`,
+        name: `Allow and remember: ${prefix}`,
+        kind: "allow_always",
+      },
+      decision,
+    };
+  }
+  if (record.applyNetworkPolicyAmendment !== undefined) {
+    const payload = record.applyNetworkPolicyAmendment as Record<string, unknown>;
+    const amendment = payload?.network_policy_amendment as Record<string, unknown> | undefined;
+    const rule = amendment?.host
+      ? `${String(amendment.action ?? "allow")} ${String(amendment.host)}`
+      : "this network rule";
+    return {
+      option: {
+        optionId: `applyNetworkPolicyAmendment:${index}`,
+        name: `Allow and remember: ${rule}`,
+        kind: "allow_always",
+      },
+      decision,
+    };
+  }
+  return undefined;
+}
+
+/** Codex 给出精确候选时逐项映射；老版本缺字段才退回稳定的四选项。 */
+export function codexApprovalChoices(params: Record<string, unknown>): CodexApprovalChoice[] {
+  const available = params.availableDecisions;
+  if (!Array.isArray(available) || available.length === 0) {
+    return FALLBACK_APPROVAL_OPTIONS.map((option) => ({ option, decision: option.optionId }));
+  }
+  return available.flatMap((decision, index) => {
+    const choice =
+      typeof decision === "string"
+        ? simpleApprovalChoice(decision)
+        : structuredApprovalChoice(decision, index);
+    return choice ? [choice] : [];
+  });
+}
 
 /** item.type → 内部 tool kind；agentMessage/reasoning/plan 不是 tool，单独处理 */
 function toolKindOf(itemType: string): string {
@@ -219,13 +279,13 @@ const CODEX_REVIEW_DECISION: Record<string, "approved" | "denied" | "aborted"> =
 };
 
 /**
- * 审批路由权归 adapter：默认 reviewer=user，让危险操作进入 TUI 闭环；只有用户显式
- * 配置 auto_review 时才委托 provider reviewer，并以权威回执留痕。启动参数由拉起进程的
- * 一方保证，不隐式继承机器上的全局设置；用户命令里已写 reviewer 时尊重其覆盖（逃生口）。
+ * 审批路由权归 adapter：默认 reviewer=auto_review，让越界审批由 reviewer 处理并以
+ * 权威回执留痕；用户仍可显式切回 TUI 人工审批。启动参数由拉起进程的一方保证，不隐式
+ * 继承机器上的全局设置；用户命令里已写 reviewer 时尊重其覆盖（逃生口）。
  */
 export function codexLaunchCommand(
   command?: string[],
-  approvalReviewer: "user" | "auto_review" = "user",
+  approvalReviewer: "user" | "auto_review" = "auto_review",
 ): string[] {
   const base = command && command.length > 0 ? [...command] : ["codex", "app-server"];
   if (base.some((arg) => arg.includes("approvals_reviewer"))) return base;
@@ -255,7 +315,7 @@ function stopReasonOf(turnStatus: string): StopReason {
 
 export interface CodexAdapterOptions {
   requestHandler: RequestHandler;
-  /** 缺省仍由用户审批；auto_review 是显式委托，逐条回执经 approval_review_update 留痕。 */
+  /** 缺省由 auto-review 审批；显式 user 时请求进入 Baton TUI。 */
   approvalReviewer?: "user" | "auto_review";
   /** 覆盖二进制，测试用 */
   command?: string[];
@@ -888,12 +948,13 @@ export class CodexAdapter implements AgentAdapter {
         }
         const requestId = String(p.approvalId ?? p.itemId ?? p.callId ?? newId("ar"));
         const presentation = approvalPresentationOf(method, p);
+        const choices = codexApprovalChoices(p);
         const request: PermissionRequest = {
           kind: "permission",
           requestId,
           ...presentation,
           toolCallId: p.itemId !== undefined ? String(p.itemId) : undefined,
-          options: APPROVAL_OPTIONS,
+          options: choices.map((choice) => choice.option),
         };
         this.emit(rt, { kind: "permission_request", provider: this.provider, payload: request }, params);
         const response = await this.options.requestHandler(request);
@@ -913,7 +974,7 @@ export class CodexAdapter implements AgentAdapter {
           provider: this.provider,
           payload: { requestId, outcome: "selected", optionId },
         });
-        return { decision: optionId };
+        return { decision: choices.find((choice) => choice.option.optionId === optionId)?.decision ?? optionId };
       }
       case "item/tool/requestUserInput": {
         const source = Array.isArray(p.questions) ? p.questions : [];
