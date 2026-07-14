@@ -8,6 +8,7 @@ import {
   type ModelOption,
   type ProviderSessionRef,
   type RequestHandler,
+  type RequestOutcome,
   type SteerReceipt,
 } from "../adapters/types.ts";
 import { buildProviderCatchUpContext } from "../context/mention.ts";
@@ -124,6 +125,14 @@ export interface InputSnapshot {
 export type SubmitOutcome = "completed" | "recalled";
 
 /**
+ * Control：与 Input / Response 并列的第三种用户信号（见 user-input-lifecycle.md §1）。
+ * 不携带内容、不到达 model——是对 turn **生命周期**的命令，必须 out-of-band 够到正在跑的
+ * turn（不进 queue，否则会排在它要打断的 turn 后面而死锁）。当前唯一 kind 是 `interrupt`
+ * （Esc）；pause / abort-bash / shutdown 等作为新 kind 加入时按 kernel §5 演进。
+ */
+export type Control = { kind: "interrupt" };
+
+/**
  * steer 请求的调度结果（design §3.7：requested 与 effective 分开呈现）：
  * - `steer`：已注入当前 turn 的下一个安全边界，不产生新 turn；
  * - `follow_up`：不可 steer 或 provider 拒绝，已显式降级入队；outcome 与 submit
@@ -194,14 +203,22 @@ export class BatonSessionRuntime {
    * 崩溃后新进程没有 resolver，open 时的 crash recovery 会对 reduced pending 一律补
    * resolved(cancelled)，两侧语义自洽。
    */
-  private readonly pendingRequests = new Map<string, (r: InteractionResponse) => void>();
+  private readonly pendingRequests = new Map<
+    string,
+    { turnId?: string; resolve: (o: RequestOutcome) => void }
+  >();
+  /** requestId → turnId：onAdapterEvent 见 *_request 时记下，requestHandler 消费，供 cancel-cascade 按 turn 归属 */
+  private readonly requestTurns = new Map<string, string>();
 
   constructor(private readonly options: BatonSessionRuntimeOptions) {}
 
-  /** 注入给 adapter 的统一 request 回调：注册 resolver 后挂起，等宿主经 respond() 应答 */
+  /** 注入给 adapter 的统一 request 回调：注册 resolver 后挂起，等宿主经 respond() 应答或 turn 收口级联取消 */
   readonly requestHandler: RequestHandler = (request) =>
     new Promise((resolve) => {
-      this.pendingRequests.set(request.requestId, resolve);
+      // turnId 来自 *_request 事件（onAdapterEvent 先落盘再触发本 await），供 cancel-cascade 归属
+      const turnId = this.requestTurns.get(request.requestId);
+      this.requestTurns.delete(request.requestId);
+      this.pendingRequests.set(request.requestId, { turnId, resolve });
       this.changed();
     });
 
@@ -212,10 +229,10 @@ export class BatonSessionRuntime {
    * 的 adapter 负责，这里不落事件。
    */
   respond(response: InteractionResponse): boolean {
-    const resolve = this.pendingRequests.get(response.requestId);
-    if (!resolve) return false;
+    const entry = this.pendingRequests.get(response.requestId);
+    if (!entry) return false;
     this.pendingRequests.delete(response.requestId);
-    resolve(response);
+    entry.resolve(response);
     return true;
   }
 
@@ -387,11 +404,22 @@ export class BatonSessionRuntime {
   }
 
   /**
-   * 请求中断当前 turn。确认以 provider 的 idle/cancelled 终态为准；宽限期内没等到
-   * 则合成 terminal error，保证队列永远能推进（不能因 provider 失联而死锁）。
+   * 施加一个 Control 信号（Input / Response 之外的第三种用户信号，见 `Control`）。当前唯一
+   * kind 是 `interrupt`（Esc）——打断当前 driven turn。新增 kind 时在此按 kind 分派。
+   */
+  async control(signal: Control): Promise<void> {
+    switch (signal.kind) {
+      case "interrupt":
+        return this.interrupt();
+    }
+  }
+
+  /**
+   * Control:interrupt 的实现——中断当前 driven turn。确认以 provider 的 idle/cancelled 终态
+   * 为准；宽限期内没等到则合成 terminal error，保证队列永远能推进（不能因 provider 失联而死锁）。
    * preparing（provider 冷启动中）无需确认：尚未向 provider 提交任何内容，立即合成取消。
    */
-  async cancelActive(): Promise<void> {
+  private async interrupt(): Promise<void> {
     const active = this.activeDriven();
     if (!active) return;
     if (!active.slot.ref) {
@@ -623,6 +651,12 @@ export class BatonSessionRuntime {
         // 终态必带 turnId，由契约测试钉住）。
         if (envelope.turnId) this.finalize(envelope.turnId, p.stopReason);
       }
+    } else if (
+      (envelope.kind === "permission_request" || envelope.kind === "question_request") &&
+      envelope.turnId
+    ) {
+      // 记 request→turn 归属：requestHandler 随后（同步 await 前）消费，供 cancel-cascade
+      this.requestTurns.set(envelope.payload.requestId, envelope.turnId);
     }
     this.changed();
   }
@@ -640,6 +674,18 @@ export class BatonSessionRuntime {
     if (!record || record.status === "finalized") return;
     record.status = "finalized";
     record.stopReason = stopReason;
+
+    // cancel-cascade：本 turn 仍挂起的 request 随收口一并了结，绝不留悬挂 waiter（否则 adapter 的
+    // await 永挂、pendingRequests 泄漏、reduce 的 requires_action 残留到重开）。参考 codex
+    // clear_pending_waiters→Abort、opencode interrupt 的 ensuring(pending.delete)。adapter 收到
+    // cancelled 即发 *_resolved(cancelled)（→ reduce 清 pending）并回 provider abort/deny。
+    // 顺序天然对：finalize 发生在 adapter.cancel 之后（先中断 turn，再收 pending），不会让取消以
+    // model 可见的 tool rejection 抢在 turn 中断之前冒出来。
+    for (const [requestId, entry] of this.pendingRequests) {
+      if (entry.turnId !== turnId) continue;
+      this.pendingRequests.delete(requestId);
+      entry.resolve({ kind: "cancelled", requestId });
+    }
 
     // 输入实体随 turn 收口迁移终态：cancelled → interrupted（S3：不静默丢、可查、不自动重发），
     // 否则 → finalized。admitted 输入与已接受的 steer 同迁移。之后由 retire 释放。

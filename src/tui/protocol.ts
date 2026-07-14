@@ -309,7 +309,7 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   cancel(): void {
-    void this.runtime.cancelActive();
+    void this.runtime.control({ kind: "interrupt" });
   }
 
   /** 优雅退出：先关掉 agent 子进程再退（对应 /exit、双击 Ctrl+C、Ctrl+D） */

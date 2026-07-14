@@ -34,6 +34,8 @@ ProviderSession 不在此表——它是某 provider 的私有执行状态、内
 
 内核只有一条流水线，双向流动。observed turn、stall 自愈、审批闭环都是它的特例，不是另起的机制。
 
+**开发次序：两个边界的形态先钉死，中间处理慢慢打磨。** 先定死用户侧的 I/O 形态（用户→baton：Input / Response / Control；baton→用户：render 投影——transcript / 浮层 / footer）和 provider 侧的 I/O 形态（provider→baton：归一 Event，含常规输出与 Request；baton→provider：capability 操作）。这两个边界一旦稳定，baton 的**中间处理**（runtime 调度、queue、reduce、projection）就能渐进重构而不惊动边界契约——接入方（chat-tui）与 provider（adapter）不被中间打磨波及。这也是内核纪律钉在**边界**（§4 扩展契约、§2 不变量）、而演进（§5）主要作用于中间与概念提升的原因。
+
 ![baton 内核：一条双向流水线（用户→baton 有 Input(composer+queue) 与 Response(浮层) 两种信号；baton→用户 render 分 tool/text/plan(transcript)、Request(浮层)、stats(footer)；中间 runtime+queue、event/turn 单通道、Adapter 的 capability 出站与归一入站、session.jsonl 持久化）](kernel-pipeline.png)
 
 两点要害：入站归一箭头标注的 `driven + observed`——`Adapter → event` 路径同时承载用户驱动与 provider 自发两种 turn，独立于是否有待决 Input（单通道真相，不变量 #1）；用户侧两种出站信号——Input 经 composer+queue 被调度成 turn，Response 在浮层作答、`refersTo` 某个 provider Request（Request↔Response 交互轴，见 §6）。
@@ -112,7 +114,7 @@ interface AgentAdapter {
 
 内核在每条轴上都要求一个"一等"的承载对象：隐式或泄漏的概念会让局部修复反复打补丁、扩展被迫改核心。四条轴的一等概念与其绑定规则——
 
-- **输入轴 · Input**——用户输入是一等概念（身份即其 messageId），消费状态可查，统一 draft / queued / admitted / steer / recall / interrupt。缺了它，"Esc + 第二条待决意图"这类时序本质不可判定（见 `user-input-lifecycle.md` S3）；有了它，recall / steer / interrupt 从时序特例收敛为对同一实体的状态查询。
+- **输入轴 · Input**——用户输入是一等概念（身份即其 messageId），消费状态可查，统一 draft / queued / admitted / steer / recall。缺了它，"Esc + 第二条待决意图"这类时序本质不可判定（见 `user-input-lifecycle.md` S3）；有了它，recall / steer 从时序特例收敛为对同一实体的状态查询。用户信号共三型（同族不同落点）：**Input**（内容，驱动 turn）/ **Response**（内容，答复某 Request，就地解阻 pending）/ **Control**（无内容，命令 turn 生命周期，如 `interrupt`，out-of-band 打断且级联收口 pending Response）。
 
 - **交互轴 · Request ↔ Response**——provider 阻塞征求用户（**Request**:`kind` = permission / choice / elicitation,**不限权限**）、用户经 request id `refersTo` 答复（**Response**,走统一 `respond()`）。与输入轴正交的第三根用户交互轴;Response 与 Input 同为"用户 → provider 信号",区别在 solicited（必关联一个 Request）。委托代批的审计回执 `ApprovalReview`（自带 `reviewId`、timeline 公民、多次决策各自成条不被覆盖）是 `Response{kind:permission}` 的委托叶子,非通名。详见 `provider-interaction-design.md` §3.5。
 

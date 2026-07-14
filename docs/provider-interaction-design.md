@@ -497,6 +497,10 @@ interface Interactive {
 - turn cancel 必须级联 cancel 所有 pending request；provider 发 resolved notification 时也要关闭对应 UI；
 - unknown response 不能按 allow 处理。
 
+**cancel-cascade（已实现）**：turn 收口（尤其被 Esc 打断）时，runtime 把该 turn 仍挂起的 request 一并了结——`finalize` 遍历 `pendingRequests`（按 `requestId → turnId` 归属，onAdapterEvent 见 `*_request` 时记），用 `RequestOutcome` 的 `{kind:"cancelled"}` 变体解开 adapter 的 `await requestHandler`；adapter 收到即发 `*_resolved(cancelled)`（→ reduce 清 `pendingPermissions`、`requires_action` 落下）并回 provider abort/deny（codex `cancel`＝Deny and interrupt turn，claude `deny`）。这让 **live cancel 与 crash-recovery 走同一套 "dangling → cancelled" 语义**，不再只在重开时清理。
+
+设计取舍（对照参考实现）：**interrupt 是 out-of-band 控制信号，不进 queue**——因为它要打断的正是 queue 里排在最前、且可能正阻塞在 pending request 上的那个 turn，排队会死锁。三家印证同一形态:codex 内核把 interrupt/approval-response 都做成 `Op`（一条提交通道、turn 在独立 task 上跑，故 interrupt 能并发送达）；opencode 用 `Fiber.interrupt` + `ensuring(pending.delete)`；pi 用 `AbortSignal`。codex 还有一处精妙顺序——**先 abort task，再 clear pending waiters**，避免取消以 model 可见的 tool rejection 抢在 turn 中断之前冒出；baton 的 `finalize` 天然在 `adapter.cancel` 之后，顺序一致。
+
 ### 4.8 事件模型
 
 保留已有 ACP v2 主干：

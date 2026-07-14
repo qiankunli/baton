@@ -148,7 +148,7 @@ describe("Input lifecycle (InputRecord)", () => {
     await runtime.steer("codex", text("also do B"));
     expect(runtime.inputs.some((i) => i.status === "accepted_steer")).toBe(true);
 
-    await runtime.cancelActive();
+    await runtime.control({ kind: "interrupt" });
     expect(await turn).toBe("completed");
 
     // 无悬挂输入实体，且 steer 文本仍在事件历史里（不静默丢；不自动重发 → 只有一条 steer prompt）

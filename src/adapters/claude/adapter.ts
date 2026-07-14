@@ -530,6 +530,15 @@ export class ClaudeAdapter implements AgentAdapter {
     };
     emit({ kind: "permission_request", provider: this.provider, payload: request });
     const response = await this.options.requestHandler(request);
+    if (response.kind === "cancelled") {
+      // turn 被打断，request 随之收口：留痕 cancelled、拒绝执行（不静默、不当 allow）
+      emit({
+        kind: "permission_resolved",
+        provider: this.provider,
+        payload: { requestId: request.requestId, outcome: "cancelled" },
+      });
+      return { behavior: "deny", message: "turn interrupted before approval" };
+    }
     // response 按 requestId 路由回来，kind 必配对 permission；意外不配一律保守拒绝（非 allow 即 deny）
     const optionId = response.kind === "permission" ? response.optionId : "";
     emit({
@@ -572,6 +581,14 @@ export class ClaudeAdapter implements AgentAdapter {
     const request: QuestionRequest = { kind: "question", requestId: newId("qr"), questions };
     emit({ kind: "question_request", provider: this.provider, payload: request });
     const response = await this.options.requestHandler(request);
+    if (response.kind === "cancelled") {
+      emit({
+        kind: "question_resolved",
+        provider: this.provider,
+        payload: { requestId: request.requestId, outcome: "cancelled" },
+      });
+      return { behavior: "deny", message: "turn interrupted before answer" };
+    }
     const decisionAnswers = response.kind === "question" ? response.answers : {};
     emit({
       kind: "question_resolved",

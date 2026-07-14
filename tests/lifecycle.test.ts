@@ -147,7 +147,7 @@ describe("cancel", () => {
     const queued = runtime.submit("scripted", [{ type: "text", text: "follow-up" }]);
     await until(() => adapter.submits.length === 1);
 
-    await runtime.cancelActive();
+    await runtime.control({ kind: "interrupt" });
     expect(await first).toBe("completed");
 
     // 排队的 follow-up 在打断后自动开跑；测试手动放行它的终态
@@ -176,7 +176,7 @@ describe("cancel", () => {
     const outcome = runtime.submit("scripted", [{ type: "text", text: "stuck" }]);
     await until(() => adapter.submits.length === 1);
 
-    await runtime.cancelActive();
+    await runtime.control({ kind: "interrupt" });
     expect(await outcome).toBe("completed");
 
     const events = session.readEvents();

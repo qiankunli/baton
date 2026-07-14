@@ -156,7 +156,7 @@ describe("runtime-owned user_message at dequeue", () => {
 
     const first = runtime.submit("codex", [{ type: "text", text: "cold start" }]);
     await Bun.sleep(5); // preparing：open() 未完成
-    await runtime.cancelActive();
+    await runtime.control({ kind: "interrupt" });
 
     // Esc 立即生效：cancelled 终态 + 打断 notice + summary，全部不等 open() 完成
     const events = session.readEvents();
