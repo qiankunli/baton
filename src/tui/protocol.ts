@@ -25,6 +25,7 @@ import {
   type ProviderName,
 } from "../commands/registry.ts";
 import type { BatonConfig } from "../config/config.ts";
+import { loadModelPreferences, saveModelPreference } from "../config/model-preferences.ts";
 import { expandMentions } from "../context/mention.ts";
 import {
   textOf,
@@ -167,6 +168,7 @@ export class BatonChatProtocol implements ChatProtocol {
   private historyCursor: number | null = null; // null = 未浏览（正在编辑草稿）
   private historyStash: string | null = null; // 进入浏览前暂存的草稿，越过最新时恢复
   private lastHistoryText: string | null = null; // 上次召回的条目，判定用户是否改动过
+  private readonly modelPreferences: Record<string, string>;
 
   constructor(
     private readonly store: SessionStore,
@@ -176,6 +178,7 @@ export class BatonChatProtocol implements ChatProtocol {
   ) {
     this.session = opened.session;
     this.agent = config.defaultAgent;
+    this.modelPreferences = loadModelPreferences(store.rootDir);
     if (opened.recovered) {
       this.status = { text: "Recovered an interrupted turn from a previous baton run", tone: "info" };
     }
@@ -470,6 +473,7 @@ export class BatonChatProtocol implements ChatProtocol {
     return new BatonSessionRuntime({
       session: this.session,
       mentionBudgetChars: this.config.mentionBudgetChars,
+      modelPreferences: this.modelPreferences,
       // 交互回调由 runtime 提供（resolver 注册表）：protocol 不再持有交互状态
       createAdapter: (name, handlers) =>
         createProviderAdapter(name as ProviderName, { ...handlers, config: this.config }),
@@ -506,6 +510,9 @@ export class BatonChatProtocol implements ChatProtocol {
 
   private async configureModel(target: ProviderName, model: { id: string; label: string }): Promise<void> {
     await this.runtime.setModel(target, model.id);
+    saveModelPreference(this.store.rootDir, target, model.id);
+    if (model.id === "default") delete this.modelPreferences[target];
+    else this.modelPreferences[target] = model.id;
     this.status = { text: `${target} model: ${model.label} (takes effect next turn)`, tone: "info" };
     this.changed();
   }
