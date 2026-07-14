@@ -266,10 +266,13 @@ describe("BatonChatProtocol transcript projection", () => {
       const protocol = new BatonChatProtocol(store, config, { session, resumed: false }, () => undefined);
 
       const toolIndex = protocol.getView().transcript.findIndex((item) => item.id === "tc1");
+      // 展示双轴：approved 的 outcome 是 completed（审到底了，不被遮成 warning），
+      // 需留痕由正交的 tone 表达（委托代批放行 → 审计痕）
       expect(protocol.getView().transcript[toolIndex + 1]).toMatchObject({
         id: "approval-review:arv_test1",
         kind: "notice",
-        status: "warning",
+        status: "completed",
+        tone: "warning",
         title: "Automatic approval review approved (risk: low, authorization: unknown)",
         content: { type: "text", text: "Auto-review returned a low-risk allow decision." },
       });

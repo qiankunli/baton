@@ -722,15 +722,19 @@ function approvalReviewTranscriptItem(review: ApprovalReviewUpdate): TranscriptI
     review.userAuthorization ? `authorization: ${review.userAuthorization}` : undefined,
   ].filter(Boolean);
   const suffix = facts.length > 0 ? ` (${facts.join(", ")})` : "";
-  // decision 已在 adapter 边界收口为闭合三态（kernel.md §2 不变量 #2）；一个状态只表达一种语义：
-  // approved→warning 留痕，denied→declined，aborted（未决/异常）→failed。此处对闭集穷尽映射。
+  // decision 已在 adapter 边界收口为闭合三态（kernel.md §2 不变量 #2），此处对闭集穷尽映射到
+  // chat-tui 的展示双轴（kernel.md §6 展示轴）：
+  // - outcome（status）= 这次 review 的结局：approved→completed（审到底了）、denied→declined、aborted→failed；
+  // - tone = 是否需留痕：仅 approved 带 warning——**委托代批放行的操作要留审计痕**。
+  // 双轴的意义正在这条：approved 不再被遮成一个 warning 而丢掉"它审完了"，✓ 与警示色各说各的。
   const status =
-    review.decision === "approved" ? "warning" : review.decision === "denied" ? "declined" : "failed";
+    review.decision === "denied" ? "declined" : review.decision === "aborted" ? "failed" : "completed";
   return {
     type: "block",
     id: `approval-review:${review.reviewId}`,
     kind: "notice",
     status,
+    ...(review.decision === "approved" ? { tone: "warning" as const } : {}),
     title: `Automatic approval review ${review.decision}${suffix}`,
     content: review.rationale ? { type: "text", text: review.rationale } : undefined,
   };
