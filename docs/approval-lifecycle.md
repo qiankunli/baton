@@ -50,7 +50,7 @@ Adapter emit `permission_request` → runtime 的 `approvalHandler` 注册 resol
 
 人工审批时，adapter 优先按 app-server 的 `availableDecisions` 生成选项并把结构化 decision 原样回传；老版本未提供该字段、**或一项都认不出**时退回稳定四选项——非空但全不可映射会得到零选项审批卡，用户无从作答、turn 永久挂起。
 
-选项的语义由 provider 给的 `name` 承载（如 `Allow and remember: make -C devloop bump-version`），两根正交轴 `polarity` / `persistence` 只是渲染提示。**授权“作用于什么”闭不了包**，不进枚举：codex 自己的 `acceptForSession` 对 command 是“session 审批缓存”、对 file change 是“同一批文件”；execpolicy amendment 作用于命令前缀，network amendment 作用于 host **且可以是 deny**。把这些压进单一 `kind` 的年代，“永久拉黑某 host”被映射成 `allow_always` + “Allow and remember: deny evil.com”——最危险的选项长得最安全。
+选项的语义由 provider 给的 `name` 承载（如 `Allow and remember: make -C devloop bump-version`），两根正交轴 `polarity` / `lifetime` 只是渲染提示。**授权“作用于什么”闭不了包**，不进枚举：codex 自己的 `acceptForSession` 对 command 是“session 审批缓存”、对 file change 是“同一批文件”；execpolicy amendment 作用于命令前缀，network amendment 作用于 host **且可以是 deny**。把这些压进单一 `kind` 的年代，“永久拉黑某 host”被映射成 `allow_always` + “Allow and remember: deny evil.com”——最危险的选项长得最安全。
 
 ### 2.3 未知审批旁路的兜底
 

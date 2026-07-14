@@ -483,7 +483,7 @@ describe("codex: reasoning summary parts", () => {
 describe("claude: approval options", () => {
   test("without SDK suggestions there is no always option (baton 不自造授权规则)", () => {
     const options = claudeApprovalOptions(false);
-    expect(options.map((o) => [o.polarity, o.persistence])).toEqual([
+    expect(options.map((o) => [o.polarity, o.lifetime])).toEqual([
       ["allow", "once"],
       ["reject", "once"],
     ]);
@@ -491,7 +491,7 @@ describe("claude: approval options", () => {
 
   test("with suggestions a persistent allow appears between allow and deny", () => {
     const options = claudeApprovalOptions(true);
-    expect(options.map((o) => [o.polarity, o.persistence])).toEqual([
+    expect(options.map((o) => [o.polarity, o.lifetime])).toEqual([
       ["allow", "once"],
       ["allow", "persistent"],
       ["reject", "once"],

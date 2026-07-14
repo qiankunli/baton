@@ -506,8 +506,8 @@ describe("runStatusLabel", () => {
 
 describe("interaction eventization: pending projects from the event stream", () => {
   const APPROVAL_OPTIONS = [
-    { optionId: "allow", name: "Allow", polarity: "allow" as const, persistence: "once" as const },
-    { optionId: "deny", name: "Deny", polarity: "reject" as const, persistence: "once" as const },
+    { optionId: "allow", name: "Allow", polarity: "allow" as const, lifetime: "once" as const },
+    { optionId: "deny", name: "Deny", polarity: "reject" as const, lifetime: "once" as const },
   ];
 
   test("approval card follows permission_request/resolved events; stale answer is a hint, not a crash", async () => {

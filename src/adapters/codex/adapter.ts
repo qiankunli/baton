@@ -106,15 +106,15 @@ function codexModels(result: unknown): ModelOption[] {
 // 注意 cancel 的 "deny + 中断 turn"：中断属于 Control 轴，不是更强的拒绝范围——
 // 两轴上它与 decline 同为 (reject, once)，差别只由 name 承载。
 const FALLBACK_APPROVAL_OPTIONS: PermissionOption[] = [
-  { optionId: "accept", name: "Allow once", polarity: "allow", persistence: "once" },
+  { optionId: "accept", name: "Allow once", polarity: "allow", lifetime: "once" },
   {
     optionId: "acceptForSession",
     name: "Allow for this session",
     polarity: "allow",
-    persistence: "session",
+    lifetime: "session",
   },
-  { optionId: "decline", name: "Deny (agent continues)", polarity: "reject", persistence: "once" },
-  { optionId: "cancel", name: "Deny and interrupt turn", polarity: "reject", persistence: "once" },
+  { optionId: "decline", name: "Deny (agent continues)", polarity: "reject", lifetime: "once" },
+  { optionId: "cancel", name: "Deny and interrupt turn", polarity: "reject", lifetime: "once" },
 ];
 
 interface CodexApprovalChoice {
@@ -141,7 +141,7 @@ function structuredApprovalChoice(decision: unknown, index: number): CodexApprov
         // 作用对象（命令前缀）只能进 name：它是 codex 方言，两轴表达不了。
         name: `Allow and remember: ${prefix}`,
         polarity: "allow",
-        persistence: "persistent",
+        lifetime: "persistent",
       },
       decision,
     };
@@ -159,7 +159,7 @@ function structuredApprovalChoice(decision: unknown, index: number): CodexApprov
         optionId: `applyNetworkPolicyAmendment:${index}`,
         name: `${verb} and remember: ${target}`,
         polarity: deny ? "reject" : "allow",
-        persistence: "persistent",
+        lifetime: "persistent",
       },
       decision,
     };

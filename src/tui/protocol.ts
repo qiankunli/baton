@@ -57,7 +57,7 @@ import { sessionPickerOptions, type SessionPickerMode } from "./session-picker.t
 function approvalOptionKind(option: PermissionOption): string {
   const legacy = (option as { kind?: unknown }).kind;
   if (!option.polarity && typeof legacy === "string") return legacy;
-  const lasting = option.persistence !== "once";
+  const lasting = option.lifetime !== "once";
   return option.polarity === "allow"
     ? lasting
       ? "allow_always"

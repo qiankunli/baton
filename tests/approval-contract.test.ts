@@ -159,15 +159,15 @@ describe("codex approval routing is pinned by the adapter", () => {
 
     expect(events[0]?.payload).toMatchObject({
       options: [
-        { optionId: "accept", name: "Allow once", polarity: "allow", persistence: "once" },
+        { optionId: "accept", name: "Allow once", polarity: "allow", lifetime: "once" },
         {
           optionId: "acceptWithExecpolicyAmendment:1",
           // 作用对象（命令前缀）只在 name 里——两轴表达不了它，UI 也不许拿两轴合成标签
           name: "Allow and remember: make -C devloop bump-version",
           polarity: "allow",
-          persistence: "persistent",
+          lifetime: "persistent",
         },
-        { optionId: "cancel", name: "Deny and interrupt turn", polarity: "reject", persistence: "once" },
+        { optionId: "cancel", name: "Deny and interrupt turn", polarity: "reject", lifetime: "once" },
       ],
     });
     expect(result).toEqual({ decision: structuredDecision });
@@ -195,7 +195,7 @@ describe("codex approval routing is pinned by the adapter", () => {
           optionId: "applyNetworkPolicyAmendment:0",
           name: "Deny and remember: evil.example.com",
           polarity: "reject",
-          persistence: "persistent",
+          lifetime: "persistent",
         },
       ],
     });
@@ -220,7 +220,7 @@ describe("codex approval routing is pinned by the adapter", () => {
           optionId: "applyNetworkPolicyAmendment:0",
           name: "Allow and remember: registry.npmjs.org",
           polarity: "allow",
-          persistence: "persistent",
+          lifetime: "persistent",
         },
       ],
     });

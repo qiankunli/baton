@@ -166,7 +166,7 @@ describe("crash recovery on open", () => {
         kind: "permission",
         requestId: "pr1",
         title: "Run rm -rf?",
-        options: [{ optionId: "yes", name: "Yes", polarity: "allow", persistence: "once" }],
+        options: [{ optionId: "yes", name: "Yes", polarity: "allow", lifetime: "once" }],
       },
       provider: "codex",
       turnId: "t1",

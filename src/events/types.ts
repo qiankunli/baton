@@ -192,8 +192,13 @@ export interface PermissionOption {
   name: string;
   /** 极性：闭合、跨 provider 稳定。 */
   polarity: "allow" | "reject";
-  /** 时间跨度：闭合三档。只表达"多久"，不表达"作用于什么"。 */
-  persistence: "once" | "session" | "persistent";
+  /**
+   * 这次决定生效多久：闭合三档。**只表达"多久"，不表达"作用于什么"**——
+   * 有意不叫 `scope`：授权的 scope 是「时间 × 作用对象」两轴，这里只是时间那根，
+   * 叫 scope 会招人把命令前缀 / host 塞进来，等于把刚拆开的东西焊回去。
+   * 也不叫 `persistence`：那个词在软件语境里默认指落盘，会被读成存储机制。
+   */
+  lifetime: "once" | "session" | "persistent";
 }
 
 // Request ↔ Response 交互轴（provider 询问用户 ↔ 用户答复，见 provider-interaction-design.md

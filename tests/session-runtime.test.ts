@@ -289,7 +289,7 @@ describe("interaction resolver registry", () => {
           requestId: "ar_1",
           title: "Run command?",
           options: [
-            { optionId: "allow", name: "Allow", polarity: "allow" as const, persistence: "once" as const },
+            { optionId: "allow", name: "Allow", polarity: "allow" as const, lifetime: "once" as const },
           ],
         };
         emit({ kind: "permission_request", provider: this.provider, payload: request });

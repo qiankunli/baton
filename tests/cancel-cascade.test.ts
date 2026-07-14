@@ -41,7 +41,7 @@ class ApprovalHoldingAdapter implements AgentAdapter {
         kind: "permission",
         requestId: "ar_hold",
         title: "Run command?",
-        options: [{ optionId: "allow", name: "Allow", polarity: "allow", persistence: "once" }],
+        options: [{ optionId: "allow", name: "Allow", polarity: "allow", lifetime: "once" }],
       };
       emit({ kind: "permission_request", provider: this.provider, payload: request });
       const outcome = await this.handlers.requestHandler(request);
