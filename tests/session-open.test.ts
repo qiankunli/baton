@@ -163,6 +163,7 @@ describe("crash recovery on open", () => {
     h.append({
       kind: "permission_request",
       payload: {
+        kind: "permission",
         requestId: "pr1",
         title: "Run rm -rf?",
         options: [{ optionId: "yes", name: "Yes", kind: "allow_once" }],
@@ -182,6 +183,7 @@ describe("crash recovery on open", () => {
     h.append({
       kind: "question_request",
       payload: {
+        kind: "question",
         requestId: "qr1",
         questions: [{ questionId: "mode", header: "Mode", question: "Which mode?" }],
       },

@@ -1,6 +1,7 @@
 // 与 claude-turn-race.test.ts 同族：codex 的 turn/start 响应在老版本 app-server 上会
 // 阻塞到 turn 结束才回，其携带的终态/错误可能落在下一 turn 已 admission 之后。
 // 终态必须绑定所属 turn——不能误杀新 turn，也不能盖上共享 rt.turnId（已是新 turn 的 id）。
+import type { RequestHandler } from "../src/adapters/types.ts";
 import { expect, test } from "bun:test";
 
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
@@ -8,7 +9,10 @@ import { JsonRpcPeer } from "../src/adapters/codex/jsonrpc.ts";
 import type { PromptInput, ProviderSessionRef } from "../src/adapters/types.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
 
-const approvalHandler = async () => ({ optionId: "decline" });
+const requestHandler: RequestHandler = async (req) =>
+  req.kind === "permission"
+    ? { kind: "permission", requestId: req.requestId, optionId: "decline" }
+    : { kind: "question", requestId: req.requestId, answers: {} };
 
 interface TurnState {
   turnId: string;
@@ -21,7 +25,7 @@ interface Seams {
 }
 
 function harness() {
-  const adapter = new CodexAdapter({ approvalHandler });
+  const adapter = new CodexAdapter({ requestHandler });
   const events: Array<{ kind: string; turnId?: string; payload: unknown }> = [];
   const rt = {
     threadId: "th1",
@@ -94,7 +98,7 @@ interface WireEvent {
 }
 
 function wireHarness() {
-  const adapter = new CodexAdapter({ approvalHandler });
+  const adapter = new CodexAdapter({ requestHandler });
   const events: WireEvent[] = [];
   const outbound: Array<{ id: number | string; method: string }> = [];
   const peer = new JsonRpcPeer((line) => {

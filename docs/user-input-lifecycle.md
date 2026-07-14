@@ -23,6 +23,8 @@
 
 一条用户输入是一个 **Input** 概念，**身份即它的 `messageId`（`m_`）**：durable 形态是事件流里的 `user_message` 事件，live 形态是 runtime 的 `InputRecord`（与 `TurnRecord` 对称），两者同一个 id，不另造平行身份。`InputRecord` 带显式 `status` 走上表各阶段：submit → `queued`，出队 → `admitted`，steer 成功 → `accepted_steer`，召回 → `recalled`，turn 正常收口 → `finalized`，被 Esc 打断 → `interrupted`。`runtime.inputs` 暴露在世 Input 的只读快照，让 recall / interrupt / steer 的迁移是对同一 Input 的状态查询，而非散落的时序特判。历史回溯（§2.4）读的是事件流里已 finalized 的同一批 Input。
 
+概念叫 **Input** 而非 UserInput 是有意的：input 有**来源**维度（对称于 Turn 的 origin）。当前只有 `user`（composer 键入），将来会补 `monitor`（事件驱动，如监听到 PR merged 唤醒会话，见 design.md "事件驱动的长期 loop"）——monitor input 仍产生 driven turn（baton 响应外部事件主动驱动 provider），只是 source 不是用户。名字保持来源中立，`source` 字段等 monitor 真落地时再按 kernel §5 演进规则补。
+
 Turn 是一段有始有终的 provider 活动，不等于“一条用户消息”：一个 driven turn 包含初始 prompt，也可能包含零到多条 same-turn steer。
 
 ## 2. 当前主流程

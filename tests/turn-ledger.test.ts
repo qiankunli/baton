@@ -3,6 +3,7 @@
 // 运行期间，observed turn 的 idle 会进 driven 分支、被 turnId 守卫拒绝后不再 fallthrough——
 // observed turn 永远得不到 summary，跨 provider catch-up 对它永久盲区。
 // 另钉住（bug#4）：codex fast-submit 窗口内（codexTurnId 未就位）的 cancel 不得静默丢弃。
+import type { RequestHandler } from "../src/adapters/types.ts";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,7 +24,10 @@ import type { AnyNewEvent } from "../src/events/types.ts";
 import { BatonSessionRuntime } from "../src/session/runtime.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
-const approvalHandler = async () => ({ optionId: "deny" });
+const requestHandler: RequestHandler = async (req) =>
+  req.kind === "permission"
+    ? { kind: "permission", requestId: req.requestId, optionId: "deny" }
+    : { kind: "question", requestId: req.requestId, answers: {} };
 
 let root: string;
 let store: SessionStore;
@@ -222,7 +226,7 @@ describe("finalized turn records are retired (memory retention regression)", () 
 
 describe("adapter contract: terminal state_update carries a turnId", () => {
   test("claude adapter: finish / cancel / host close all bind the owning turn", async () => {
-    const adapter = new ClaudeAdapter({ approvalHandler });
+    const adapter = new ClaudeAdapter({ requestHandler });
     const events: Array<{ kind: string; turnId?: string; payload: Record<string, unknown> }> = [];
     const ref = await adapter.open({ cwd: "/tmp" }, (ev) => events.push(ev as never));
     const seams = adapter as unknown as {
@@ -251,7 +255,7 @@ describe("adapter contract: terminal state_update carries a turnId", () => {
   });
 
   test("codex adapter: finish / fail / host close all bind the owning turn", () => {
-    const adapter = new CodexAdapter({ approvalHandler: async () => ({ optionId: "decline" }) });
+    const adapter = new CodexAdapter({ requestHandler: async (req) => ({ kind: "permission", requestId: req.requestId, optionId: "decline" }) });
     const events: Array<{ kind: string; turnId?: string; payload: Record<string, unknown> }> = [];
     const rt = {
       child: { kill() {} },
@@ -295,7 +299,7 @@ describe("adapter contract: terminal state_update carries a turnId", () => {
 
 describe("codex pending cancel (bug#4 regression)", () => {
   function codexHarness() {
-    const adapter = new CodexAdapter({ approvalHandler: async () => ({ optionId: "decline" }) });
+    const adapter = new CodexAdapter({ requestHandler: async (req) => ({ kind: "permission", requestId: req.requestId, optionId: "decline" }) });
     const calls: Array<{ method: string; params: unknown }> = [];
     const rt = {
       child: { kill() {} },

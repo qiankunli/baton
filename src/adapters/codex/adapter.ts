@@ -10,7 +10,9 @@ import type {
   ContentBlock,
   DiffBlock,
   PermissionOption,
+  PermissionRequest,
   QuestionPrompt,
+  QuestionRequest,
   StopReason,
   ToolCallStatus,
 } from "../../events/types.ts";
@@ -18,14 +20,13 @@ import { textOf } from "../../events/types.ts";
 import type {
   AdapterCapabilities,
   AgentAdapter,
-  ApprovalHandler,
   EventSink,
   ModelOption,
   OpenOptions,
   PromptInput,
   PromptReceipt,
   ProviderSessionRef,
-  QuestionHandler,
+  RequestHandler,
   SteerReceipt,
 } from "../types.ts";
 import { unsupportedPromptBlocks } from "../types.ts";
@@ -253,8 +254,7 @@ function stopReasonOf(turnStatus: string): StopReason {
 }
 
 export interface CodexAdapterOptions {
-  approvalHandler: ApprovalHandler;
-  questionHandler?: QuestionHandler;
+  requestHandler: RequestHandler;
   /** 缺省仍由用户审批；auto_review 是显式委托，逐条回执经 approval_review_update 留痕。 */
   approvalReviewer?: "user" | "auto_review";
   /** 覆盖二进制，测试用 */
@@ -886,23 +886,25 @@ export class CodexAdapter implements AgentAdapter {
         }
         const requestId = String(p.approvalId ?? p.itemId ?? p.callId ?? newId("ar"));
         const presentation = approvalPresentationOf(method, p);
-        const request = {
+        const request: PermissionRequest = {
+          kind: "permission",
           requestId,
           ...presentation,
           toolCallId: p.itemId !== undefined ? String(p.itemId) : undefined,
           options: APPROVAL_OPTIONS,
         };
         this.emit(rt, { kind: "permission_request", provider: this.provider, payload: request }, params);
-        const decision = await this.options.approvalHandler(request);
+        const response = await this.options.requestHandler(request);
+        // response 按 requestId 路由回来，kind 必配对 permission；意外不配保守拒绝（空 optionId 非 allow）
+        const optionId = response.kind === "permission" ? response.optionId : "";
         this.emit(rt, {
           kind: "permission_resolved",
           provider: this.provider,
-          payload: { requestId, outcome: "selected", optionId: decision.optionId },
+          payload: { requestId, outcome: "selected", optionId },
         });
-        return { decision: decision.optionId };
+        return { decision: optionId };
       }
       case "item/tool/requestUserInput": {
-        if (!this.options.questionHandler) throw new Error("baton question handler unavailable");
         const source = Array.isArray(p.questions) ? p.questions : [];
         const questions: QuestionPrompt[] = source.map((value, index) => {
           const question = (value ?? {}) as Record<string, unknown>;
@@ -920,20 +922,22 @@ export class CodexAdapter implements AgentAdapter {
             secret: question.isSecret === true,
           };
         });
-        const request = {
+        const request: QuestionRequest = {
+          kind: "question",
           requestId: String(p.itemId ?? newId("qr")),
           questions,
         };
         this.emit(rt, { kind: "question_request", provider: this.provider, payload: request }, params);
-        const decision = await this.options.questionHandler(request);
+        const response = await this.options.requestHandler(request);
+        const decisionAnswers = response.kind === "question" ? response.answers : {};
         this.emit(rt, {
           kind: "question_resolved",
           provider: this.provider,
-          payload: { requestId: request.requestId, outcome: "answered", answers: decision.answers },
+          payload: { requestId: request.requestId, outcome: "answered", answers: decisionAnswers },
         });
         return {
           answers: Object.fromEntries(
-            Object.entries(decision.answers).map(([questionId, answers]) => [questionId, { answers }]),
+            Object.entries(decisionAnswers).map(([questionId, answers]) => [questionId, { answers }]),
           ),
         };
       }

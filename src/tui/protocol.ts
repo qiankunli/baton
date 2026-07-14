@@ -344,7 +344,7 @@ export class BatonChatProtocol implements ChatProtocol {
    * reduced pending 删除后视图自然更新——UI 只消费事件流投影，不维护第二份状态。
    */
   resolveApproval(id: string, optionId: string): void {
-    if (!this.runtime.resolvePermission(id, { optionId })) {
+    if (!this.runtime.respond({ kind: "permission", requestId: id, optionId })) {
       // 无 resolver：请求已被应答，或是崩溃残留（新进程没有等待中的 adapter）
       this.status = { text: "approval request is no longer pending", tone: "info" };
       this.changed();
@@ -352,7 +352,7 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   resolveQuestion(id: string, answers: QuestionAnswers): void {
-    if (!this.runtime.resolveQuestion(id, { answers })) {
+    if (!this.runtime.respond({ kind: "question", requestId: id, answers })) {
       this.status = { text: "question is no longer pending", tone: "info" };
       this.changed();
     }

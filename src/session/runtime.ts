@@ -4,12 +4,10 @@ import {
   isNativeSessionIdentifiable,
   isSteerable,
   type AgentAdapter,
-  type ApprovalDecision,
-  type ApprovalHandler,
+  type InteractionResponse,
   type ModelOption,
   type ProviderSessionRef,
-  type QuestionDecision,
-  type QuestionHandler,
+  type RequestHandler,
   type SteerReceipt,
 } from "../adapters/types.ts";
 import { buildProviderCatchUpContext } from "../context/mention.ts";
@@ -44,11 +42,16 @@ export type InputStatus =
   | "interrupted";
 
 /**
- * 一条用户输入的 runtime 生命周期记录（与 `TurnRecord` 对称：TurnRecord 之于 turn，
+ * 一条输入的 runtime 生命周期记录（与 `TurnRecord` 对称：TurnRecord 之于 turn，
  * InputRecord 之于 input）。**身份即 `messageId`**——一条输入的 durable 形态是事件流里的
  * `user_message`，live 形态就是这条记录，两者同一个 `m_` id，不另造平行身份。
  * queued/admitted 记录持有 resolve/reject（submit 的回执通道）；accepted_steer 是
  * fire-and-forget 注入当前 turn 的记录，无独立回执。
+ *
+ * 刻意叫 Input 而非 UserInput：input 有**来源**维度（对称于 Turn 的 origin）。当前只有
+ * `user`（composer 键入），将来会补 `monitor`（事件驱动，如监听到 PR merged 唤醒会话——
+ * 见 design.md "事件驱动的长期 loop"）。名字保持来源中立，`user_message` 只是当前唯一
+ * 来源的 durable 形态。monitor input 落地时按 §5 演进规则加 `source` 字段，勿把它改窄成 UserInput。
  */
 interface InputRecord {
   /** 身份：用户消息的 baton message id（`m_`）。user_message 由 runtime 出队时落盘（见 runTurn） */
@@ -130,10 +133,9 @@ export type SteerOutcome =
   | { effective: "steer" }
   | { effective: "follow_up"; outcome: Promise<SubmitOutcome> };
 
-/** runtime 注入给 adapter 构造器的交互回调（见 InteractionHandlers 的注入点 ensureProvider） */
+/** runtime 注入给 adapter 构造器的交互回调（见注入点 slotFor）：统一的 Request→Response 通道 */
 export interface InteractionHandlers {
-  approvalHandler: ApprovalHandler;
-  questionHandler: QuestionHandler;
+  requestHandler: RequestHandler;
 }
 
 export interface BatonSessionRuntimeOptions {
@@ -186,48 +188,34 @@ export class BatonSessionRuntime {
   /** 队列策略指针：当前唯一 driven turn（本轮 driven ≤ 1；见类 docstring） */
   private activeDrivenTurnId?: string;
   /**
-   * 未决交互的应答通道：requestId → resolver。**只有应答通道，没有状态**——
-   * pending 交互的真相源是事件流（adapter 先 emit permission_request 再 await 回调，
-   * UI 从 reduced state 投影），内存只保留唤醒 adapter 的 resolve 函数。
-   * 崩溃后新进程没有 resolver，open 时的 crash recovery 会对 reduced pending
-   * 一律补 resolved(cancelled)，两侧语义自洽。
+   * 未决 request 的应答通道：requestId → resolver（permission / question 统一路由）。
+   * **只有应答通道，没有状态**——pending request 的真相源是事件流（adapter 先 emit
+   * *_request 再 await 回调，UI 从 reduced state 投影），内存只保留唤醒 adapter 的 resolve。
+   * 崩溃后新进程没有 resolver，open 时的 crash recovery 会对 reduced pending 一律补
+   * resolved(cancelled)，两侧语义自洽。
    */
-  private readonly pendingApprovals = new Map<string, (d: ApprovalDecision) => void>();
-  private readonly pendingQuestions = new Map<string, (d: QuestionDecision) => void>();
+  private readonly pendingRequests = new Map<string, (r: InteractionResponse) => void>();
 
   constructor(private readonly options: BatonSessionRuntimeOptions) {}
 
-  /** 注入给 adapter 的审批回调：注册 resolver 后挂起，等宿主经 resolvePermission 应答 */
-  readonly approvalHandler: ApprovalHandler = (request) =>
+  /** 注入给 adapter 的统一 request 回调：注册 resolver 后挂起，等宿主经 respond() 应答 */
+  readonly requestHandler: RequestHandler = (request) =>
     new Promise((resolve) => {
-      this.pendingApprovals.set(request.requestId, resolve);
-      this.changed();
-    });
-
-  readonly questionHandler: QuestionHandler = (request) =>
-    new Promise((resolve) => {
-      this.pendingQuestions.set(request.requestId, resolve);
+      this.pendingRequests.set(request.requestId, resolve);
       this.changed();
     });
 
   /**
-   * 宿主应答一个未决审批。false = requestId 不在挂起集合（已被应答、或事件流里的
-   * pending 来自已死进程且无 resolver）——UI 据此提示 stale 而不是静默吞掉。
-   * 事件留痕（permission_resolved）由被唤醒的 adapter 负责，这里不落事件。
+   * 宿主应答一个未决 request（permission / question 统一入口，response 自带 `requestId` 与
+   * `kind` 路由）。false = requestId 不在挂起集合（已被应答、或事件流里的 pending 来自已死
+   * 进程且无 resolver）——UI 据此提示 stale 而不是静默吞掉。事件留痕（*_resolved）由被唤醒
+   * 的 adapter 负责，这里不落事件。
    */
-  resolvePermission(requestId: string, decision: ApprovalDecision): boolean {
-    const resolve = this.pendingApprovals.get(requestId);
+  respond(response: InteractionResponse): boolean {
+    const resolve = this.pendingRequests.get(response.requestId);
     if (!resolve) return false;
-    this.pendingApprovals.delete(requestId);
-    resolve(decision);
-    return true;
-  }
-
-  resolveQuestion(requestId: string, decision: QuestionDecision): boolean {
-    const resolve = this.pendingQuestions.get(requestId);
-    if (!resolve) return false;
-    this.pendingQuestions.delete(requestId);
-    resolve(decision);
+    this.pendingRequests.delete(response.requestId);
+    resolve(response);
     return true;
   }
 
@@ -748,8 +736,7 @@ export class BatonSessionRuntime {
     let slot = this.slots.get(provider);
     if (!slot) {
       const adapter = this.options.createAdapter(provider, {
-        approvalHandler: this.approvalHandler,
-        questionHandler: this.questionHandler,
+        requestHandler: this.requestHandler,
       });
       const created: ProviderSlot = { adapter, freshNative: true };
       slot = created;

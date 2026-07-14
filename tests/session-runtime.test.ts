@@ -13,7 +13,7 @@ import type {
   PromptReceipt,
   ProviderSessionRef,
 } from "../src/adapters/types.ts";
-import type { AnyEventEnvelope, PromptBlock } from "../src/events/types.ts";
+import type { AnyEventEnvelope, PermissionRequest, PromptBlock, QuestionRequest } from "../src/events/types.ts";
 import { textOf } from "../src/events/types.ts";
 import { BatonSessionRuntime, type InteractionHandlers } from "../src/session/runtime.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
@@ -263,8 +263,8 @@ describe("BatonSessionRuntime", () => {
   });
 });
 
-// ---- 交互 resolver 注册表：adapter 的 await 点由 resolvePermission/resolveQuestion 唤醒 ----
-// 事件留痕（request/resolved）由 adapter 负责；runtime 只持有 requestId → resolver 通道。
+// ---- 交互 resolver 注册表：adapter 的 await 点由统一 respond() 唤醒（permission/question 同路由）----
+// 事件留痕（*_request / *_resolved）由 adapter 负责；runtime 只持有 requestId → resolver 通道。
 
 describe("interaction resolver registry", () => {
   /** 先审批、后提问、再收口的交互式 fake adapter；handlers 由 runtime 经 createAdapter 注入 */
@@ -284,29 +284,39 @@ describe("interaction resolver registry", () => {
       const emit = (ev: Parameters<EventSink>[0]) => this.sink?.({ ...ev, turnId: input.turnId });
       emit({ kind: "state_update", provider: this.provider, payload: { state: "running" } });
       void (async () => {
-        const request = {
+        const request: PermissionRequest = {
+          kind: "permission",
           requestId: "ar_1",
           title: "Run command?",
           options: [{ optionId: "allow", name: "Allow", kind: "allow_once" as const }],
         };
         emit({ kind: "permission_request", provider: this.provider, payload: request });
-        const decision = await this.handlers.approvalHandler(request);
+        const decision = await this.handlers.requestHandler(request);
         emit({
           kind: "permission_resolved",
           provider: this.provider,
-          payload: { requestId: "ar_1", outcome: "selected", optionId: decision.optionId },
+          payload: {
+            requestId: "ar_1",
+            outcome: "selected",
+            optionId: decision.kind === "permission" ? decision.optionId : "",
+          },
         });
 
-        const question = {
+        const question: QuestionRequest = {
+          kind: "question",
           requestId: "qr_1",
           questions: [{ questionId: "q1", header: "Scope", question: "Which scope?" }],
         };
         emit({ kind: "question_request", provider: this.provider, payload: question });
-        const answers = await this.handlers.questionHandler(question);
+        const answers = await this.handlers.requestHandler(question);
         emit({
           kind: "question_resolved",
           provider: this.provider,
-          payload: { requestId: "qr_1", outcome: "answered", answers: answers.answers },
+          payload: {
+            requestId: "qr_1",
+            outcome: "answered",
+            answers: answers.kind === "question" ? answers.answers : {},
+          },
         });
 
         emit({ kind: "state_update", provider: this.provider, payload: { state: "idle", stopReason: "end_turn" } });
@@ -328,12 +338,12 @@ describe("interaction resolver registry", () => {
     const turn = runtime.submit("codex", [{ type: "text", text: "do it" }]);
     await Bun.sleep(5); // permission_request 已落盘、resolver 已注册
 
-    expect(runtime.resolvePermission("ar_unknown", { optionId: "allow" })).toBe(false);
-    expect(runtime.resolvePermission("ar_1", { optionId: "allow" })).toBe(true);
-    expect(runtime.resolvePermission("ar_1", { optionId: "allow" })).toBe(false); // resolver 一次性
+    expect(runtime.respond({ kind: "permission", requestId: "ar_unknown", optionId: "allow" })).toBe(false);
+    expect(runtime.respond({ kind: "permission", requestId: "ar_1", optionId: "allow" })).toBe(true);
+    expect(runtime.respond({ kind: "permission", requestId: "ar_1", optionId: "allow" })).toBe(false); // resolver 一次性
 
     await Bun.sleep(5); // question_request 已落盘
-    expect(runtime.resolveQuestion("qr_1", { answers: { q1: ["prod"] } })).toBe(true);
+    expect(runtime.respond({ kind: "question", requestId: "qr_1", answers: { q1: ["prod"] } })).toBe(true);
     await turn;
 
     const events = session.readEvents();

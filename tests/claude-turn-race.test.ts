@@ -2,12 +2,16 @@
 // 上一 turn 的 SDK 消息流在 result 消息之后才真正 close（观测约 1s），其"流耗尽兜底"
 // finishTurn 可能落在下一 turn 已 admission 之后。终态必须绑定各自的 turn——
 // 既不能把新 turn 误终结成空回答，也不能把迟到终态盖上新 turn 的 id。
+import type { RequestHandler } from "../src/adapters/types.ts";
 import { expect, test } from "bun:test";
 
 import { ClaudeAdapter } from "../src/adapters/claude/adapter.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
 
-const approvalHandler = async () => ({ optionId: "deny" });
+const requestHandler: RequestHandler = async (req) =>
+  req.kind === "permission"
+    ? { kind: "permission", requestId: req.requestId, optionId: "deny" }
+    : { kind: "question", requestId: req.requestId, answers: {} };
 
 interface TurnState {
   turnId: string;
@@ -16,7 +20,7 @@ interface TurnState {
 }
 
 test("late stream-drain finalize from the previous turn must not close the next turn", async () => {
-  const adapter = new ClaudeAdapter({ approvalHandler });
+  const adapter = new ClaudeAdapter({ requestHandler });
   const events: Array<{ kind: string; turnId?: string; payload: unknown }> = [];
   const ref = await adapter.open({ cwd: "/tmp" }, (ev) => events.push(ev as never));
   const seams = adapter as unknown as {

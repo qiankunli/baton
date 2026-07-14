@@ -34,9 +34,9 @@ ProviderSession 不在此表——它是某 provider 的私有执行状态、内
 
 内核只有一条流水线，双向流动。observed turn、stall 自愈、审批闭环都是它的特例，不是另起的机制。
 
-![baton 内核：一条双向流水线（chat-tui intent/render 边界、Runtime 的 Input+driven queue、event/turn 单通道、Adapter 的 capability 出站与归一入站、session.jsonl 持久化）](kernel-pipeline.png)
+![baton 内核：一条双向流水线（用户→baton 有 Input(composer+queue) 与 Response(浮层) 两种信号；baton→用户 render 分 tool/text/plan(transcript)、Request(浮层)、stats(footer)；中间 runtime+queue、event/turn 单通道、Adapter 的 capability 出站与归一入站、session.jsonl 持久化）](kernel-pipeline.png)
 
-入站归一箭头标注的 `driven + observed` 提示：这条 `Adapter → event` 路径同时承载用户驱动与 provider 自发两种 turn，独立于是否有待决 Input——这正是单通道真相（不变量 #1）的要害。
+两点要害：入站归一箭头标注的 `driven + observed`——`Adapter → event` 路径同时承载用户驱动与 provider 自发两种 turn，独立于是否有待决 Input（单通道真相，不变量 #1）；用户侧两种出站信号——Input 经 composer+queue 被调度成 turn，Response 在浮层作答、`refersTo` 某个 provider Request（Request↔Response 交互轴，见 §6）。
 
 ```text
 控制（出站）  chat-tui intent
@@ -114,7 +114,7 @@ interface AgentAdapter {
 
 - **输入轴 · Input**——用户输入是一等概念（身份即其 messageId），消费状态可查，统一 draft / queued / admitted / steer / recall / interrupt。缺了它，"Esc + 第二条待决意图"这类时序本质不可判定（见 `user-input-lifecycle.md` S3）；有了它，recall / steer / interrupt 从时序特例收敛为对同一实体的状态查询。
 
-- **审批轴 · ApprovalReview**——reviewer 的每次决策是按自己的 `reviewId` 归档的一等审计回执、是 timeline 公民；挂到 tool-card 只是它的一种投影。据此：无 target 的 review 也留痕、同一操作的多次决策各自成条、不被覆盖。reviewer / authority 何时显式建模按 §5 判据——出现多种 reviewer 才提升。
+- **交互轴 · Request ↔ Response**——provider 阻塞征求用户（**Request**:`kind` = permission / choice / elicitation,**不限权限**）、用户经 request id `refersTo` 答复（**Response**,走统一 `respond()`）。与输入轴正交的第三根用户交互轴;Response 与 Input 同为"用户 → provider 信号",区别在 solicited（必关联一个 Request）。委托代批的审计回执 `ApprovalReview`（自带 `reviewId`、timeline 公民、多次决策各自成条不被覆盖）是 `Response{kind:permission}` 的委托叶子,非通名。详见 `provider-interaction-design.md` §3.5。
 
 - **输出轴 · 封闭终态词表**——provider 的开放 / UNSTABLE 终态在 adapter 边界经统一原语收口到内部闭集，未知一律保守回落（不变量 #2）。闭合值进入事件流后 reduce / 投影不再面对未知；原始值留在 `raw`。反面参照 `StopReason`：有意保持开放（forward-compat 元数据）——turn 靠 `idle` 无条件收口、不依赖 reason 字符串，故无需封闭。判据是"未知会不会导致失声"，不是"凡开放皆封闭"。
 

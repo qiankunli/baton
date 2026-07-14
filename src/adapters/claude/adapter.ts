@@ -16,22 +16,23 @@ import type {
   ContentBlock,
   DiffBlock,
   PermissionOption,
+  PermissionRequest,
   PlanEntry,
   PromptBlock,
   QuestionPrompt,
+  QuestionRequest,
 } from "../../events/types.ts";
 import { textOf } from "../../events/types.ts";
 import type {
   AdapterCapabilities,
   AgentAdapter,
-  ApprovalHandler,
   EventSink,
   ModelOption,
   OpenOptions,
   PromptInput,
   PromptReceipt,
   ProviderSessionRef,
-  QuestionHandler,
+  RequestHandler,
 } from "../types.ts";
 import { unsupportedPromptBlocks } from "../types.ts";
 
@@ -321,8 +322,7 @@ function claudeModels(models: Array<{ value: string; displayName: string; descri
 }
 
 export interface ClaudeAdapterOptions {
-  approvalHandler: ApprovalHandler;
-  questionHandler?: QuestionHandler;
+  requestHandler: RequestHandler;
   /** claude 可执行文件路径；默认 BATON_CLAUDE_BIN 环境变量，再默认交给 SDK 自己找 */
   executablePath?: string;
 }
@@ -522,20 +522,23 @@ export class ClaudeAdapter implements AgentAdapter {
   ): Promise<PermissionResult> {
     if (toolName === "AskUserQuestion") return this.handleQuestion(emit, input);
     const suggestions = meta.suggestions ?? [];
-    const request = {
+    const request: PermissionRequest = {
+      kind: "permission",
       requestId: newId("ar"),
       title: meta.title ?? claudeToolTitle(toolName, input),
       options: claudeApprovalOptions(suggestions.length > 0),
     };
     emit({ kind: "permission_request", provider: this.provider, payload: request });
-    const decision = await this.options.approvalHandler(request);
+    const response = await this.options.requestHandler(request);
+    // response 按 requestId 路由回来，kind 必配对 permission；意外不配一律保守拒绝（非 allow 即 deny）
+    const optionId = response.kind === "permission" ? response.optionId : "";
     emit({
       kind: "permission_resolved",
       provider: this.provider,
-      payload: { requestId: request.requestId, outcome: "selected", optionId: decision.optionId },
+      payload: { requestId: request.requestId, outcome: "selected", optionId },
     });
-    if (decision.optionId === "allow") return { behavior: "allow", updatedInput: input };
-    if (decision.optionId === "allowAlways") {
+    if (optionId === "allow") return { behavior: "allow", updatedInput: input };
+    if (optionId === "allowAlways") {
       // SDK 契约：把 canUseTool 收到的整组 suggestions 原样作为 updatedPermissions
       // 返回，即 CLI "Yes, don't ask again" 的同款授权路径
       return { behavior: "allow", updatedInput: input, updatedPermissions: suggestions };
@@ -544,9 +547,6 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   private async handleQuestion(emit: EventSink, input: Record<string, unknown>): Promise<PermissionResult> {
-    if (!this.options.questionHandler) {
-      return { behavior: "deny", message: "baton question handler unavailable" };
-    }
     const source = Array.isArray(input.questions) ? input.questions : [];
     const questions: QuestionPrompt[] = source.map((value, index) => {
       const question = (value ?? {}) as Record<string, unknown>;
@@ -569,16 +569,17 @@ export class ClaudeAdapter implements AgentAdapter {
         allowOther: true,
       };
     });
-    const request = { requestId: newId("qr"), questions };
+    const request: QuestionRequest = { kind: "question", requestId: newId("qr"), questions };
     emit({ kind: "question_request", provider: this.provider, payload: request });
-    const decision = await this.options.questionHandler(request);
+    const response = await this.options.requestHandler(request);
+    const decisionAnswers = response.kind === "question" ? response.answers : {};
     emit({
       kind: "question_resolved",
       provider: this.provider,
-      payload: { requestId: request.requestId, outcome: "answered", answers: decision.answers },
+      payload: { requestId: request.requestId, outcome: "answered", answers: decisionAnswers },
     });
     const answers = Object.fromEntries(
-      questions.map((question) => [question.question, (decision.answers[question.questionId] ?? []).join(", ")]),
+      questions.map((question) => [question.question, (decisionAnswers[question.questionId] ?? []).join(", ")]),
     );
     return { behavior: "allow", updatedInput: { ...input, answers } };
   }

@@ -1,13 +1,17 @@
 // codex steer 的 wire 映射（design §4.3）：baton expectedTurnId → codex turn id、
 // 成功发 delivery:"steer" 的 user_message 并绑定原 turn、stale/finalized/wire 失败
 // 一律 rejected 且不发事件（降级由 runtime 决定）。
+import type { RequestHandler } from "../src/adapters/types.ts";
 import { expect, test } from "bun:test";
 
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
 import type { PromptInput, ProviderSessionRef } from "../src/adapters/types.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
 
-const approvalHandler = async () => ({ optionId: "decline" });
+const requestHandler: RequestHandler = async (req) =>
+  req.kind === "permission"
+    ? { kind: "permission", requestId: req.requestId, optionId: "decline" }
+    : { kind: "question", requestId: req.requestId, answers: {} };
 
 interface FakeRt {
   threadId: string;
@@ -19,7 +23,7 @@ interface FakeRt {
 }
 
 function harness(opts: { requestError?: Error } = {}) {
-  const adapter = new CodexAdapter({ approvalHandler });
+  const adapter = new CodexAdapter({ requestHandler });
   const events: Array<AnyNewEvent & { turnId?: string }> = [];
   const requests: Array<{ method: string; params: unknown }> = [];
   const rt: FakeRt = {
