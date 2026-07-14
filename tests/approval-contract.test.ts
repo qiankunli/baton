@@ -13,7 +13,7 @@ import type { AnyNewEvent } from "../src/events/types.ts";
 
 function codexServerRequestHarness(optionId: string) {
   const events: AnyNewEvent[] = [];
-  const adapter = new CodexAdapter({ approvalHandler: async () => ({ optionId }) });
+  const adapter = new CodexAdapter({ requestHandler: async (req) => ({ kind: "permission", requestId: req.requestId, optionId }) });
   const rt = { threadId: "th1", turnId: "t1", sink: (ev: AnyNewEvent) => events.push(ev) };
   const request = (method: string, params: unknown) =>
     (
@@ -60,7 +60,7 @@ describe("approval loop closes through the host (all adapters)", () => {
       ["deny", "deny"],
     ] as const) {
       const events: AnyNewEvent[] = [];
-      const adapter = new ClaudeAdapter({ approvalHandler: async () => ({ optionId }) });
+      const adapter = new ClaudeAdapter({ requestHandler: async (req) => ({ kind: "permission", requestId: req.requestId, optionId }) });
       const result = await (
         adapter as unknown as {
           handleCanUseTool: (

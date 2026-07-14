@@ -518,6 +518,7 @@ describe("interaction eventization: pending projects from the event stream", () 
         provider: "claude-code",
         turnId: "t1",
         payload: {
+          kind: "permission",
           requestId: "ar_1",
           title: "Write file?",
           description: "/repo/output.txt",
@@ -562,6 +563,7 @@ describe("interaction eventization: pending projects from the event stream", () 
         provider: "codex",
         turnId: "t1",
         payload: {
+          kind: "question",
           requestId: "qr_1",
           questions: [{ questionId: "q1", header: "Scope", question: "Which scope?" }],
         },

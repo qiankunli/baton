@@ -15,11 +15,15 @@ import {
 } from "../src/adapters/claude/adapter.ts";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
+import type { RequestHandler } from "../src/adapters/types.ts";
 
-const approvalHandler = async () => ({ optionId: "deny" });
+const requestHandler: RequestHandler = async (req) =>
+  req.kind === "permission"
+    ? { kind: "permission", requestId: req.requestId, optionId: "deny" }
+    : { kind: "question", requestId: req.requestId, answers: {} };
 
 function claudeHarness(): { events: AnyNewEvent[]; feed: (msg: unknown) => void } {
-  const adapter = new ClaudeAdapter({ approvalHandler });
+  const adapter = new ClaudeAdapter({ requestHandler });
   const events: AnyNewEvent[] = [];
   const rt = {
     cwd: "/tmp",
@@ -39,7 +43,7 @@ function claudeHarness(): { events: AnyNewEvent[]; feed: (msg: unknown) => void 
 }
 
 function codexHarness(): { events: AnyNewEvent[]; notify: (method: string, params: unknown) => void } {
-  const adapter = new CodexAdapter({ approvalHandler });
+  const adapter = new CodexAdapter({ requestHandler });
   const events: AnyNewEvent[] = [];
   const rt = { threadId: "th1", turnId: "t1", sink: (ev: AnyNewEvent) => events.push(ev) };
   const notify = (method: string, params: unknown) =>
@@ -298,8 +302,10 @@ describe("structured questions", () => {
   test("Claude AskUserQuestion emits request/resolved and returns answers in updatedInput", async () => {
     const events: AnyNewEvent[] = [];
     const adapter = new ClaudeAdapter({
-      approvalHandler,
-      questionHandler: async (request) => ({ answers: { [request.questions[0]!.questionId]: ["Careful"] } }),
+      requestHandler: async (req) =>
+        req.kind === "question"
+          ? { kind: "question", requestId: req.requestId, answers: { [req.questions[0]!.questionId]: ["Careful"] } }
+          : { kind: "permission", requestId: req.requestId, optionId: "deny" },
     });
     const result = await (
       adapter as unknown as {
@@ -346,8 +352,10 @@ describe("structured questions", () => {
   test("Codex requestUserInput returns the app-server answer envelope", async () => {
     const events: AnyNewEvent[] = [];
     const adapter = new CodexAdapter({
-      approvalHandler,
-      questionHandler: async () => ({ answers: { approach: ["Fast", "Safe"] } }),
+      requestHandler: async (req) =>
+        req.kind === "question"
+          ? { kind: "question", requestId: req.requestId, answers: { approach: ["Fast", "Safe"] } }
+          : { kind: "permission", requestId: req.requestId, optionId: "deny" },
     });
     const result = await (
       adapter as unknown as {

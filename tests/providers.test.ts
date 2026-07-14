@@ -1,3 +1,4 @@
+import type { RequestHandler } from "../src/adapters/types.ts";
 import { describe, expect, test } from "bun:test";
 
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
@@ -12,7 +13,10 @@ import {
 } from "../src/providers/registry.ts";
 import { agentColorFor } from "../src/tui/theme.ts";
 
-const approvalHandler = async () => ({ optionId: "deny" });
+const requestHandler: RequestHandler = async (req) =>
+  req.kind === "permission"
+    ? { kind: "permission", requestId: req.requestId, optionId: "deny" }
+    : { kind: "question", requestId: req.requestId, answers: {} };
 
 describe("provider registry", () => {
   test("registers the first bundled providers and their native session keys", () => {
@@ -24,7 +28,7 @@ describe("provider registry", () => {
   });
 
   test("constructs adapters without putting provider branches in the TUI or session runtime", () => {
-    const options = { approvalHandler, config: DEFAULT_CONFIG };
+    const options = { requestHandler, config: DEFAULT_CONFIG };
     expect(createProviderAdapter("codex", options).provider).toBe("codex");
     expect(createProviderAdapter("claude", options).provider).toBe("claude-code");
   });

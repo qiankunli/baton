@@ -1,7 +1,7 @@
 // Adapter 统一抽象："小核心 + 可选能力"（见 docs/design.md §5.1）。
 // 各家用原生协议接入，翻译成内部事件（AnyNewEvent）交给 sink；信封字段由 Store 补齐。
 
-import type { AnyNewEvent, PermissionRequest, PromptBlock, QuestionRequest } from "../events/types.ts";
+import type { AnyNewEvent, InteractionRequest, PromptBlock } from "../events/types.ts";
 
 export interface ProviderSessionRef {
   provider: string;
@@ -213,20 +213,31 @@ export function isNativeSessionIdentifiable(
   return typeof (adapter as Partial<NativeSessionIdentifiable>).nativeSessionId === "function";
 }
 
-/** 审批决策：optionId 取自 PermissionRequest.options */
-export interface ApprovalDecision {
+// Response：用户对某个 InteractionRequest 的答复（Request ↔ Response 轴，见
+// provider-interaction-design.md §3.5）。按 `kind` 与对应 request 判别配对，`requestId`
+// 关联（refersTo）该 request、供统一 respond() 路由。各 kind payload 独立，不复用。
+
+/** permission 答复：optionId 取自 PermissionRequest.options */
+export interface PermissionResponse {
+  kind: "permission";
+  requestId: string;
   optionId: string;
 }
 
-/**
- * 宿主提供的审批回调：adapter 收到 provider 的审批请求时调用并等待。
- * adapter 负责把 permission_request / permission_resolved 事件发给 sink 留痕。
- */
-export type ApprovalHandler = (req: PermissionRequest) => Promise<ApprovalDecision>;
-
-export interface QuestionDecision {
+/** question 答复：answers 按 questionId 收集 */
+export interface QuestionResponse {
+  kind: "question";
+  requestId: string;
   answers: Record<string, string[]>;
 }
 
-/** agent 结构化提问的宿主回调；与 permission approval 不共享 payload。 */
-export type QuestionHandler = (req: QuestionRequest) => Promise<QuestionDecision>;
+/** InteractionResponse：用户答复的判别联合（按 `kind` 收窄）。elicitation 待接入 */
+export type InteractionResponse = PermissionResponse | QuestionResponse;
+
+/**
+ * 宿主提供的统一 request 回调：adapter 收到 provider 的 permission / question 请求时，
+ * 构造对应 kind 的 InteractionRequest 调用并等待 kind 配对的 InteractionResponse。
+ * adapter 负责把 *_request / *_resolved 事件发给 sink 留痕。取代旧的 approvalHandler /
+ * questionHandler 双回调——只保留一条 request→response 通道（design §4.7）。
+ */
+export type RequestHandler = (req: InteractionRequest) => Promise<InteractionResponse>;

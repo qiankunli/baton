@@ -179,7 +179,12 @@ export interface PermissionOption {
   kind: "allow_once" | "allow_always" | "reject_once" | "reject_always" | (string & {});
 }
 
+// Request ↔ Response 交互轴（provider 询问用户 ↔ 用户答复，见 provider-interaction-design.md
+// §3.5）：permission / question / (elicitation) 是同轴不同 `kind`。三种 request contract 各自
+// 独立（payload/终态不复用），只共享 requestId 路由与统一 respond()——不合成万能字段。
+// `kind` 是 InteractionRequest 联合的判别式（与 envelope kind 冗余但让 request 可独立传递）。
 export interface PermissionRequest {
+  kind: "permission";
   requestId: string;
   /** 审批提示文案本身；不修改任何 tool call 的展示标题（ACP v2 的教训） */
   title: string;
@@ -241,9 +246,13 @@ export interface QuestionPrompt {
 }
 
 export interface QuestionRequest {
+  kind: "question";
   requestId: string;
   questions: QuestionPrompt[];
 }
+
+/** InteractionRequest：provider→用户 request 的判别联合（按 `kind` 收窄）。elicitation 待接入 */
+export type InteractionRequest = PermissionRequest | QuestionRequest;
 
 export interface QuestionResolved {
   requestId: string;

@@ -192,6 +192,13 @@ category 只影响摆放，不影响正确性。首批处理 `model`、`mode`、
 
 ### 3.5 Provider 请求用户
 
+这条 **Request ↔ Response 交互轴**（provider 询问用户 ↔ 用户对 request 的答复）是与输入轴正交的第三根用户交互轴，**不限于权限**：
+
+- **Request**（provider → 用户，solicited）：provider 阻塞并征求用户，`kind ∈ {permission, question(给候选/选择), elicitation(取数据)}`。三种 request contract 各自独立（下面各小节 + §4.7），不合成万能字段。
+- **Response**（用户 → provider）：用户对某个 Request 的答复，经 stable request id `refersTo` 该 Request，走统一 `respond(requestId, response)`（§4.7 `Interactive.respond`）。
+- **与 Input 的关系**：Response 与 Input（prompt / steer）同为"用户 → provider 信号"，区别在 Input 是 **unsolicited**（自发、不 refers 任何 request）、Response 是 **solicited**（必 refers 一个 Request）。二者同族不同型——状态机不同（Input 驱动 / 注入 turn；Response 解阻 pending request），不塞进一个扁平 `type`。
+- **ApprovalReview 的归位**：它是 `Response{kind:permission}` 的**委托变体回执**——用户把审批权交给 reviewer（auto-review）时，reviewer 代答留下的审计回执（见 `approval-lifecycle.md`）。它也 refersTo 一个 permission Request，但作者是 reviewer 不是用户，是这条轴的一个**叶子 / 特例**，不是通名。命名待定（Request/Response 是当前占位，欢迎更贴切的词）。
+
 协议层分别定义三种 view/intent，只在 overlay 调度层组成 union：
 
 ```ts

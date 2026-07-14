@@ -4,15 +4,14 @@
 
 import { ClaudeAdapter } from "../adapters/claude/adapter.ts";
 import { CodexAdapter } from "../adapters/codex/adapter.ts";
-import type { AgentAdapter, ApprovalHandler, QuestionHandler } from "../adapters/types.ts";
+import type { AgentAdapter, RequestHandler } from "../adapters/types.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { PROVIDER_IDENTITIES, PROVIDERS, parseProvider, type ProviderName } from "./ids.ts";
 
 export { PROVIDERS, parseProvider, type ProviderName };
 
 export interface ProviderAdapterOptions {
-  approvalHandler: ApprovalHandler;
-  questionHandler?: QuestionHandler;
+  requestHandler: RequestHandler;
   config: BatonConfig;
 }
 
@@ -44,10 +43,9 @@ export const PROVIDER_REGISTRY = [
     sessionKey: "codex",
     shortName: "codex",
     color: "#73daca", // 青
-    create: ({ approvalHandler, questionHandler, config }) =>
+    create: ({ requestHandler, config }) =>
       new CodexAdapter({
-        approvalHandler,
-        questionHandler,
+        requestHandler,
         command: config.codexCommand,
         approvalReviewer: config.codexApprovalReviewer,
       }),
@@ -58,8 +56,8 @@ export const PROVIDER_REGISTRY = [
     sessionKey: "claude-code",
     shortName: "claude",
     color: "#ff9e64", // 橙
-    create: ({ approvalHandler, questionHandler, config }) =>
-      new ClaudeAdapter({ approvalHandler, questionHandler, executablePath: config.claudeExecutable }),
+    create: ({ requestHandler, config }) =>
+      new ClaudeAdapter({ requestHandler, executablePath: config.claudeExecutable }),
   },
 ] as const satisfies readonly ProviderDefinition<ProviderName>[];
 

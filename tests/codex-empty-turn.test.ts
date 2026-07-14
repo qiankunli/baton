@@ -6,6 +6,7 @@
 // 1. blocked hook → _baton_notice 警示（含来源与原因）；
 // 2. completed 且零产出 → 空回合警示，且能带上已知的 hook block 原因；
 // 3. 有产出的正常 turn 不受影响。
+import type { RequestHandler } from "../src/adapters/types.ts";
 import { expect, test } from "bun:test";
 
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
@@ -13,7 +14,10 @@ import { JsonRpcPeer } from "../src/adapters/codex/jsonrpc.ts";
 import type { PromptInput, ProviderSessionRef } from "../src/adapters/types.ts";
 import type { AnyNewEvent, Notice } from "../src/events/types.ts";
 
-const approvalHandler = async () => ({ optionId: "decline" });
+const requestHandler: RequestHandler = async (req) =>
+  req.kind === "permission"
+    ? { kind: "permission", requestId: req.requestId, optionId: "decline" }
+    : { kind: "question", requestId: req.requestId, answers: {} };
 
 interface WireEvent {
   kind: string;
@@ -28,7 +32,7 @@ interface TurnState {
 
 // 同 codex-turn-race.test.ts 的 wire harness：出站请求被捕获，入站通知按 wire 形状 feed
 function wireHarness() {
-  const adapter = new CodexAdapter({ approvalHandler });
+  const adapter = new CodexAdapter({ requestHandler });
   const events: WireEvent[] = [];
   const outbound: Array<{ id: number | string; method: string }> = [];
   const peer = new JsonRpcPeer((line) => {

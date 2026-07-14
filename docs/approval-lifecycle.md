@@ -6,6 +6,8 @@
 
 ## 1. 理念与概念
 
+本文聚焦 **permission**——它是 Request ↔ Response 交互轴（provider 询问用户 ↔ 用户答复，见 `provider-interaction-design.md` §3.5）里的一个 `kind`；choice(question) / elicitation 是同轴的另两个 kind，各自独立。本文的 ApprovalReview 则是 `Response{kind:permission}` 的**委托代批回执**变体。
+
 原始需求不是“弹个确认框”，而是保证用户始终清楚：**谁批准了什么、以什么依据、最终执行到哪一步**。
 
 核心原则是**审批诚实（approval honesty）**：绝不能让“被 provider 侧策略静默处置”的操作，在 UI 上看起来像用户亲自批准或正常完成。#85（declined 状态、pinned approval 路由）是这条线的第一步。

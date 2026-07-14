@@ -113,6 +113,7 @@ describe("state / permission / plan / usage", () => {
 
   test("permission request pends until resolved", () => {
     const req = {
+      kind: "permission" as const,
       requestId: "ar1",
       title: "Run this script?",
       options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" as const }],
@@ -128,6 +129,7 @@ describe("state / permission / plan / usage", () => {
 
   test("question request pends until resolved", () => {
     const request = {
+      kind: "question" as const,
       requestId: "qr1",
       questions: [{ questionId: "q1", header: "Mode", question: "Which mode?" }],
     };
@@ -342,7 +344,7 @@ describe("per-turn run state aggregation", () => {
   test("pending blocking request derives requires_action without adapter state_updates", () => {
     const state = reduceEvents([
       ev("state_update", { state: "running" }, "t1"),
-      ev("permission_request", { requestId: "ar_1", title: "Bash", options: [] }, "t1"),
+      ev("permission_request", { kind: "permission", requestId: "ar_1", title: "Bash", options: [] }, "t1"),
     ]);
     // 不变量收在 reducer：adapter 只发 request，不要求配对 state_update(requires_action)
     expect(state.activeTurns.get("t1")?.state).toBe("requires_action");
@@ -356,8 +358,8 @@ describe("per-turn run state aggregation", () => {
   test("requires_action holds until the last pending request of the turn resolves", () => {
     const state = reduceEvents([
       ev("state_update", { state: "running" }, "t1"),
-      ev("permission_request", { requestId: "ar_1", title: "Bash", options: [] }, "t1"),
-      ev("question_request", { requestId: "qr_1", questions: [] }, "t1"),
+      ev("permission_request", { kind: "permission", requestId: "ar_1", title: "Bash", options: [] }, "t1"),
+      ev("question_request", { kind: "question", requestId: "qr_1", questions: [] }, "t1"),
       ev("permission_resolved", { requestId: "ar_1", outcome: "selected", optionId: "allow" }, "t1"),
     ]);
     // 同 turn 并发多个 blocking request：应答一个不提前撤掉 requires_action
@@ -371,7 +373,7 @@ describe("per-turn run state aggregation", () => {
   test("replayed running cannot mask a pending request (不变量钉子)", () => {
     const state = reduceEvents([
       ev("state_update", { state: "running" }, "t1"),
-      ev("permission_request", { requestId: "ar_1", title: "Bash", options: [] }, "t1"),
+      ev("permission_request", { kind: "permission", requestId: "ar_1", title: "Bash", options: [] }, "t1"),
       // reconnect 重放 running：pending 在场时必须钉在 requires_action
       ev("state_update", { state: "running" }, "t1"),
     ]);
@@ -382,7 +384,7 @@ describe("per-turn run state aggregation", () => {
   test("request without a turnId still surfaces session-level requires_action", () => {
     const state = reduceEvents([
       ev("state_update", { state: "running" }, "t1"),
-      ev("permission_request", { requestId: "ar_1", title: "login", options: [] }),
+      ev("permission_request", { kind: "permission", requestId: "ar_1", title: "login", options: [] }),
     ]);
     // 未能归属到 turn（旧事件缺 turnId）：per-turn 不动，会话级仍要上浮
     expect(state.activeTurns.get("t1")?.state).toBe("running");

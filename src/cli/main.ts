@@ -7,10 +7,11 @@ import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 
 import { isNativeSessionIdentifiable } from "../adapters/types.ts";
+import type { InteractionResponse } from "../adapters/types.ts";
 import { ensureConfigFile, loadConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
 import { newId } from "../events/ids.ts";
-import type { PermissionRequest, QuestionRequest } from "../events/types.ts";
+import type { InteractionRequest } from "../events/types.ts";
 import { createProviderAdapter, parseProvider } from "../providers/registry.ts";
 import { SessionStore, sessionDisplayTitle } from "../store/store.ts";
 
@@ -21,20 +22,20 @@ function argValue(flag: string): string | undefined {
 
 const rl = createInterface({ input: stdin, output: stdout });
 
-async function askApproval(req: PermissionRequest): Promise<{ optionId: string }> {
-  stdout.write(`\n⚠ ${req.title}\n`);
-  req.options.forEach((o, i) => stdout.write(`  ${i + 1}. ${o.name} [${o.optionId}]\n`));
-  for (;;) {
-    const answer = (await rl.question("approve> ")).trim();
-    const byIndex = req.options[Number(answer) - 1];
-    const byId = req.options.find((o) => o.optionId === answer);
-    const chosen = byId ?? byIndex;
-    if (chosen) return { optionId: chosen.optionId };
-    stdout.write("Enter an option number or optionId\n");
+// 统一的 request 应答（headless REPL）：按 kind 分派，返回 kind 配对的 InteractionResponse。
+async function askRequest(req: InteractionRequest): Promise<InteractionResponse> {
+  if (req.kind === "permission") {
+    stdout.write(`\n⚠ ${req.title}\n`);
+    req.options.forEach((o, i) => stdout.write(`  ${i + 1}. ${o.name} [${o.optionId}]\n`));
+    for (;;) {
+      const answer = (await rl.question("approve> ")).trim();
+      const byIndex = req.options[Number(answer) - 1];
+      const byId = req.options.find((o) => o.optionId === answer);
+      const chosen = byId ?? byIndex;
+      if (chosen) return { kind: "permission", requestId: req.requestId, optionId: chosen.optionId };
+      stdout.write("Enter an option number or optionId\n");
+    }
   }
-}
-
-async function askQuestions(req: QuestionRequest): Promise<{ answers: Record<string, string[]> }> {
   const answers: Record<string, string[]> = {};
   for (const question of req.questions) {
     stdout.write(`\n? ${question.header}: ${question.question}\n`);
@@ -49,7 +50,7 @@ async function askQuestions(req: QuestionRequest): Promise<{ answers: Record<str
       return option?.label ?? value;
     });
   }
-  return { answers };
+  return { kind: "question", requestId: req.requestId, answers };
 }
 
 async function main(): Promise<void> {
@@ -69,8 +70,7 @@ async function main(): Promise<void> {
   stdout.write(`baton session: ${session.id}\nlog: ${session.dir}/session.jsonl\n`);
 
   const adapter = createProviderAdapter(agentName, {
-    approvalHandler: askApproval,
-    questionHandler: askQuestions,
+    requestHandler: askRequest,
     config,
   });
 

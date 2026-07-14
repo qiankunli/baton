@@ -211,7 +211,7 @@ describe("codex transport failure", () => {
       });
     `;
     const adapter = new CodexAdapter({
-      approvalHandler: async () => ({ optionId: "decline" }),
+      requestHandler: async (req) => ({ kind: "permission", requestId: req.requestId, optionId: "decline" }),
       command: ["bun", "-e", script],
     });
     const events: AnyNewEvent[] = [];
