@@ -250,6 +250,7 @@ describe("BatonSessionRuntime", () => {
     const runtime = new BatonSessionRuntime({
       session,
       mentionBudgetChars: 4096,
+      modelPreferences: { codex: "remembered-global-model" },
       createAdapter: () => codex,
     });
 
@@ -260,6 +261,21 @@ describe("BatonSessionRuntime", () => {
     expect(codex.synced[0]).toContain("new claude work");
     expect(codex.synced[0]).not.toContain("old codex work");
     expect(session.meta.providerSessions.codex?.providerSessionId).toBe("codex-native");
+  });
+
+  test("uses the remembered provider model for a new BatonSession", async () => {
+    const codex = new FakeAdapter("codex");
+    const runtime = new BatonSessionRuntime({
+      session,
+      mentionBudgetChars: 4096,
+      modelPreferences: { codex: "fast" },
+      createAdapter: () => codex,
+    });
+
+    await runtime.submit("codex", [{ type: "text", text: "next" }]);
+
+    expect(codex.model).toBe("fast");
+    expect(session.meta.providerSessions.codex?.model).toBe("fast");
   });
 });
 

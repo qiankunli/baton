@@ -152,6 +152,8 @@ export interface InteractionHandlers {
 export interface BatonSessionRuntimeOptions {
   session: SessionHandle;
   mentionBudgetChars: number;
+  /** 新 session 未选过 model 时使用的 provider 级持久偏好。 */
+  modelPreferences?: Readonly<Record<string, string>>;
   createAdapter(provider: string, handlers: InteractionHandlers): AgentAdapter;
   providerSessionKey?(provider: string): string;
   onStateChange?: () => void;
@@ -400,7 +402,7 @@ export class BatonSessionRuntime {
     const slot = this.slots.get(provider);
     if (!slot?.ref || !isModelConfigurable(slot.adapter)) {
       const key = this.options.providerSessionKey?.(provider) ?? provider;
-      return this.options.session.meta.providerSessions[key]?.model ?? null;
+      return this.preferredModel(provider, key) ?? null;
     }
     return slot.adapter.currentModel(slot.ref);
   }
@@ -801,6 +803,7 @@ export class BatonSessionRuntime {
       this.slots.set(provider, created);
       created.starting = (async () => {
         const existing = this.options.session.meta.providerSessions[adapter.provider];
+        const model = this.preferredModel(provider, adapter.provider);
         created.ref = await adapter.open(
           {
             cwd: this.options.session.meta.cwd,
@@ -809,14 +812,15 @@ export class BatonSessionRuntime {
           (ev) => this.onAdapterEvent(created, ev),
         );
         created.freshNative = !created.ref.resumed;
-        if (existing?.model && isModelConfigurable(adapter)) {
-          await adapter.setModel(created.ref, existing.model);
+        if (model && isModelConfigurable(adapter)) {
+          await adapter.setModel(created.ref, model);
         }
         this.options.session.setProviderSession(adapter.provider, {
           ...existing,
           provider: adapter.provider,
           providerSessionId: this.nativeSessionId(created),
           syncedSeq: created.ref.resumed ? existing?.syncedSeq : 0,
+          ...(model ? { model } : {}),
         });
       })();
       // starting 的消费方（ensureProvider）可能晚一拍才 await：先挂空 handler 防
@@ -824,6 +828,14 @@ export class BatonSessionRuntime {
       void created.starting.catch(() => {});
     }
     return slot;
+  }
+
+  private preferredModel(provider: string, sessionKey: string): string | undefined {
+    return (
+      this.options.session.meta.providerSessions[sessionKey]?.model ??
+      this.options.modelPreferences?.[provider] ??
+      this.options.modelPreferences?.[sessionKey]
+    );
   }
 
   private async ensureProvider(provider: string): Promise<ProviderSlot> {
