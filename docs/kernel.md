@@ -34,6 +34,10 @@ ProviderSession 不在此表——它是某 provider 的私有执行状态、内
 
 内核只有一条流水线，双向流动。observed turn、stall 自愈、审批闭环都是它的特例，不是另起的机制。
 
+![baton 内核：一条双向流水线（chat-tui intent/render 边界、Runtime 的 PendingInput+driven queue、event/turn 单通道、Adapter 的 capability 出站与归一入站、session.jsonl 持久化）](kernel-pipeline.png)
+
+入站归一箭头标注的 `driven + observed` 提示：这条 `Adapter → event` 路径同时承载用户驱动与 provider 自发两种 turn，独立于是否有 PendingInput——这正是单通道真相（不变量 #1）的要害。
+
 ```text
 控制（出站）  chat-tui intent
              → Runtime（拥有 PendingInput，调度 driven turn）
@@ -100,29 +104,21 @@ interface AgentAdapter {
 **两个演进方向：**
 
 1. **capability 毕业**：一个可选能力（如 `Steerable`）若被所有活跃 provider 支持、且成为交互刚需，可从"可选"升为"核心约定"。代价是新 provider 从此必须实现它、接入门槛随之抬高——所以非刚需不升。
-2. **概念提升**：一个反复在投影 / 存储层打补丁的隐式概念，被确认为跨 provider 的普遍需求后，提升为一等内核概念。§6 列的四个就是当前候选——它们正是"多次局部修复"累积出的共性信号。
+2. **概念提升**：一个反复在投影 / 存储层打补丁的隐式概念，被确认为跨 provider 的普遍需求后，提升为一等内核概念。§6 列出各轴的一等概念，就是这条路径的落点。
 
 **每次内核改动回答三问**：① 这是 ≥2 家的共性，还是一家的方言？② 能否用 optional capability 而非核心字段表达？③ 改完，旧事件流还能 replay 出相同结果吗？三问不全过，就先留在 adapter 层。
 
-## 6. 待提升为一等的概念（内核演进目标）
+## 6. 各轴的一等概念
 
-以下概念当前是隐式 / 泄漏的；它们正是"实际体验后反复打局部补丁"的根因，也是 §5 判据下已攒够 cross-provider 证据、够格提升的候选。提为一等，内核才真正稳、扩展才真正只碰 adapter。此处遵循 baton "文档先于代码" 惯例，标注现状与目标——未落地前不代表已支持。
+内核在每条轴上都要求一个"一等"的承载对象：隐式或泄漏的概念会让局部修复反复打补丁、扩展被迫改核心。四条轴的一等概念与其绑定规则——
 
-- **PendingInput（输入轴的缺失内核）**——带稳定 id、可查消费状态的输入实体，统一 draft / queued / admitted / steer / recall / interrupt。
-  - 现状：runtime 分散持有 pending input，无一等实体，故 "Esc + 第二条待决意图" 本质不可判定（见 `user-input-lifecycle.md` S3）。
-  - 目标：一等 PendingInput，让 recall / steer / interrupt 的时序判定从特例收敛为对同一实体的状态查询。
+- **输入轴 · PendingInput**——用户输入是带稳定 id、消费状态可查的一等实体，统一 draft / queued / admitted / steer / recall / interrupt。缺了它，"Esc + 第二条待决意图"这类时序本质不可判定（见 `user-input-lifecycle.md` S3）；有了它，recall / steer / interrupt 从时序特例收敛为对同一实体的状态查询。
 
-- **ApprovalReview by `reviewId`（审批轴，已落地）**——回执按自己的 id 归档、作为 timeline 一等公民渲染，tool-card 附属只是历史投影。
-  - 已提升：`ApprovalReviewUpdate` 带 `reviewId`（`arv_` 前缀），reduce 按 reviewId 归档、首见入 timeline；adapter 只在 reviewer 终态铸一条回执；无 target 的 review 也留痕、同一操作多次决策各自成条；未知 decision fail-closed 到 failed。详见 `approval-lifecycle.md` §3。
-  - 待续：`reviewer / authority` 尚未建模为显式字段（当前 reviewer 恒为 codex auto-review）；多 provider 出现不同 reviewer 时再按 §5 判据提升。
+- **审批轴 · ApprovalReview**——reviewer 的每次决策是按自己的 `reviewId` 归档的一等审计回执、是 timeline 公民；挂到 tool-card 只是它的一种投影。据此：无 target 的 review 也留痕、同一操作的多次决策各自成条、不被覆盖。reviewer / authority 何时显式建模按 §5 判据——出现多种 reviewer 才提升。
 
-- **封闭终态词表 + 共享保守归一器（已落地）**——不变量 #2 从"每种事件各自发明白名单"收成一处结构保证：`closedTerminal(raw, table, fallback, emptyAs?)`（`src/adapters/normalize.ts`）在 adapter 边界把 provider 开放 / UNSTABLE 终态映射到内部闭集，未知一律保守回落。
-  - 已提升：codex tool 终态（→ `ToolCallStatus`）与 auto-review decision（→ 闭合三态 `approved/denied/aborted`）都走此原语在 adapter 边界收口；`ApprovalReviewUpdate.decision` 已收窄为闭合 union，reduce / 投影不再面对开放值。新 provider 的终态翻译复用此原语即得 fail-closed 纪律。
-  - 关于 `StopReason`：**有意保持开放**（forward-compat 元数据）。它不破坏"每个 turn 恰好收口一次"——`idle` 无条件发出、turn 照常 finalize；唯一分支（`role==="driven" && stopReason==="cancelled"`）是正向判定，未知值安全落到默认路径。故不强行封闭，原始 reason 透传供展示 / @ 引用。
+- **输出轴 · 封闭终态词表**——provider 的开放 / UNSTABLE 终态在 adapter 边界经统一原语收口到内部闭集，未知一律保守回落（不变量 #2）。闭合值进入事件流后 reduce / 投影不再面对未知；原始值留在 `raw`。反面参照 `StopReason`：有意保持开放（forward-compat 元数据）——turn 靠 `idle` 无条件收口、不依赖 reason 字符串，故无需封闭。判据是"未知会不会导致失声"，不是"凡开放皆封闭"。
 
-- **展示态双轴（chat-tui 侧，纯展示取舍）**——lifecycle/outcome（completed / failed / declined）与 tone/severity（warning…）正交。
-  - 现状：`TranscriptBlockStatus` 单一 union 同时承担进度与"跑了但需留痕"，两个语义共用一个颜色 token。
-  - 目标：拆成 outcome 轴 + 独立 tone 轴，止住 status 枚举膨胀。
+- **展示轴 · outcome 与 tone 双轴**——展示态分两根正交轴：lifecycle/outcome（completed / failed / declined）与 tone/severity（warning…）。二者混进单一 union，会让"跑了但需留痕"与真实结果争用一个状态位、共用一个颜色 token，枚举随特性膨胀。此轴在 chat-tui 侧，是纯展示取舍。
 
 ## 7. References
 

@@ -23,6 +23,14 @@ On top of these, three directions are on the roadmap (**none implemented yet**):
 - **Context intake**: the mainline is not a raw transcript of everything but the canonical history the user endorses. After a draft session produces results, the user decides whether to merge its conclusions into the mainline or discard them; discarding is not deletion — drafts stay durable and referenceable.
 - **Event-driven long-running loops**: listen to external events such as pushed commits or merged PRs and wake the corresponding session to continue its work, so agents are no longer confined to an interactive terminal.
 
+## Architecture at a glance
+
+baton is one bidirectional pipeline: chat-tui carries `intent`/`render` only, the runtime owns `PendingInput` + the driven-turn queue, adapters translate each provider's wire to a single normalized event stream, and `session.jsonl` persists it. The event stream is the sole source of truth; the UI is a projection.
+
+![baton kernel: one bidirectional pipeline](docs/kernel-pipeline.png)
+
+See [`docs/kernel.md`](docs/kernel.md) for the stable kernel — core concepts, invariants, the pipeline, and the provider extension contract.
+
 ## Features
 
 - Use Claude Code and Codex from the same terminal interface
