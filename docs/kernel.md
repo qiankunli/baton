@@ -112,7 +112,7 @@ interface AgentAdapter {
 
 内核在每条轴上都要求一个"一等"的承载对象：隐式或泄漏的概念会让局部修复反复打补丁、扩展被迫改核心。四条轴的一等概念与其绑定规则——
 
-- **输入轴 · Input**——用户输入是一等概念（身份即其 messageId），消费状态可查，统一 draft / queued / admitted / steer / recall / interrupt。缺了它，"Esc + 第二条待决意图"这类时序本质不可判定（见 `user-input-lifecycle.md` S3）；有了它，recall / steer / interrupt 从时序特例收敛为对同一实体的状态查询。
+- **输入轴 · Input**——用户输入是一等概念（身份即其 messageId），消费状态可查，统一 draft / queued / admitted / steer / recall。缺了它，"Esc + 第二条待决意图"这类时序本质不可判定（见 `user-input-lifecycle.md` S3）；有了它，recall / steer 从时序特例收敛为对同一实体的状态查询。用户信号共三型（同族不同落点）：**Input**（内容，驱动 turn）/ **Response**（内容，答复某 Request，就地解阻 pending）/ **Control**（无内容，命令 turn 生命周期，如 `interrupt`，out-of-band 打断且级联收口 pending Response）。
 
 - **交互轴 · Request ↔ Response**——provider 阻塞征求用户（**Request**:`kind` = permission / choice / elicitation,**不限权限**）、用户经 request id `refersTo` 答复（**Response**,走统一 `respond()`）。与输入轴正交的第三根用户交互轴;Response 与 Input 同为"用户 → provider 信号",区别在 solicited（必关联一个 Request）。委托代批的审计回执 `ApprovalReview`（自带 `reviewId`、timeline 公民、多次决策各自成条不被覆盖）是 `Response{kind:permission}` 的委托叶子,非通名。详见 `provider-interaction-design.md` §3.5。
 

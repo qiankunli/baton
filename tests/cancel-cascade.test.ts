@@ -1,0 +1,116 @@
+// cancel-cascade（provider-interaction-design §4.7）：turn 被打断时，仍挂起的 request 必须
+// 随之收口——adapter 的 await 解开、发 *_resolved(cancelled)、reduce 的 requires_action 落下，
+// 不留悬挂 waiter。参考 codex clear_pending_waiters→Abort、opencode interrupt 的 ensuring(delete)。
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import type {
+  AdapterCapabilities,
+  AgentAdapter,
+  EventSink,
+  OpenOptions,
+  PromptInput,
+  PromptReceipt,
+  ProviderSessionRef,
+} from "../src/adapters/types.ts";
+import type { PermissionRequest, PromptBlock } from "../src/events/types.ts";
+import { BatonSessionRuntime, type InteractionHandlers } from "../src/session/runtime.ts";
+import { SessionStore, type SessionHandle } from "../src/store/store.ts";
+
+/** turn 阻塞在一个审批 request 上，直到 respond 或（cancel 时）级联取消；cancel() 合成 idle(cancelled) */
+class ApprovalHoldingAdapter implements AgentAdapter {
+  readonly provider = "codex";
+  readonly capabilities: AdapterCapabilities = { prompt: {} };
+  sink?: EventSink;
+  private active?: PromptInput;
+
+  constructor(private readonly handlers: InteractionHandlers) {}
+
+  async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+    this.sink = sink;
+    return { provider: this.provider, providerSessionId: "hold-ref", resumed: false };
+  }
+
+  async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+    this.active = input;
+    const emit = (ev: Parameters<EventSink>[0]) => this.sink?.({ ...ev, turnId: input.turnId });
+    void (async () => {
+      const request: PermissionRequest = {
+        kind: "permission",
+        requestId: "ar_hold",
+        title: "Run command?",
+        options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }],
+      };
+      emit({ kind: "permission_request", provider: this.provider, payload: request });
+      const outcome = await this.handlers.requestHandler(request);
+      emit({
+        kind: "permission_resolved",
+        provider: this.provider,
+        payload:
+          outcome.kind === "cancelled"
+            ? { requestId: request.requestId, outcome: "cancelled" }
+            : { requestId: request.requestId, outcome: "selected", optionId: (outcome as { optionId: string }).optionId },
+      });
+    })();
+    return { accepted: true };
+  }
+
+  async cancel(_ref: ProviderSessionRef): Promise<void> {
+    const input = this.active;
+    if (input) {
+      this.sink?.({
+        kind: "state_update",
+        provider: this.provider,
+        turnId: input.turnId,
+        payload: { state: "idle", stopReason: "cancelled" },
+      });
+    }
+  }
+  async close(_ref: ProviderSessionRef): Promise<void> {}
+}
+
+let root: string;
+let session: SessionHandle;
+
+beforeEach(() => {
+  root = mkdtempSync(join(tmpdir(), "baton-cascade-"));
+  session = new SessionStore(root).createSession({ cwd: "/repo" });
+});
+afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+const text = (t: string): PromptBlock[] => [{ type: "text", text: t }];
+async function until(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 500 && !cond(); i++) await Bun.sleep(1);
+  expect(cond()).toBe(true);
+}
+
+describe("cancel cascades to pending requests", () => {
+  test("Esc while a permission is pending resolves it cancelled, no dangling requires_action", async () => {
+    const runtime = new BatonSessionRuntime({
+      session,
+      mentionBudgetChars: 4096,
+      createAdapter: (_name, handlers) => new ApprovalHoldingAdapter(handlers),
+    });
+
+    const turn = runtime.submit("codex", text("do it"));
+    // 阻塞在审批：pending 落盘 → 会话派生 requires_action
+    await until(() => session.loadState().pendingPermissions.size === 1);
+    expect(session.loadState().runState).toBe("requires_action");
+
+    await runtime.control({ kind: "interrupt" });
+    await Bun.sleep(5); // 让 adapter 的 await 续跑、发出 permission_resolved(cancelled)
+    expect(await turn).toBe("completed");
+
+    const events = session.readEvents();
+    const resolved = events.find((e) => e.kind === "permission_resolved");
+    expect(resolved?.payload).toMatchObject({ requestId: "ar_hold", outcome: "cancelled" });
+
+    const state = session.loadState();
+    expect(state.pendingPermissions.size).toBe(0); // 不再悬挂
+    expect(state.runState).toBe("idle"); // requires_action 落下
+    // 打断标记仍在（turn 确实被取消）
+    expect(events.some((e) => e.kind === "_baton_notice")).toBe(true);
+  });
+});

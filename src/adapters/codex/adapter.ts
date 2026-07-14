@@ -895,6 +895,15 @@ export class CodexAdapter implements AgentAdapter {
         };
         this.emit(rt, { kind: "permission_request", provider: this.provider, payload: request }, params);
         const response = await this.options.requestHandler(request);
+        if (response.kind === "cancelled") {
+          // turn 被打断，request 随之收口：留痕 cancelled，回 codex "cancel"（Deny and interrupt turn）
+          this.emit(
+            rt,
+            { kind: "permission_resolved", provider: this.provider, payload: { requestId, outcome: "cancelled" } },
+            params,
+          );
+          return { decision: "cancel" };
+        }
         // response 按 requestId 路由回来，kind 必配对 permission；意外不配保守拒绝（空 optionId 非 allow）
         const optionId = response.kind === "permission" ? response.optionId : "";
         this.emit(rt, {
@@ -929,6 +938,18 @@ export class CodexAdapter implements AgentAdapter {
         };
         this.emit(rt, { kind: "question_request", provider: this.provider, payload: request }, params);
         const response = await this.options.requestHandler(request);
+        if (response.kind === "cancelled") {
+          this.emit(
+            rt,
+            {
+              kind: "question_resolved",
+              provider: this.provider,
+              payload: { requestId: request.requestId, outcome: "cancelled" },
+            },
+            params,
+          );
+          return { answers: {} };
+        }
         const decisionAnswers = response.kind === "question" ? response.answers : {};
         this.emit(rt, {
           kind: "question_resolved",
