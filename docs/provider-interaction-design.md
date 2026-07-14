@@ -555,7 +555,7 @@ interface Interactive {
 | permission request | PermissionRequestView + permission response intent |
 | question request | QuestionRequestView + question response intent |
 | elicitation request | ElicitationRequestView + elicitation response intent |
-| runtime pending input state | PendingInputView（requested/effective delivery） |
+| runtime input state | InputView（requested/effective delivery） |
 
 映射只存在于 baton `tui/protocol.ts` 一处；chat-tui 和 provider adapter 不互相依赖。
 

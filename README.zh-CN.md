@@ -25,7 +25,7 @@ baton 是一个 terminal-native 的统一 coding agent 会话，受 [tutti](http
 
 ## 架构速览
 
-baton 是一条双向流水线：chat-tui 只承载 `intent`/`render`，runtime 拥有 `PendingInput` 与 driven-turn 队列，adapter 把各 provider 的 wire 归一成同一条事件流，`session.jsonl` 落盘持久化。事件流是唯一真相源，UI 是它的投影。
+baton 是一条双向流水线：chat-tui 只承载 `intent`/`render`，runtime 拥有 `Input` 生命周期与 driven-turn 队列，adapter 把各 provider 的 wire 归一成同一条事件流，`session.jsonl` 落盘持久化。事件流是唯一真相源，UI 是它的投影。
 
 ![baton 内核：一条双向流水线](docs/kernel-pipeline.png)
 
