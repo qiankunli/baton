@@ -25,7 +25,7 @@ On top of these, three directions are on the roadmap (**none implemented yet**):
 
 ## Architecture at a glance
 
-baton is one bidirectional pipeline: chat-tui carries `intent`/`render` only, the runtime owns `PendingInput` + the driven-turn queue, adapters translate each provider's wire to a single normalized event stream, and `session.jsonl` persists it. The event stream is the sole source of truth; the UI is a projection.
+baton is one bidirectional pipeline: chat-tui carries `intent`/`render` only, the runtime owns the `Input` lifecycle + the driven-turn queue, adapters translate each provider's wire to a single normalized event stream, and `session.jsonl` persists it. The event stream is the sole source of truth; the UI is a projection.
 
 ![baton kernel: one bidirectional pipeline](docs/kernel-pipeline.png)
 

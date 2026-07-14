@@ -18,8 +18,10 @@
 | draft | chat-tui Composer | 否 | 用户仍可编辑 |
 | queued follow-up | BatonSessionRuntime | 否 | 等待当前 driven turn 结束；可召回编辑 |
 | admitted prompt | runtime + Store | 是 | 已从队列取走并形成 driven turn；当前只能 interrupt，不能 recall |
-| accepted steer | Adapter + Store | 是 | provider 已接受为当前 turn 的追加用户消息；当前不再保留独立队列实体 |
+| accepted steer | Adapter + Store | 是 | provider 已接受为当前 turn 的追加用户消息；由一等 InputRecord 承载、挂在当前 turn 上 |
 | finalized | Store | 是 | turn 已以明确 stop reason 收口 |
+
+一条用户输入是一个 **Input** 概念，**身份即它的 `messageId`（`m_`）**：durable 形态是事件流里的 `user_message` 事件，live 形态是 runtime 的 `InputRecord`（与 `TurnRecord` 对称），两者同一个 id，不另造平行身份。`InputRecord` 带显式 `status` 走上表各阶段：submit → `queued`，出队 → `admitted`，steer 成功 → `accepted_steer`，召回 → `recalled`，turn 正常收口 → `finalized`，被 Esc 打断 → `interrupted`。`runtime.inputs` 暴露在世 Input 的只读快照，让 recall / interrupt / steer 的迁移是对同一 Input 的状态查询，而非散落的时序特判。历史回溯（§2.4）读的是事件流里已 finalized 的同一批 Input。
 
 Turn 是一段有始有终的 provider 活动，不等于“一条用户消息”：一个 driven turn 包含初始 prompt，也可能包含零到多条 same-turn steer。
 
@@ -129,12 +131,16 @@ baton 保证 effective delivery 如实：只有 provider 确认接受才记录 s
 
 ## 5. 收敛方向与验收
 
-后续实现优先补齐一个统一的 pending input 生命周期，而不是继续在 submit、steer、Esc handler 中增加时序特判。该模型至少要显式表达：
+统一的 input 生命周期已在 **runtime 侧落地**（一等 `InputRecord`，身份即 messageId，见上文 §1 与 `src/session/runtime.ts`），取代了在 submit、steer、Esc handler 中散落的时序特判。该模型显式表达：
 
-- requested delivery 与 effective delivery；
-- 输入属于 draft、queued follow-up、当前 turn 的 steer，还是已 finalize；
-- recall、interrupt、provider reject 和 turn race 各自允许的状态迁移；
-- steer 被 provider 接受后，baton 是否以及何时仍有权把它重新排队。
+- requested delivery 与 effective delivery（`delivery` 字段 + `SteerOutcome` effective）；
+- 输入属于 queued follow-up、admitted prompt、当前 turn 的 accepted_steer，还是已 finalized；
+- recall（→recalled）、interrupt（→interrupted）、provider reject（降级 follow_up）各自的状态迁移；
+- steer 被接受后作为一等 Input 挂在 turn 上，cancel 时迁移 interrupted——**不静默丢、不自动重发**（S3）。
+
+仍待补齐的切片（需 chat-tui 联动，不在 runtime 侧）：
+
+- **S1 draft-restore**：preparing 窗口内 Esc 把 admitted 输入还原回 Composer（当前只迁移状态，未回填 draft）；需要 composer 回填 + append-only recalled 标记 + 冷启动竞态归属（§4 S1 的两个待决）。
 
 验收矩阵：
 
@@ -152,7 +158,8 @@ baton 保证 effective delivery 如实：只有 provider 确认接受才记录 s
 
 - `src/tui/protocol.ts`：busy submit 的 steer / follow-up 选择，Esc intent 到 runtime 的映射；`recallQueued` / `historyPrev` / `historyNext` 与历史游标 / stash / 事件流种入。
 - chat-tui `components/chat-shell.tsx`（↑/↓ 三级分派）、`components/composer.tsx`（`cursorAtBoundary` 边界门槛）、`protocol/index.ts`（`historyPrev` / `historyNext` 契约）。
-- `src/session/runtime.ts`：队列、active driven turn、steer 降级、cancel 与 finalize。
+- `src/session/runtime.ts`：一等 `InputRecord`（身份即 messageId + status）、`inputs` 快照、队列、active driven turn、steer 降级、cancel 与 finalize 的状态迁移。
+- `tests/input-lifecycle.test.ts`：Input id / status 迁移契约（queued/admitted/accepted_steer/recalled/interrupted）。
 - `src/adapters/codex/adapter.ts`：`turn/steer` / `turn/interrupt` 原生映射。
 - `src/adapters/claude/adapter.ts`：当前只声明普通 prompt，cancel 映射 SDK interrupt。
 - `tests/steer.test.ts`、`tests/codex-steer.test.ts`：same-turn steer 与降级契约。

@@ -24,16 +24,47 @@ interface ProviderSlot {
   freshNative: boolean;
 }
 
-interface QueuedTurn {
+/**
+ * 一条用户输入的生命周期状态（kernel.md §6 · user-input-lifecycle.md §1）。让 recall /
+ * interrupt / steer / race 的迁移成为对同一 Input 的状态查询，而不是散落在 submit /
+ * steer / Esc 里的时序特判。
+ * - queued：排队中的 follow-up，可召回编辑；
+ * - admitted：已出队形成 driven turn，user_message/running 已落盘；
+ * - accepted_steer：provider 已接受为当前 turn 的追加消息；
+ * - finalized：所属 turn 已正常收口；
+ * - recalled：出队前被召回回 draft（永不入账）；
+ * - interrupted：所属 turn 被 Esc 打断，本条输入未被静默丢弃、可查、不自动重发（S3）。
+ */
+export type InputStatus =
+  | "queued"
+  | "admitted"
+  | "accepted_steer"
+  | "finalized"
+  | "recalled"
+  | "interrupted";
+
+/**
+ * 一条用户输入的 runtime 生命周期记录（与 `TurnRecord` 对称：TurnRecord 之于 turn，
+ * InputRecord 之于 input）。**身份即 `messageId`**——一条输入的 durable 形态是事件流里的
+ * `user_message`，live 形态就是这条记录，两者同一个 `m_` id，不另造平行身份。
+ * queued/admitted 记录持有 resolve/reject（submit 的回执通道）；accepted_steer 是
+ * fire-and-forget 注入当前 turn 的记录，无独立回执。
+ */
+interface InputRecord {
+  /** 身份：用户消息的 baton message id（`m_`）。user_message 由 runtime 出队时落盘（见 runTurn） */
+  messageId: string;
+  /** 队列内展示排序用的自增号（与身份无关，仅供 QueuedTurnSnapshot） */
   id: number;
   /** baton turn id：入队时即分配（steer 的 expectedTurnId 引用它，design §4.3） */
   turnId: string;
-  /** 用户消息的 baton message id；user_message 由 runtime 出队时落盘（见 runTurn） */
-  messageId: string;
   provider: string;
   blocks: PromptBlock[];
-  resolve: (outcome: SubmitOutcome) => void;
-  reject: (error: unknown) => void;
+  status: InputStatus;
+  /** 实际投递方式（accepted_steer→steer；queued/admitted→prompt） */
+  delivery: "prompt" | "steer";
+  /** queued/admitted 专属：submit 的回执通道；accepted_steer 无 */
+  resolve?: (outcome: SubmitOutcome) => void;
+  reject?: (error: unknown) => void;
 }
 
 type TurnRole = "driven" | "observed";
@@ -62,8 +93,10 @@ interface TurnRecord {
   status: "active" | "finalized";
   startedAt: number;
   stopReason?: StopReason;
-  /** driven 专属：入队原件（canSteer/steer 需要用户侧 provider 名）。finalize 后由 retire 释放 */
-  turn?: QueuedTurn;
+  /** driven 专属：admitted 输入记录（canSteer/steer 需要用户侧 provider 名）。finalize 后由 retire 释放 */
+  turn?: InputRecord;
+  /** driven 专属：本 turn 已接受的 accepted_steer 输入。cancel 时统一迁移 interrupted（S3） */
+  steers?: InputRecord[];
   /** driven 专属：finalize 时 resolve，释放 drain 循环推进队列。finalize 后由 retire 释放 */
   release?: () => void;
   cancelGraceTimer?: ReturnType<typeof setTimeout>;
@@ -74,6 +107,15 @@ export interface QueuedTurnSnapshot {
   turnId: string;
   provider: string;
   blocks: PromptBlock[];
+}
+
+/** Input 只读快照：投影 / 诊断消费 status，不触碰内部 resolve/reject。身份即 messageId */
+export interface InputSnapshot {
+  messageId: string;
+  turnId: string;
+  provider: string;
+  status: InputStatus;
+  delivery: "prompt" | "steer";
 }
 
 export type SubmitOutcome = "completed" | "recalled";
@@ -134,7 +176,7 @@ export const INTERRUPTED_NOTICE_TITLE = "Conversation interrupted — tell the a
  */
 export class BatonSessionRuntime {
   private readonly slots = new Map<string, ProviderSlot>();
-  private readonly queue: QueuedTurn[] = [];
+  private readonly queue: InputRecord[] = [];
   private nextQueueId = 1;
   private draining = false;
   private processingProvider?: string;
@@ -218,6 +260,22 @@ export class BatonSessionRuntime {
     return this.queue.map((turn) => this.snapshot(turn));
   }
 
+  /**
+   * 所有**在世** Input 的只读快照：排队中的 follow-up + 当前 turn 的 admitted 输入 +
+   * 已接受的 steer。终态输入（finalized/recalled/interrupted）不驻内存——其历史在事件流里
+   * （`user_message`），与 turn 台账瘦身同一取舍。投影 / 诊断据此看到每条输入的 messageId 与消费状态。
+   */
+  get inputs(): InputSnapshot[] {
+    const out: InputSnapshot[] = [];
+    for (const input of this.queue) out.push(this.inputSnapshot(input));
+    for (const record of this.turns.values()) {
+      if (record.status !== "active") continue;
+      if (record.turn) out.push(this.inputSnapshot(record.turn));
+      for (const steer of record.steers ?? []) out.push(this.inputSnapshot(steer));
+    }
+    return out;
+  }
+
   get isBusy(): boolean {
     return this.draining;
   }
@@ -230,6 +288,8 @@ export class BatonSessionRuntime {
         messageId: newId("m"),
         provider,
         blocks,
+        status: "queued",
+        delivery: "prompt",
         resolve,
         reject,
       });
@@ -265,12 +325,13 @@ export class BatonSessionRuntime {
     if (!isSteerable(adapter)) {
       return { effective: "follow_up", outcome: this.submit(provider, blocks) };
     }
+    const messageId = newId("m");
     let receipt: SteerReceipt;
     try {
       receipt = await adapter.steer(
         active.slot.ref,
         // steer 消息归属被注入的 turn；messageId 照常由 runtime 分配（design §4.10.1）
-        { turnId: active.turnId, messageId: newId("m"), blocks },
+        { turnId: active.turnId, messageId, blocks },
         active.turnId,
       );
     } catch {
@@ -281,6 +342,18 @@ export class BatonSessionRuntime {
     if (receipt.effective !== "steer") {
       return { effective: "follow_up", outcome: this.submit(provider, blocks) };
     }
+    // 已接受的 steer 是一等 Input（不再"无独立队列实体"）：挂到当前 turn，供 cancel 时
+    // 统一迁移 interrupted（S3：不静默丢、不自动重发）。fire-and-forget，无独立回执。
+    // 身份即 steer user_message 的 messageId（adapter 成功路径已用它落 delivery:"steer" 消息）。
+    (active.steers ??= []).push({
+      id: this.nextQueueId++,
+      turnId: active.turnId,
+      messageId,
+      provider,
+      blocks,
+      status: "accepted_steer",
+      delivery: "steer",
+    });
     this.changed();
     return { effective: "steer" };
   }
@@ -289,7 +362,8 @@ export class BatonSessionRuntime {
   recallLatestQueued(): QueuedTurnSnapshot | undefined {
     const turn = this.queue.pop();
     if (!turn) return undefined;
-    turn.resolve("recalled");
+    turn.status = "recalled";
+    turn.resolve?.("recalled");
     this.changed();
     return this.snapshot(turn);
   }
@@ -368,13 +442,14 @@ export class BatonSessionRuntime {
     this.draining = true;
     try {
       while (this.queue.length > 0) {
-        const turn = this.queue.shift() as QueuedTurn;
+        const turn = this.queue.shift() as InputRecord;
+        turn.status = "admitted"; // 出队即形成 driven turn（user_message/running 由 runTurn 落盘）
         this.changed();
         try {
           await this.runTurn(turn);
-          turn.resolve("completed");
+          turn.resolve?.("completed");
         } catch (error) {
-          turn.reject(error);
+          turn.reject?.(error);
         }
       }
     } finally {
@@ -383,7 +458,7 @@ export class BatonSessionRuntime {
     }
   }
 
-  private async runTurn(turn: QueuedTurn): Promise<void> {
+  private async runTurn(turn: InputRecord): Promise<void> {
     this.processingProvider = turn.provider;
     this.processingStartedAt = Date.now();
 
@@ -405,6 +480,7 @@ export class BatonSessionRuntime {
       status: "active",
       startedAt: Date.now(),
       turn,
+      steers: [],
       release,
     };
     this.turns.set(turn.turnId, record);
@@ -577,6 +653,13 @@ export class BatonSessionRuntime {
     record.status = "finalized";
     record.stopReason = stopReason;
 
+    // 输入实体随 turn 收口迁移终态：cancelled → interrupted（S3：不静默丢、可查、不自动重发），
+    // 否则 → finalized。admitted 输入与已接受的 steer 同迁移。之后由 retire 释放。
+    const inputTerminal: InputStatus =
+      record.role === "driven" && stopReason === "cancelled" ? "interrupted" : "finalized";
+    if (record.turn) record.turn.status = inputTerminal;
+    for (const steer of record.steers ?? []) steer.status = inputTerminal;
+
     const session = this.options.session;
 
     // 用户打断的 turn 在时间线留下醒目标记；排队的后续输入会自然跟在标记后面
@@ -611,6 +694,7 @@ export class BatonSessionRuntime {
     if (record.cancelGraceTimer) clearTimeout(record.cancelGraceTimer);
     record.cancelGraceTimer = undefined;
     record.turn = undefined;
+    record.steers = undefined;
     record.release = undefined;
   }
 
@@ -720,8 +804,18 @@ export class BatonSessionRuntime {
       : slot.ref.providerSessionId;
   }
 
-  private snapshot(turn: QueuedTurn): QueuedTurnSnapshot {
+  private snapshot(turn: InputRecord): QueuedTurnSnapshot {
     return { id: turn.id, turnId: turn.turnId, provider: turn.provider, blocks: [...turn.blocks] };
+  }
+
+  private inputSnapshot(input: InputRecord): InputSnapshot {
+    return {
+      messageId: input.messageId,
+      turnId: input.turnId,
+      provider: input.provider,
+      status: input.status,
+      delivery: input.delivery,
+    };
   }
 
   private changed(): void {

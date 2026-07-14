@@ -34,13 +34,13 @@ ProviderSession 不在此表——它是某 provider 的私有执行状态、内
 
 内核只有一条流水线，双向流动。observed turn、stall 自愈、审批闭环都是它的特例，不是另起的机制。
 
-![baton 内核：一条双向流水线（chat-tui intent/render 边界、Runtime 的 PendingInput+driven queue、event/turn 单通道、Adapter 的 capability 出站与归一入站、session.jsonl 持久化）](kernel-pipeline.png)
+![baton 内核：一条双向流水线（chat-tui intent/render 边界、Runtime 的 Input+driven queue、event/turn 单通道、Adapter 的 capability 出站与归一入站、session.jsonl 持久化）](kernel-pipeline.png)
 
-入站归一箭头标注的 `driven + observed` 提示：这条 `Adapter → event` 路径同时承载用户驱动与 provider 自发两种 turn，独立于是否有 PendingInput——这正是单通道真相（不变量 #1）的要害。
+入站归一箭头标注的 `driven + observed` 提示：这条 `Adapter → event` 路径同时承载用户驱动与 provider 自发两种 turn，独立于是否有待决 Input——这正是单通道真相（不变量 #1）的要害。
 
 ```text
 控制（出站）  chat-tui intent
-             → Runtime（拥有 PendingInput，调度 driven turn）
+             → Runtime（拥有 Input 生命周期，调度 driven turn）
              → Adapter（按 capability 映射 submit / steer / cancel / approve）
              → provider wire
 感知（入站）  provider wire
@@ -112,7 +112,7 @@ interface AgentAdapter {
 
 内核在每条轴上都要求一个"一等"的承载对象：隐式或泄漏的概念会让局部修复反复打补丁、扩展被迫改核心。四条轴的一等概念与其绑定规则——
 
-- **输入轴 · PendingInput**——用户输入是带稳定 id、消费状态可查的一等实体，统一 draft / queued / admitted / steer / recall / interrupt。缺了它，"Esc + 第二条待决意图"这类时序本质不可判定（见 `user-input-lifecycle.md` S3）；有了它，recall / steer / interrupt 从时序特例收敛为对同一实体的状态查询。
+- **输入轴 · Input**——用户输入是一等概念（身份即其 messageId），消费状态可查，统一 draft / queued / admitted / steer / recall / interrupt。缺了它，"Esc + 第二条待决意图"这类时序本质不可判定（见 `user-input-lifecycle.md` S3）；有了它，recall / steer / interrupt 从时序特例收敛为对同一实体的状态查询。
 
 - **审批轴 · ApprovalReview**——reviewer 的每次决策是按自己的 `reviewId` 归档的一等审计回执、是 timeline 公民；挂到 tool-card 只是它的一种投影。据此：无 target 的 review 也留痕、同一操作的多次决策各自成条、不被覆盖。reviewer / authority 何时显式建模按 §5 判据——出现多种 reviewer 才提升。
 
