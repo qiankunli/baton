@@ -123,6 +123,17 @@ describe("claude: Task 工具族 → plan_update", () => {
     expect(events.filter((e) => e.kind === "tool_call_update")).toHaveLength(0);
   });
 
+  test("TaskCreate falls back to description when subject is absent", () => {
+    const { events, feed } = claudeHarness();
+    feed(toolUse("tu1", "TaskCreate", { description: "删 ResolvedRepo.code_unit" }));
+    feed(toolResult("tu1", "Task #1 created successfully: 删 ResolvedRepo.code_unit"));
+
+    const plans = events.filter((e) => e.kind === "plan_update");
+    expect((plans.at(-1)!.payload as { entries: unknown[] }).entries).toEqual([
+      { content: "删 ResolvedRepo.code_unit", priority: "medium", status: "pending" },
+    ]);
+  });
+
   test("failed result does not touch the table; deleted removes the entry", () => {
     const tasks = new Map<string, TaskEntry>();
     applyTaskOp(tasks, { op: "create", subject: "a" }, "Task #1 created successfully: a", "fb1");
