@@ -112,9 +112,9 @@ interface AgentAdapter {
   - 现状：runtime 分散持有 pending input，无一等实体，故 "Esc + 第二条待决意图" 本质不可判定（见 `user-input-lifecycle.md` S3）。
   - 目标：一等 PendingInput，让 recall / steer / interrupt 的时序判定从特例收敛为对同一实体的状态查询。
 
-- **ApprovalReview by `reviewId`（审批轴的缺失内核）**——回执按自己的 id 归档，带显式 reviewer / authority；tool-card 只是其一种投影。
-  - 现状：回执按 `toolCallId` 归档 → 无 target 的 review 被静默丢弃、同 item 多次决策被覆盖。
-  - 目标：`ApprovalReview(reviewId, targetItemId?, reviewer, decision)` 一等审计对象，保证"每个决策都有权威、可见、不被覆盖的回执"。
+- **ApprovalReview by `reviewId`（审批轴，已落地）**——回执按自己的 id 归档、作为 timeline 一等公民渲染，tool-card 附属只是历史投影。
+  - 已提升：`ApprovalReviewUpdate` 带 `reviewId`（`arv_` 前缀），reduce 按 reviewId 归档、首见入 timeline；adapter 只在 reviewer 终态铸一条回执；无 target 的 review 也留痕、同一操作多次决策各自成条；未知 decision fail-closed 到 failed。详见 `approval-lifecycle.md` §3。
+  - 待续：`reviewer / authority` 尚未建模为显式字段（当前 reviewer 恒为 codex auto-review）；多 provider 出现不同 reviewer 时再按 §5 判据提升。
 
 - **封闭终态词表 + 共享保守归一器**——把不变量 #2 从"每种事件各自发明白名单"变成一处结构保证（未知终态 → 保守态的单一 helper）。
   - 现状：tool 终态已保守（fail-closed），但审批 review decision 的 `else → in_progress`、`StopReason` 的开放 string union 仍在破它。

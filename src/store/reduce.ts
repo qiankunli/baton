@@ -52,7 +52,7 @@ export interface ToolCallState {
 
 /** TUI 时间线条目：message / tool_call / plan / notice 按首次出现排序 */
 export interface TimelineItem {
-  type: "message" | "tool_call" | "plan" | "notice";
+  type: "message" | "tool_call" | "plan" | "notice" | "approval_review";
   id: string;
 }
 
@@ -97,8 +97,9 @@ export interface SessionState {
   pendingPermissions: Map<string, PermissionRequest & { turnId?: string }>;
   pendingQuestions: Map<string, QuestionRequest & { turnId?: string }>;
   /**
-   * auto-review 回执，按被审操作 toolCallId 归档（最新决策覆盖）。与 pendingPermissions
-   * 正交：这是“已被 reviewer 决策”的留痕，不是待决。投影层据此给对应工具卡加审计呈现。
+   * auto-review 回执，按回执自身的 `reviewId` 归档（kernel.md §6）。与 pendingPermissions
+   * 正交：这是“已被 reviewer 决策”的留痕，不是待决，不派生 requires_action。每条回执是
+   * timeline 的一等公民（首见即入 timeline），无 target 也留痕、同一操作多次决策各自成条。
    */
   approvalReviews: Map<string, ApprovalReviewUpdate>;
   usage: UsageTotal;
@@ -321,10 +322,13 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       break;
     }
     case "approval_review_update": {
-      // 归档回执，按被审操作 id 最新覆盖（started→completed 同一 id）。无 toolCallId 无处可挂，
-      // 忽略——不复活/凭空造工具卡。纯留痕，不参与 requires_action 派生。
+      // 一等回执：按自己的 reviewId 归档、首见即进 timeline（无 target 也留痕、多次决策各自成条）。
+      // 纯留痕，不参与 requires_action 派生。
       const p = ev.payload;
-      if (p.toolCallId) state.approvalReviews.set(p.toolCallId, p);
+      if (!state.approvalReviews.has(p.reviewId)) {
+        state.timeline.push({ type: "approval_review", id: p.reviewId });
+      }
+      state.approvalReviews.set(p.reviewId, p);
       break;
     }
     case "question_request": {
