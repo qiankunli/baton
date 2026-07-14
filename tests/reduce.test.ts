@@ -116,7 +116,7 @@ describe("state / permission / plan / usage", () => {
       kind: "permission" as const,
       requestId: "ar1",
       title: "Run this script?",
-      options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" as const }],
+      options: [{ optionId: "allow", name: "Allow once", polarity: "allow" as const, lifetime: "once" as const }],
     };
     const pending = reduceEvents([ev("permission_request", req)]);
     expect(pending.pendingPermissions.has("ar1")).toBe(true);

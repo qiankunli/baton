@@ -71,25 +71,29 @@ describe("config", () => {
     expect(loadConfig(root).claudeExecutable).toBe("/from/env");
   });
 
-  test("codexApprovalReviewer accepts known values and drops unknown", () => {
+  test("codexApprovalReviewer accepts known values only", () => {
     writeFileSync(configPath(root), "codexApprovalReviewer: auto_review\n");
     expect(loadConfig(root).codexApprovalReviewer).toBe("auto_review");
     writeFileSync(configPath(root), "codexApprovalReviewer: user\n");
     expect(loadConfig(root).codexApprovalReviewer).toBe("user");
+  });
+
+  // 缺省不下发 = 跟随 codex 自己的解析（config.toml / profile / 企业 requirements 照常
+  // 生效，codex 自身默认就是 user）。baton 不替 codex 定审批的安全默认。
+  test("an absent or unknown reviewer stays unset — codex decides for itself", () => {
+    writeFileSync(configPath(root), "defaultAgent: codex\n");
+    expect(loadConfig(root).codexApprovalReviewer).toBeUndefined();
     writeFileSync(configPath(root), "codexApprovalReviewer: yolo\n");
     expect(loadConfig(root).codexApprovalReviewer).toBeUndefined();
   });
 
-  test("codexApprovalReviewer defaults to undefined (adapter forces user)", () => {
-    writeFileSync(configPath(root), "defaultAgent: codex\n");
-    expect(loadConfig(root).codexApprovalReviewer).toBeUndefined();
-  });
-
-  test("codexCommand reviewer override becomes the effective value used by the UI", () => {
+  // config 不再推导生效值：它曾复刻 codex 的方言解析来喂 footer，但那必然算错——
+  // 企业 requirements 能覆盖用户配置和启动参数。生效值只认 codex 回吐（approvalRoute）。
+  test("config does not second-guess the effective reviewer from codexCommand", () => {
     writeFileSync(
       configPath(root),
       'codexApprovalReviewer: user\ncodexCommand: [codex, -c, \'approvals_reviewer="auto_review"\', app-server]\n',
     );
-    expect(loadConfig(root).codexApprovalReviewer).toBe("auto_review");
+    expect(loadConfig(root).codexApprovalReviewer).toBe("user");
   });
 });

@@ -288,7 +288,9 @@ describe("interaction resolver registry", () => {
           kind: "permission",
           requestId: "ar_1",
           title: "Run command?",
-          options: [{ optionId: "allow", name: "Allow", kind: "allow_once" as const }],
+          options: [
+            { optionId: "allow", name: "Allow", polarity: "allow" as const, lifetime: "once" as const },
+          ],
         };
         emit({ kind: "permission_request", provider: this.provider, payload: request });
         const decision = await this.handlers.requestHandler(request);
@@ -357,5 +359,46 @@ describe("interaction resolver registry", () => {
     const state = session.loadState();
     expect(state.pendingPermissions.size).toBe(0);
     expect(state.pendingQuestions.size).toBe(0);
+  });
+});
+
+// 委托状态必须对当前活跃 provider 可见（kernel §3 审批闭环），但可见性的来源只能是
+// provider 自己报的生效路由——不是 baton 的配置意图。曾经投影层直接读
+// config.codexApprovalReviewer，于是跟 claude 对话时 footer 也显示 codex 的委托状态。
+describe("runtime.approvalRoute reports the provider's own effective route", () => {
+  class RoutableAdapter extends FakeAdapter {
+    readonly capabilities: AdapterCapabilities = { prompt: {}, approvalRouting: { supported: true } };
+    constructor(
+      provider: string,
+      private readonly route: "user" | "delegated" | null,
+    ) {
+      super(provider);
+    }
+    approvalRoute(): "user" | "delegated" | null {
+      return this.route;
+    }
+  }
+
+  const routeAfterOpen = async (adapter: AgentAdapter, provider: string) => {
+    const runtime = new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    await runtime.submit(provider, [{ type: "text", text: "hi" }]);
+    return runtime.approvalRoute(provider);
+  };
+
+  test("a delegated route is visible", async () => {
+    expect(await routeAfterOpen(new RoutableAdapter("codex", "delegated"), "codex")).toBe("delegated");
+  });
+
+  test("a user route is visible and is not delegation", async () => {
+    expect(await routeAfterOpen(new RoutableAdapter("codex", "user"), "codex")).toBe("user");
+  });
+
+  test("a provider that cannot report stays null — never guessed", async () => {
+    expect(await routeAfterOpen(new RoutableAdapter("codex", null), "codex")).toBeNull();
+  });
+
+  // 不声明 approvalRouting 的 provider（如 claude）不该被安上别家的委托状态
+  test("a provider without the capability stays null (no cross-provider bleed)", async () => {
+    expect(await routeAfterOpen(new FakeAdapter("claude-code"), "claude")).toBeNull();
   });
 });

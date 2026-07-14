@@ -26,7 +26,13 @@ import {
 } from "../commands/registry.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
-import { textOf, type ApprovalReviewUpdate, type DiffBlock, type PromptBlock } from "../events/types.ts";
+import {
+  textOf,
+  type ApprovalReviewUpdate,
+  type DiffBlock,
+  type PermissionOption,
+  type PromptBlock,
+} from "../events/types.ts";
 import {
   createProviderAdapter,
   providerDefinitionFor,
@@ -39,6 +45,27 @@ import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from
 import type { SessionHandle, SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
 import { sessionPickerOptions, type SessionPickerMode } from "./session-picker.tsx";
+
+/**
+ * 双轴 → chat-tui 既有的 `kind` 词表。双轴是 baton 的内部模型，在边界投影回接入方
+ * 已消费的形状——中间重构不惊动边界契约（kernel §3）。chat-tui 把 kind 当 description
+ * 渲染，所以这里的取值直接是用户看见的字；等 chat-tui 改成消费双轴，再退掉这层。
+ *
+ * 旧事件流（双轴之前）的 option 只有 kind、没有两轴：原样透传它，不据缺失的轴伪造
+ * 取值——replay 必须得到同样的累计结果（§5 三问③）。
+ */
+function approvalOptionKind(option: PermissionOption): string {
+  const legacy = (option as { kind?: unknown }).kind;
+  if (!option.polarity && typeof legacy === "string") return legacy;
+  const lasting = option.lifetime !== "once";
+  return option.polarity === "allow"
+    ? lasting
+      ? "allow_always"
+      : "allow_once"
+    : lasting
+      ? "reject_always"
+      : "reject_once";
+}
 
 /** provider（id 或 wire key）→ 时间线 author 展示名；归一与着色 key 统一走 registry。 */
 function providerAuthor(provider: string | undefined): string | undefined {
@@ -551,7 +578,13 @@ export class BatonChatProtocol implements ChatProtocol {
     const statusProvider = active ?? observedRun?.provider ?? this.agent;
     const statusProviderId = providerDefinitionFor(statusProvider)?.id;
     const statusModel = statusProviderId ? (this.runtime.currentModel(statusProviderId) ?? "default") : "default";
-    const approvalMode = this.config.codexApprovalReviewer === "auto_review" ? " · approvals:auto-review" : "";
+    // 审批路由问 adapter 要（provider 自己报的生效值），不读 config——config 是意图，
+    // 且投影层不得按 provider 分支（不变量 #3）。曾经这里硬编码 codexApprovalReviewer，
+    // 于是跟 claude 对话时 footer 照样显示 codex 的委托状态。
+    const approvalMode =
+      statusProviderId && this.runtime.approvalRoute(statusProviderId) === "delegated"
+        ? " · approvals:auto-review"
+        : "";
     const runStatus: RunStatusItem[] = active
       ? [
           {
@@ -609,7 +642,11 @@ export class BatonChatProtocol implements ChatProtocol {
             id: approval.requestId,
             title: approval.title,
             description: approval.description,
-            options: approval.options,
+            options: approval.options.map((option) => ({
+              optionId: option.optionId,
+              name: option.name,
+              kind: approvalOptionKind(option),
+            })),
           }
         : null,
       question: question

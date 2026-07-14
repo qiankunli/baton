@@ -37,20 +37,29 @@ import type {
 import { unsupportedPromptBlocks } from "../types.ts";
 
 const APPROVAL_OPTIONS: PermissionOption[] = [
-  { optionId: "allow", name: "Allow once", kind: "allow_once" },
-  { optionId: "deny", name: "Deny", kind: "reject_once" },
+  { optionId: "allow", name: "Allow once", polarity: "allow", lifetime: "once" },
+  { optionId: "deny", name: "Deny", polarity: "reject", lifetime: "once" },
 ];
 
 /**
  * 审批候选。always 项只在 SDK 给出 permission suggestions 时提供：baton 不自造
  * 授权规则，只透传 CLI "don't ask again" 的同款路径（选中后把整组 suggestions
  * 作为 updatedPermissions 返回，规则作用域由 SDK 决定，通常是 session 级）。
+ *
+ * lifetime 取 `persistent` 而非 `session`：作用域实际由 SDK 定、baton 不确知，
+ * 而在审批展示上低报持续性才是危险的一侧（用户以为一次性、实则长期）。悲观取强档，
+ * 与 name 的 "don't ask again" 一致（不变量 #2）。
  */
 export function claudeApprovalOptions(hasSuggestions: boolean): PermissionOption[] {
   if (!hasSuggestions) return APPROVAL_OPTIONS;
   return [
     APPROVAL_OPTIONS[0] as PermissionOption,
-    { optionId: "allowAlways", name: "Always allow (don't ask again)", kind: "allow_always" },
+    {
+      optionId: "allowAlways",
+      name: "Always allow (don't ask again)",
+      polarity: "allow",
+      lifetime: "persistent",
+    },
     APPROVAL_OPTIONS[1] as PermissionOption,
   ];
 }

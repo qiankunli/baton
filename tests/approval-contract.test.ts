@@ -3,8 +3,8 @@
 //    以 permission_resolved 留痕并把决定回传 provider；
 // 2. 终态白名单——只有明确的成功值可以映射 completed，declined 是一等终态，
 //    未知终态悲观归 failed（乐观兜底曾把 codex declined 渲染成绿勾）；
-// 3. 审批路由收权——codex 默认钉死 reviewer=user；显式 auto-review 必须有权威回执，
-//    未知策略导致的 declined-without-approval 继续发对账 notice。
+// 3. 审批路由收权——codex 默认钉死 reviewer=auto_review 并留下权威回执；显式 user
+//    时人工选项必须服从 app-server 的 availableDecisions，未知旁路继续发对账 notice。
 import { describe, expect, test } from "bun:test";
 
 import { ClaudeAdapter } from "../src/adapters/claude/adapter.ts";
@@ -103,40 +103,25 @@ describe("codex terminal status whitelist", () => {
   });
 });
 
-describe("codex approval routing is pinned by the adapter", () => {
-  test("default and custom commands get approvals_reviewer=user injected before app-server", () => {
-    expect(codexLaunchCommand(undefined)).toEqual(["codex", "-c", 'approvals_reviewer="user"', "app-server"]);
+describe("codex launch command is not a policy channel", () => {
+  // 审批路由曾经靠往 argv 注入 -c approvals_reviewer 实现：既盖掉用户的 codex 配置，
+  // 又反推不出生效值（企业 requirements 能把注入值打回）。现在它只负责挑二进制，
+  // 路由走 thread/start 原生参数（见 codex-session.test.ts）。
+  test("the command is passed through untouched", () => {
+    expect(codexLaunchCommand(undefined)).toEqual(["codex", "app-server"]);
     expect(codexLaunchCommand(["/opt/codex", "app-server", "--verbose"])).toEqual([
       "/opt/codex",
-      "-c",
-      'approvals_reviewer="user"',
       "app-server",
       "--verbose",
     ]);
+    const escapeHatch = ["codex", "-c", 'approvals_reviewer="user"', "app-server"];
+    expect(codexLaunchCommand(escapeHatch)).toEqual(escapeHatch);
+    const wrapper = ["bun", "-e", "fake-server-script"];
+    expect(codexLaunchCommand(wrapper)).toEqual(wrapper);
   });
+});
 
-  test("explicit auto-review config is injected while command-level overrides still win", () => {
-    expect(codexLaunchCommand(undefined, "auto_review")).toEqual([
-      "codex",
-      "-c",
-      'approvals_reviewer="auto_review"',
-      "app-server",
-    ]);
-    const command = ["codex", "-c", 'approvals_reviewer="user"', "app-server"];
-    expect(codexLaunchCommand(command, "auto_review")).toEqual(command);
-  });
-
-  test("an explicit approvals_reviewer in the user command is respected (escape hatch)", () => {
-    const command = ["codex", "-c", 'approvals_reviewer="agent"', "app-server"];
-    expect(codexLaunchCommand(command)).toEqual(command);
-  });
-
-  test("commands without the app-server subcommand are left untouched", () => {
-    // 假进程/不透明 wrapper：adapter 不理解其参数语言，猜错注入位置比不注入更糟
-    const command = ["bun", "-e", "fake-server-script"];
-    expect(codexLaunchCommand(command)).toEqual(command);
-  });
-
+describe("codex approval routing is pinned by the adapter", () => {
   test("declined without a prior requestApproval emits a bypass warning notice", () => {
     const { events, notify } = codexServerRequestHarness("decline");
     notify("item/completed", {
@@ -156,6 +141,176 @@ describe("codex approval routing is pinned by the adapter", () => {
     });
     expect(events.find((e) => e.kind === "_baton_notice")).toBeUndefined();
     expect(events.find((e) => e.kind === "tool_call_update")?.payload).toMatchObject({ status: "declined" });
+  });
+
+  test("availableDecisions drive the card and preserve structured Codex decisions", async () => {
+    const structuredDecision = {
+      acceptWithExecpolicyAmendment: {
+        execpolicy_amendment: ["make", "-C", "devloop", "bump-version"],
+      },
+    };
+    const { events, request } = codexServerRequestHarness("acceptWithExecpolicyAmendment:1");
+    const result = await request("item/commandExecution/requestApproval", {
+      threadId: "th1",
+      itemId: "cmd1",
+      command: "make -C devloop bump-version PLUGIN=devloop",
+      availableDecisions: ["accept", structuredDecision, "cancel"],
+    });
+
+    expect(events[0]?.payload).toMatchObject({
+      options: [
+        { optionId: "accept", name: "Allow once", polarity: "allow", lifetime: "once" },
+        {
+          optionId: "acceptWithExecpolicyAmendment:1",
+          // 作用对象（命令前缀）只在 name 里——两轴表达不了它，UI 也不许拿两轴合成标签
+          name: "Allow and remember: make -C devloop bump-version",
+          polarity: "allow",
+          lifetime: "persistent",
+        },
+        { optionId: "cancel", name: "Deny and interrupt turn", polarity: "reject", lifetime: "once" },
+      ],
+    });
+    expect(result).toEqual({ decision: structuredDecision });
+  });
+
+  test("a deny network amendment is a reject, not an allow", async () => {
+    // codex 会提议"永久拉黑某 host"（NetworkPolicyRuleAction::Deny）。极性压进单一 kind 的
+    // 年代，它被映射成 allow_always + "Allow and remember: deny evil.com"——最危险的选项
+    // 长得最安全。两轴把它钉成 reject。
+    const denyRule = {
+      applyNetworkPolicyAmendment: {
+        network_policy_amendment: { host: "evil.example.com", action: "deny" },
+      },
+    };
+    const { events, request } = codexServerRequestHarness("applyNetworkPolicyAmendment:0");
+    await request("item/commandExecution/requestApproval", {
+      threadId: "th1",
+      itemId: "cmd1",
+      command: "curl https://evil.example.com",
+      availableDecisions: [denyRule],
+    });
+    expect(events[0]?.payload).toMatchObject({
+      options: [
+        {
+          optionId: "applyNetworkPolicyAmendment:0",
+          name: "Deny and remember: evil.example.com",
+          polarity: "reject",
+          lifetime: "persistent",
+        },
+      ],
+    });
+  });
+
+  test("an allow network amendment keeps allow polarity", async () => {
+    const allowRule = {
+      applyNetworkPolicyAmendment: {
+        network_policy_amendment: { host: "registry.npmjs.org", action: "allow" },
+      },
+    };
+    const { events, request } = codexServerRequestHarness("applyNetworkPolicyAmendment:0");
+    await request("item/commandExecution/requestApproval", {
+      threadId: "th1",
+      itemId: "cmd1",
+      command: "npm install",
+      availableDecisions: [allowRule],
+    });
+    expect(events[0]?.payload).toMatchObject({
+      options: [
+        {
+          optionId: "applyNetworkPolicyAmendment:0",
+          name: "Allow and remember: registry.npmjs.org",
+          polarity: "allow",
+          lifetime: "persistent",
+        },
+      ],
+    });
+  });
+
+  test("availableDecisions baton cannot map at all fall back to an answerable card", async () => {
+    // 非空但一项都认不出（codex 改名 / 新增第三种 amendment）时，逐项映射会得到空数组
+    // → 零选项审批卡 → 用户无从作答、turn 永久挂起。宁可退回四选项也不能失去应答能力。
+    const { events, request } = codexServerRequestHarness("accept");
+    await request("item/commandExecution/requestApproval", {
+      threadId: "th1",
+      itemId: "cmd1",
+      command: "bun install",
+      availableDecisions: ["someFutureDecision", { unknownAmendment: {} }],
+    });
+    const card = events.find((e) => e.kind === "permission_request");
+    expect((card?.payload as { options: unknown[] }).options).toHaveLength(4);
+  });
+
+  // 悲观丢弃只是不变量 #2 的前半句；"绝不失声"要求把降级说出来——codex 迭代快，
+  // 新增 decision 是常态，静默丢弃会让用户长期少一个选项而毫不知情。
+  test("unrecognized decisions are surfaced, not silently dropped", async () => {
+    const { events, request } = codexServerRequestHarness("accept");
+    await request("item/commandExecution/requestApproval", {
+      threadId: "th1",
+      itemId: "cmd1",
+      command: "bun install",
+      availableDecisions: ["accept", { brandNewAmendment: { foo: 1 } }, "cancel"],
+    });
+    const notice = events.find((e) => e.kind === "_baton_notice");
+    expect(notice?.payload).toMatchObject({
+      level: "warning",
+      title: "Unrecognized approval choices from codex",
+    });
+    // 形状键要能说清 codex 新增了什么，而不只是"有个东西没认出来"
+    expect((notice?.payload as { detail: string }).detail).toContain("brandNewAmendment");
+    // 认得的候选照常可用
+    expect((events.find((e) => e.kind === "permission_request")?.payload as { options: unknown[] }).options)
+      .toHaveLength(2);
+  });
+
+  test("the same unrecognized shape only warns once per thread", async () => {
+    const { events, request } = codexServerRequestHarness("accept");
+    const ask = () =>
+      request("item/commandExecution/requestApproval", {
+        threadId: "th1",
+        itemId: "cmd1",
+        command: "bun install",
+        availableDecisions: ["accept", { brandNewAmendment: {} }],
+      });
+    await ask();
+    await ask();
+    await ask();
+    expect(events.filter((e) => e.kind === "_baton_notice")).toHaveLength(1);
+  });
+
+  // 字段缺失 = 老版本 codex 压根没这个能力，不是"认不出"——不该报警
+  test("an absent availableDecisions is not a warning", async () => {
+    const { events, request } = codexServerRequestHarness("accept");
+    await request("item/commandExecution/requestApproval", {
+      threadId: "th1",
+      itemId: "cmd1",
+      command: "bun install",
+    });
+    expect(events.find((e) => e.kind === "_baton_notice")).toBeUndefined();
+  });
+
+  // 读不出 amendment 就不给该选项：永久授权的标签说不清作用对象，就不能让用户点。
+  // network 尤其致命——action 读不出时若默认 allow，一条 deny 规则会被渲染成放行。
+  test("an unreadable amendment is dropped and surfaced rather than guessed", async () => {
+    const { events, request } = codexServerRequestHarness("accept");
+    await request("item/commandExecution/requestApproval", {
+      threadId: "th1",
+      itemId: "cmd1",
+      command: "curl https://evil.example.com",
+      availableDecisions: [
+        "accept",
+        { applyNetworkPolicyAmendment: { network_policy_amendment: { host: "evil.example.com" } } },
+        { acceptWithExecpolicyAmendment: { execpolicy_amendment: [] } },
+      ],
+    });
+    const options = (events.find((e) => e.kind === "permission_request")?.payload as {
+      options: { polarity: string }[];
+    }).options;
+    expect(options).toHaveLength(1);
+    expect(options[0]).toMatchObject({ optionId: "accept" });
+    expect(events.find((e) => e.kind === "_baton_notice")?.payload).toMatchObject({
+      level: "warning",
+      title: "Unrecognized approval choices from codex",
+    });
   });
 
   test("auto-review notifications emit authoritative receipts and suppress the heuristic warning", () => {

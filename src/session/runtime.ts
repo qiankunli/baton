@@ -1,9 +1,11 @@
 import {
+  isApprovalRoutable,
   isContextSynchronizable,
   isModelConfigurable,
   isNativeSessionIdentifiable,
   isSteerable,
   type AgentAdapter,
+  type ApprovalRoute,
   type InteractionResponse,
   type ModelOption,
   type ProviderSessionRef,
@@ -401,6 +403,16 @@ export class BatonSessionRuntime {
       return this.options.session.meta.providerSessions[key]?.model ?? null;
     }
     return slot.adapter.currentModel(slot.ref);
+  }
+
+  /**
+   * 该 provider 当前生效的审批路由；不支持该能力、或 provider 没报出来 → null，
+   * 投影据此静默。不读 config：config 是意图，只有 provider 自己报的才是事实。
+   */
+  approvalRoute(provider: string): ApprovalRoute | null {
+    const slot = this.slots.get(provider);
+    if (!slot?.ref || !isApprovalRoutable(slot.adapter)) return null;
+    return slot.adapter.approvalRoute(slot.ref);
   }
 
   /**
