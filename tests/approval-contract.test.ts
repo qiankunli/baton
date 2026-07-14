@@ -236,7 +236,81 @@ describe("codex approval routing is pinned by the adapter", () => {
       command: "bun install",
       availableDecisions: ["someFutureDecision", { unknownAmendment: {} }],
     });
-    expect((events[0]?.payload as { options: unknown[] }).options).toHaveLength(4);
+    const card = events.find((e) => e.kind === "permission_request");
+    expect((card?.payload as { options: unknown[] }).options).toHaveLength(4);
+  });
+
+  // 悲观丢弃只是不变量 #2 的前半句；"绝不失声"要求把降级说出来——codex 迭代快，
+  // 新增 decision 是常态，静默丢弃会让用户长期少一个选项而毫不知情。
+  test("unrecognized decisions are surfaced, not silently dropped", async () => {
+    const { events, request } = codexServerRequestHarness("accept");
+    await request("item/commandExecution/requestApproval", {
+      threadId: "th1",
+      itemId: "cmd1",
+      command: "bun install",
+      availableDecisions: ["accept", { brandNewAmendment: { foo: 1 } }, "cancel"],
+    });
+    const notice = events.find((e) => e.kind === "_baton_notice");
+    expect(notice?.payload).toMatchObject({
+      level: "warning",
+      title: "Unrecognized approval choices from codex",
+    });
+    // 形状键要能说清 codex 新增了什么，而不只是"有个东西没认出来"
+    expect((notice?.payload as { detail: string }).detail).toContain("brandNewAmendment");
+    // 认得的候选照常可用
+    expect((events.find((e) => e.kind === "permission_request")?.payload as { options: unknown[] }).options)
+      .toHaveLength(2);
+  });
+
+  test("the same unrecognized shape only warns once per thread", async () => {
+    const { events, request } = codexServerRequestHarness("accept");
+    const ask = () =>
+      request("item/commandExecution/requestApproval", {
+        threadId: "th1",
+        itemId: "cmd1",
+        command: "bun install",
+        availableDecisions: ["accept", { brandNewAmendment: {} }],
+      });
+    await ask();
+    await ask();
+    await ask();
+    expect(events.filter((e) => e.kind === "_baton_notice")).toHaveLength(1);
+  });
+
+  // 字段缺失 = 老版本 codex 压根没这个能力，不是"认不出"——不该报警
+  test("an absent availableDecisions is not a warning", async () => {
+    const { events, request } = codexServerRequestHarness("accept");
+    await request("item/commandExecution/requestApproval", {
+      threadId: "th1",
+      itemId: "cmd1",
+      command: "bun install",
+    });
+    expect(events.find((e) => e.kind === "_baton_notice")).toBeUndefined();
+  });
+
+  // 读不出 amendment 就不给该选项：永久授权的标签说不清作用对象，就不能让用户点。
+  // network 尤其致命——action 读不出时若默认 allow，一条 deny 规则会被渲染成放行。
+  test("an unreadable amendment is dropped and surfaced rather than guessed", async () => {
+    const { events, request } = codexServerRequestHarness("accept");
+    await request("item/commandExecution/requestApproval", {
+      threadId: "th1",
+      itemId: "cmd1",
+      command: "curl https://evil.example.com",
+      availableDecisions: [
+        "accept",
+        { applyNetworkPolicyAmendment: { network_policy_amendment: { host: "evil.example.com" } } },
+        { acceptWithExecpolicyAmendment: { execpolicy_amendment: [] } },
+      ],
+    });
+    const options = (events.find((e) => e.kind === "permission_request")?.payload as {
+      options: { polarity: string }[];
+    }).options;
+    expect(options).toHaveLength(1);
+    expect(options[0]).toMatchObject({ optionId: "accept" });
+    expect(events.find((e) => e.kind === "_baton_notice")?.payload).toMatchObject({
+      level: "warning",
+      title: "Unrecognized approval choices from codex",
+    });
   });
 
   test("auto-review notifications emit authoritative receipts and suppress the heuristic warning", () => {

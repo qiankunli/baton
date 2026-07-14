@@ -81,6 +81,8 @@ interface ThreadRuntime {
    * 提示而不是静默渲染。启动参数注入（codexLaunchCommand）防已知配置，这里防未知。
    */
   approvalSeenItemIds?: Set<string>;
+  /** 已提示过的"认不出的 decision"形状键：同一形状每 thread 只吵一次，不每次审批都刷屏。 */
+  unmappedDecisionKeys?: Set<string>;
   /** 收到权威 auto-review 回执的 item：避免 declined 终态再触发旧的启发式旁路告警。 */
   autoReviewedItemIds?: Set<string>;
 }
@@ -128,18 +130,33 @@ function simpleApprovalChoice(decision: string): CodexApprovalChoice | undefined
   return option ? { option, decision } : undefined;
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * amendment 类候选一律"读不出就不给"（返回 undefined，由 codexApprovalChoices 丢弃）。
+ *
+ * 它们都是**永久**授权，标签必须说清作用对象；读不出还硬给，等于让用户为一个自己看不见
+ * 的规则永久放行。更要命的是极性：`action` 读不出时若默认成 allow，一条 deny 规则就会
+ * 被渲染成放行——正是本次要消灭的"最危险的选项长得最安全"。宁可少一个精确选项，
+ * 也不猜（不变量 #2）；全被丢弃时还有稳定四选项兜底。
+ */
 function structuredApprovalChoice(decision: unknown, index: number): CodexApprovalChoice | undefined {
-  if (!decision || typeof decision !== "object") return undefined;
-  const record = decision as Record<string, unknown>;
+  const record = asRecord(decision);
+  if (!record) return undefined;
   if (record.acceptWithExecpolicyAmendment !== undefined) {
-    const payload = record.acceptWithExecpolicyAmendment as Record<string, unknown>;
-    const amendment = payload?.execpolicy_amendment;
-    const prefix = Array.isArray(amendment) ? amendment.map(String).join(" ") : "this command prefix";
+    // ExecPolicyAmendment 是 serde(transparent) 的裸字符串数组：命令前缀的 token 序列
+    const amendment = asRecord(record.acceptWithExecpolicyAmendment)?.execpolicy_amendment;
+    if (!Array.isArray(amendment) || amendment.length === 0) return undefined;
     return {
       option: {
         optionId: `acceptWithExecpolicyAmendment:${index}`,
         // 作用对象（命令前缀）只能进 name：它是 codex 方言，两轴表达不了。
-        name: `Allow and remember: ${prefix}`,
+        name: `Allow and remember: ${amendment.map(String).join(" ")}`,
+        // execpolicy amendment 恒为 allow 前缀规则（codex: prefix_rule(..., decision="allow")）
         polarity: "allow",
         lifetime: "persistent",
       },
@@ -147,17 +164,15 @@ function structuredApprovalChoice(decision: unknown, index: number): CodexApprov
     };
   }
   if (record.applyNetworkPolicyAmendment !== undefined) {
-    const payload = record.applyNetworkPolicyAmendment as Record<string, unknown>;
-    const amendment = payload?.network_policy_amendment as Record<string, unknown> | undefined;
-    // action 可以是 deny——codex 会提议"永久拉黑某 host"。它与 allow 同为 amendment，
-    // 但极性相反；当成 allow 渲染会让最危险的选项长得最安全（曾经如此）。
-    const deny = String(amendment?.action ?? "allow") === "deny";
-    const verb = deny ? "Deny" : "Allow";
-    const target = amendment?.host ? String(amendment.host) : "this network rule";
+    const amendment = asRecord(asRecord(record.applyNetworkPolicyAmendment)?.network_policy_amendment);
+    const { host, action } = amendment ?? {};
+    // action 可以是 deny——codex 会提议"永久拉黑某 host"，与 allow 同为 amendment 但极性相反。
+    if (typeof host !== "string" || (action !== "allow" && action !== "deny")) return undefined;
+    const deny = action === "deny";
     return {
       option: {
         optionId: `applyNetworkPolicyAmendment:${index}`,
-        name: `${verb} and remember: ${target}`,
+        name: `${deny ? "Deny" : "Allow"} and remember: ${host}`,
         polarity: deny ? "reject" : "allow",
         lifetime: "persistent",
       },
@@ -167,25 +182,50 @@ function structuredApprovalChoice(decision: unknown, index: number): CodexApprov
   return undefined;
 }
 
+export interface CodexApprovalChoices {
+  choices: CodexApprovalChoice[];
+  /** 认不出的 decision 形状键：codex 迭代快，新增 decision 是常态，必须说出来而不是默默丢。 */
+  unmapped: string[];
+  /** 一项都没映射上、退回了稳定四选项（而非 codex 的真实候选集）。 */
+  fellBack: boolean;
+}
+
+/** 认不出的 decision 的形状键：字符串取其本身，对象取变体名——足够让人知道 codex 新增了什么。 */
+function decisionShapeKey(decision: unknown): string {
+  if (typeof decision === "string") return decision;
+  const variant = asRecord(decision) ? Object.keys(asRecord(decision) ?? {})[0] : undefined;
+  return variant ?? `<${typeof decision}>`;
+}
+
 /**
  * Codex 给出精确候选时逐项映射；缺字段（老版本）或**一项都认不出**时退回稳定四选项。
  *
  * 后半条是要害：availableDecisions 非空但全部不认识（codex 改了 decision 名、加了第三种
  * amendment），逐项映射会得到空数组 → 审批卡零选项 → 用户无从作答，turn 永久挂起。
  * 认不出就退回一定能作答的集合，宁可少一个精确选项也不能失去应答能力（不变量 #2）。
+ *
+ * 但"少给"本身必须留痕（见 unmapped）——悲观降级不等于可以失声。
  */
-export function codexApprovalChoices(params: Record<string, unknown>): CodexApprovalChoice[] {
+export function codexApprovalChoices(params: Record<string, unknown>): CodexApprovalChoices {
   const available = params.availableDecisions;
   const fallback = () => FALLBACK_APPROVAL_OPTIONS.map((option) => ({ option, decision: option.optionId }));
-  if (!Array.isArray(available) || available.length === 0) return fallback();
-  const choices = available.flatMap((decision, index) => {
+  // 字段缺失 = 老版本 codex 没这个能力，不是"认不出"，无须提示
+  if (!Array.isArray(available) || available.length === 0) {
+    return { choices: fallback(), unmapped: [], fellBack: false };
+  }
+  const choices: CodexApprovalChoice[] = [];
+  const unmapped: string[] = [];
+  available.forEach((decision, index) => {
     const choice =
       typeof decision === "string"
         ? simpleApprovalChoice(decision)
         : structuredApprovalChoice(decision, index);
-    return choice ? [choice] : [];
+    if (choice) choices.push(choice);
+    else unmapped.push(decisionShapeKey(decision));
   });
-  return choices.length > 0 ? choices : fallback();
+  return choices.length > 0
+    ? { choices, unmapped, fellBack: false }
+    : { choices: fallback(), unmapped, fellBack: true };
 }
 
 /** item.type → 内部 tool kind；agentMessage/reasoning/plan 不是 tool，单独处理 */
@@ -687,6 +727,44 @@ export class CodexAdapter implements AgentAdapter {
     }
   }
 
+  /**
+   * codex 给了 baton 认不出的审批候选 → 显式提示，不静默降级。
+   *
+   * 悲观丢弃（structuredApprovalChoice 读不出就不给）保证了"不猜"，但那只是不变量 #2 的
+   * 前半句；"绝不失声"要求把降级本身说出来：codex 迭代频繁、新增 decision 属于常态，
+   * 静默丢弃会让用户在毫不知情下长期少一个本可用的选项，也让 baton 落后于上游这件事
+   * 无人发现。按形状键在 thread 内去重——否则新增一种 decision 会让每次审批都刷屏。
+   */
+  private noticeUnmappedDecisions(
+    rt: ThreadRuntime,
+    unmapped: string[],
+    fellBack: boolean,
+    params: unknown,
+  ): void {
+    if (unmapped.length === 0) return;
+    const seen = (rt.unmappedDecisionKeys ??= new Set<string>());
+    const novel = unmapped.filter((key) => !seen.has(key));
+    if (novel.length === 0) return;
+    novel.forEach((key) => seen.add(key));
+    this.emit(
+      rt,
+      {
+        kind: "_baton_notice",
+        provider: this.provider,
+        payload: {
+          level: "warning",
+          title: "Unrecognized approval choices from codex",
+          detail: `baton does not understand ${novel.join(", ")} — ${
+            fellBack
+              ? "showing baton's standard options instead of codex's own"
+              : "those choices are hidden from the card"
+          }. Upgrade baton if codex added new approval types.`,
+        },
+      },
+      params,
+    );
+  }
+
   /** 错误路径终态：先留结构化 error，再合成 idle（design §4.9） */
   private failTurn(rt: ThreadRuntime, turn: CodexTurn | undefined, message: string): void {
     if (!turn || turn.finalized) return;
@@ -996,7 +1074,8 @@ export class CodexAdapter implements AgentAdapter {
         }
         const requestId = String(p.approvalId ?? p.itemId ?? p.callId ?? newId("ar"));
         const presentation = approvalPresentationOf(method, p);
-        const choices = codexApprovalChoices(p);
+        const { choices, unmapped, fellBack } = codexApprovalChoices(p);
+        this.noticeUnmappedDecisions(rt, unmapped, fellBack, params);
         const request: PermissionRequest = {
           kind: "permission",
           requestId,
@@ -1015,14 +1094,19 @@ export class CodexAdapter implements AgentAdapter {
           );
           return { decision: "cancel" };
         }
-        // response 按 requestId 路由回来，kind 必配对 permission；意外不配保守拒绝（空 optionId 非 allow）
+        // response 按 requestId 路由回来，kind 必配对 permission；意外不配保守拒绝
         const optionId = response.kind === "permission" ? response.optionId : "";
         this.emit(rt, {
           kind: "permission_resolved",
           provider: this.provider,
           payload: { requestId, outcome: "selected", optionId },
         });
-        return { decision: choices.find((choice) => choice.option.optionId === optionId)?.decision ?? optionId };
+        // 选不中就回 decline，不把 optionId 原样透传：结构化候选的 optionId 是 baton 铸的
+        // 合成 id（acceptWithExecpolicyAmendment:1），不是 codex wire 值；空串更不是"拒绝"，
+        // 而是个非法 wire 值——曾经这里以为透传就等于 fail-closed，其实没有。
+        return {
+          decision: choices.find((choice) => choice.option.optionId === optionId)?.decision ?? "decline",
+        };
       }
       case "item/tool/requestUserInput": {
         const source = Array.isArray(p.questions) ? p.questions : [];

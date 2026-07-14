@@ -50,6 +50,10 @@ Adapter emit `permission_request` → runtime 的 `approvalHandler` 注册 resol
 
 人工审批时，adapter 优先按 app-server 的 `availableDecisions` 生成选项并把结构化 decision 原样回传；老版本未提供该字段、**或一项都认不出**时退回稳定四选项——非空但全不可映射会得到零选项审批卡，用户无从作答、turn 永久挂起。
 
+**认不出就不给，但必须说出来。** amendment 类候选读不出作用对象时（字段改名、新增形状）一律丢弃而非猜：它们都是永久授权，标签说不清放行了什么就不能让用户点；network amendment 尤其致命——`action` 读不出时若默认成 allow，一条 deny 规则会被渲染成放行。但悲观丢弃只是不变量 #2 的前半句，「绝不失声」要求把降级本身留痕：codex 迭代频繁、新增 decision 属于常态，静默丢弃会让用户长期少一个本可用的选项而毫不知情，也让「baton 落后于上游」这件事无人发现。故按 decision 形状键发 `_baton_notice`（thread 内每形状只提示一次，避免每次审批刷屏）。`availableDecisions` **字段缺失**是老版本没这个能力，不是认不出，不提示。
+
+用户选中的 optionId 若不在候选里（响应错配、陈旧 id），回传 `decline` 而非把 optionId 原样透传：结构化候选的 optionId 是 baton 铸的合成 id（`acceptWithExecpolicyAmendment:1`），不是 codex wire 值。
+
 选项的语义由 provider 给的 `name` 承载（如 `Allow and remember: make -C devloop bump-version`），两根正交轴 `polarity` / `lifetime` 只是渲染提示。**授权“作用于什么”闭不了包**，不进枚举：codex 自己的 `acceptForSession` 对 command 是“session 审批缓存”、对 file change 是“同一批文件”；execpolicy amendment 作用于命令前缀，network amendment 作用于 host **且可以是 deny**。把这些压进单一 `kind` 的年代，“永久拉黑某 host”被映射成 `allow_always` + “Allow and remember: deny evil.com”——最危险的选项长得最安全。
 
 ### 2.3 未知审批旁路的兜底
