@@ -3,6 +3,7 @@
 // UI 语义（补全、分层 Ctrl+C、浮层交互）都在 chat-tui；这里只有 baton 的业务编排。
 
 import type {
+  BlockTone,
   ChatProtocol,
   ChatViewState,
   Candidate,
@@ -11,6 +12,7 @@ import type {
   RunStatusItem,
   StatusMessage,
   TranscriptBlockContent,
+  TranscriptBlockStatus,
   TranscriptItem,
   QuestionAnswers,
 } from "chat-tui";
@@ -716,25 +718,34 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
   };
 }
 
+/**
+ * auto-review 决策 → chat-tui 展示双轴（kernel.md §6 展示轴）。decision 已在 adapter 边界收口为
+ * 闭合三态（§2 不变量 #2），所以这里是对**闭集的穷尽查表**而非条件链——新增 decision 成员时
+ * TS 直接报表不完整，比三元链更难漏：
+ * - outcome（status）= 本次 review 的结局：approved 审到底了 / denied 被拒 / aborted 未决异常；
+ * - tone = 是否需留痕：仅 approved 带 warning——委托代批**放行**的操作要留审计痕。
+ * 双轴的意义正在这条：approved 不再被遮成一个 warning 而丢掉"它审完了"，✓ 与警示色各说各的。
+ */
+const REVIEW_DISPLAY: Record<
+  ApprovalReviewUpdate["decision"],
+  { status: TranscriptBlockStatus; tone?: BlockTone }
+> = {
+  approved: { status: "completed", tone: "warning" },
+  denied: { status: "declined" },
+  aborted: { status: "failed" },
+};
+
 function approvalReviewTranscriptItem(review: ApprovalReviewUpdate): TranscriptItem {
   const facts = [
     review.riskLevel ? `risk: ${review.riskLevel}` : undefined,
     review.userAuthorization ? `authorization: ${review.userAuthorization}` : undefined,
   ].filter(Boolean);
   const suffix = facts.length > 0 ? ` (${facts.join(", ")})` : "";
-  // decision 已在 adapter 边界收口为闭合三态（kernel.md §2 不变量 #2），此处对闭集穷尽映射到
-  // chat-tui 的展示双轴（kernel.md §6 展示轴）：
-  // - outcome（status）= 这次 review 的结局：approved→completed（审到底了）、denied→declined、aborted→failed；
-  // - tone = 是否需留痕：仅 approved 带 warning——**委托代批放行的操作要留审计痕**。
-  // 双轴的意义正在这条：approved 不再被遮成一个 warning 而丢掉"它审完了"，✓ 与警示色各说各的。
-  const status =
-    review.decision === "denied" ? "declined" : review.decision === "aborted" ? "failed" : "completed";
   return {
     type: "block",
     id: `approval-review:${review.reviewId}`,
     kind: "notice",
-    status,
-    ...(review.decision === "approved" ? { tone: "warning" as const } : {}),
+    ...REVIEW_DISPLAY[review.decision],
     title: `Automatic approval review ${review.decision}${suffix}`,
     content: review.rationale ? { type: "text", text: review.rationale } : undefined,
   };

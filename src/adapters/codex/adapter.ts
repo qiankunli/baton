@@ -733,7 +733,9 @@ export class CodexAdapter implements AgentAdapter {
         // UNSTABLE wire shape：所有字段都在 adapter 边界容错，原始 params 仍随 envelope.raw 保留。
         const review = (p.review ?? {}) as Record<string, unknown>;
         const action = (p.action ?? {}) as Record<string, unknown>;
-        const targetItemId = p.targetItemId === undefined ? undefined : String(p.targetItemId);
+        // `== null` 同时挡 undefined 与 null：UNSTABLE wire 显式送 null 时 String(null) 会造出
+        // 假 id "null"，把回执挂到不存在的工具卡上（§3.3：UNSTABLE 字段一律按可选、缺失容忍）。
+        const targetItemId = p.targetItemId == null ? undefined : String(p.targetItemId);
         if (targetItemId) (rt.autoReviewedItemIds ??= new Set()).add(targetItemId);
         // 一等回执只在**终态**铸造：started 只驱动运行相位（见下方 run_status），completed 才落一条
         // 带独立 reviewId 的审计回执（kernel.md §6）。这样无需关联 started/completed，无 target /
