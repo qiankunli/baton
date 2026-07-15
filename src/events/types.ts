@@ -243,7 +243,10 @@ export interface ApprovalReviewUpdate {
   decision: "approved" | "denied" | "aborted";
   /** provider 给出时透传的风险等级 */
   riskLevel?: "low" | "medium" | "high" | "critical" | (string & {});
-  /** reviewer 评估的授权等级（非“回退给用户”，不改变委托语义） */
+  /**
+   * provider 回吐的授权等级（非“回退给用户”，不改变委托语义）。Codex compact low-risk
+   * allow 可能合成 unknown；这是 wire 上的明确值，照常保真，只有字段缺失才表示未返回。
+   */
   userAuthorization?: "unknown" | "low" | "medium" | "high" | (string & {});
   /** 决策理由，审计 / 诊断展示用 */
   rationale?: string;
