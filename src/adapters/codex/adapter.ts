@@ -20,6 +20,7 @@ import { textOf } from "../../events/types.ts";
 import type {
   AdapterCapabilities,
   AgentAdapter,
+  EffortOption,
   EventSink,
   ModelOption,
   OpenOptions,
@@ -73,6 +74,11 @@ interface ThreadRuntime {
   pendingCancel?: boolean;
   /** 用户在 baton 中选择的模型；作为下一次 turn/start override。 */
   model?: string;
+  /** 下一次 turn/start 使用的实际 effort；default 会先解析成当前模型的默认值。 */
+  effort?: string;
+  /** 仅显式选择返回值；default 对外仍显示为 null。 */
+  effortSelection?: string;
+  effortUsesDefault?: boolean;
   /** 上次 tokenUsage.total 快照，差分成 usage_update 增量 */
   prevUsage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningOutputTokens: number };
   /**
@@ -87,21 +93,79 @@ interface ThreadRuntime {
   autoReviewedItemIds?: Set<string>;
 }
 
-function codexModels(result: unknown): ModelOption[] {
+interface CodexModelInfo {
+  id: string;
+  label: string;
+  description?: string;
+  isDefault: boolean;
+  defaultEffort?: string;
+  efforts: EffortOption[];
+}
+
+function effortLabel(effort: string): string {
+  return effort === "xhigh" ? "Extra high" : effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+function codexModelInfos(result: unknown): CodexModelInfo[] {
   const data = (result as { data?: unknown[] })?.data;
-  const models: ModelOption[] = [{ id: "default", label: "Default", description: "Use the Codex default model" }];
-  if (!Array.isArray(data)) return models;
+  if (!Array.isArray(data)) return [];
+  const models: CodexModelInfo[] = [];
   for (const raw of data) {
     const model = raw as Record<string, unknown>;
     const id = String(model.id ?? model.model ?? "").trim();
     if (!id) continue;
+    const effortRows = model.supportedReasoningEfforts ?? model.supported_reasoning_efforts;
+    const efforts = Array.isArray(effortRows)
+      ? effortRows.flatMap((row) => {
+          const item = typeof row === "string" ? { reasoningEffort: row } : (row as Record<string, unknown>);
+          const effort = String(item.reasoningEffort ?? item.reasoning_effort ?? "").trim();
+          return effort
+            ? [
+                {
+                  id: effort,
+                  label: effortLabel(effort),
+                  description: typeof item.description === "string" ? item.description : undefined,
+                },
+              ]
+            : [];
+        })
+      : [];
     models.push({
       id,
       label: String(model.displayName ?? model.display_name ?? id),
       description: typeof model.description === "string" ? model.description : undefined,
+      isDefault: model.isDefault === true || model.is_default === true,
+      defaultEffort: String(model.defaultReasoningEffort ?? model.default_reasoning_effort ?? "").trim() || undefined,
+      efforts,
     });
   }
   return models;
+}
+
+function codexModels(result: unknown): ModelOption[] {
+  return [
+    { id: "default", label: "Default", description: "Use the Codex default model" },
+    ...codexModelInfos(result).map(({ id, label, description }) => ({ id, label, description })),
+  ];
+}
+
+function selectedCodexModel(result: unknown, modelId?: string): CodexModelInfo | undefined {
+  const models = codexModelInfos(result);
+  return modelId ? models.find((model) => model.id === modelId) : models.find((model) => model.isDefault) ?? models[0];
+}
+
+function codexEfforts(result: unknown, modelId?: string): EffortOption[] {
+  const model = selectedCodexModel(result, modelId);
+  return [
+    {
+      id: "default",
+      label: "Default",
+      description: model?.defaultEffort
+        ? `Use the ${model.label} default (${model.defaultEffort})`
+        : "Use the Codex default effort",
+    },
+    ...(model?.efforts ?? []),
+  ];
 }
 
 // codex CommandExecutionApprovalDecision / FileChangeApprovalDecision 的字符串成员。
@@ -538,11 +602,39 @@ export class CodexAdapter implements AgentAdapter {
 
   async setModel(ref: ProviderSessionRef, modelId: string | null): Promise<void> {
     const rt = this.mustThread(ref);
-    rt.model = !modelId || modelId === "default" ? undefined : modelId;
+    const model = !modelId || modelId === "default" ? undefined : modelId;
+    if (rt.effortUsesDefault) {
+      const catalog = await rt.peer.request("model/list", { limit: 200 });
+      rt.effort = selectedCodexModel(catalog, model)?.defaultEffort;
+    }
+    rt.model = model;
   }
 
   currentModel(ref: ProviderSessionRef): string | null {
     return this.mustThread(ref).model ?? null;
+  }
+
+  async listEfforts(ref: ProviderSessionRef): Promise<EffortOption[]> {
+    const rt = this.mustThread(ref);
+    return codexEfforts(await rt.peer.request("model/list", { limit: 200 }), rt.model);
+  }
+
+  async setEffort(ref: ProviderSessionRef, effortId: string | null): Promise<void> {
+    const rt = this.mustThread(ref);
+    if (!effortId || effortId === "default") {
+      const catalog = await rt.peer.request("model/list", { limit: 200 });
+      rt.effort = selectedCodexModel(catalog, rt.model)?.defaultEffort;
+      rt.effortSelection = undefined;
+      rt.effortUsesDefault = true;
+      return;
+    }
+    rt.effort = effortId;
+    rt.effortSelection = effortId;
+    rt.effortUsesDefault = false;
+  }
+
+  currentEffort(ref: ProviderSessionRef): string | null {
+    return this.mustThread(ref).effortSelection ?? null;
   }
 
   /** submit 只做 admission 并发出 turn/start；进展与终结全部经通知/终态合成路径报告 */
@@ -575,6 +667,7 @@ export class CodexAdapter implements AgentAdapter {
         input: [{ type: "text", text: textOf(input.blocks) }],
         ...(syncText ? { additionalContext: { "baton-sync": { value: syncText, kind: "untrusted" } } } : {}),
         ...(rt.model ? { model: rt.model } : {}),
+        ...(rt.effort ? { effort: rt.effort } : {}),
         // 不显式开启则 codex 不发 item/reasoning/* 通知，中间过程对用户不可见
         summary: "auto",
       })

@@ -5,12 +5,13 @@ import { COMMANDS, parseProvider, parseProviderRoute } from "../src/commands/reg
 
 // slash 解析实现在 chat-tui；这里锁的是"chat-tui 解析器 × baton 命令表"的组合行为。
 describe("baton command registry", () => {
-  test("parses direct provider commands and model arguments", () => {
+  test("parses direct provider commands and config arguments", () => {
     expect(parseSlashCommand("/claude", COMMANDS)).toEqual({ name: "claude", argument: "" });
     expect(parseSlashCommand("/codex", COMMANDS)).toEqual({ name: "codex", argument: "" });
     expect(parseSlashCommand("/codex fix this", COMMANDS)).toEqual({ name: "codex", argument: "fix this" });
     expect(parseSlashCommand("/claude review this", COMMANDS)).toEqual({ name: "claude", argument: "review this" });
     expect(parseSlashCommand("/model sonnet", COMMANDS)).toEqual({ name: "model", argument: "sonnet" });
+    expect(parseSlashCommand("/effort high", COMMANDS)).toEqual({ name: "effort", argument: "high" });
     expect(parseSlashCommand("/sessions", COMMANDS)).toEqual({ name: "sessions", argument: "" });
     expect(parseSlashCommand("/status", COMMANDS)).toEqual({ name: "status", argument: "" });
     expect(parseSlashCommand("/new", COMMANDS)).toEqual({ name: "new", argument: "" });
@@ -23,6 +24,8 @@ describe("baton command registry", () => {
     expect(parseSlashCommand("/cod fix this", COMMANDS)).toEqual({ name: "codex", argument: "fix this" });
     expect(parseSlashCommand("/c", COMMANDS)).toBeNull();
     expect(parseSlashCommand("/m sonnet", COMMANDS)).toEqual({ name: "model", argument: "sonnet" });
+    expect(parseSlashCommand("/ef high", COMMANDS)).toEqual({ name: "effort", argument: "high" });
+    expect(parseSlashCommand("/e", COMMANDS)).toBeNull();
     expect(parseSlashCommand("/se", COMMANDS)).toEqual({ name: "sessions", argument: "" });
     expect(parseSlashCommand("/st", COMMANDS)).toEqual({ name: "status", argument: "" });
     expect(parseSlashCommand("/s", COMMANDS)).toBeNull();

@@ -25,6 +25,7 @@ import {
   type ProviderName,
 } from "../commands/registry.ts";
 import type { BatonConfig } from "../config/config.ts";
+import { loadEffortPreferences, saveEffortPreference } from "../config/effort-preferences.ts";
 import { loadModelPreferences, saveModelPreference } from "../config/model-preferences.ts";
 import { expandMentions } from "../context/mention.ts";
 import {
@@ -169,6 +170,7 @@ export class BatonChatProtocol implements ChatProtocol {
   private historyStash: string | null = null; // 进入浏览前暂存的草稿，越过最新时恢复
   private lastHistoryText: string | null = null; // 上次召回的条目，判定用户是否改动过
   private readonly modelPreferences: Record<string, string>;
+  private readonly effortPreferences: Record<string, string>;
 
   constructor(
     private readonly store: SessionStore,
@@ -179,6 +181,7 @@ export class BatonChatProtocol implements ChatProtocol {
     this.session = opened.session;
     this.agent = config.defaultAgent;
     this.modelPreferences = loadModelPreferences(store.rootDir);
+    this.effortPreferences = loadEffortPreferences(store.rootDir);
     if (opened.recovered) {
       this.status = { text: "Recovered an interrupted turn from a previous baton run", tone: "info" };
     }
@@ -335,6 +338,31 @@ export class BatonChatProtocol implements ChatProtocol {
         if (!model) throw new Error(`Unknown ${target} model: ${argument}`);
         return this.configureModel(target, model);
       }
+      case "effort": {
+        const target = this.agent;
+        const efforts = await this.runtime.listEfforts(target);
+        if (!argument) {
+          this.openPicker({
+            title: `Select ${target} effort`,
+            options: efforts.map((effort) => ({
+              name: effort.label,
+              description: effort.description ?? effort.id,
+              value: effort.id,
+            })),
+            onSelect: async (value) => {
+              const effort = efforts.find((candidate) => candidate.id === value);
+              if (effort) await this.configureEffort(target, effort);
+            },
+          });
+          return;
+        }
+        const normalized = argument.toLowerCase();
+        const effort = efforts.find(
+          (candidate) => candidate.id.toLowerCase() === normalized || candidate.label.toLowerCase() === normalized,
+        );
+        if (!effort) throw new Error(`Unknown ${target} effort: ${argument}`);
+        return this.configureEffort(target, effort);
+      }
       default:
         throw new Error(`Unknown command: /${name}`);
     }
@@ -474,6 +502,7 @@ export class BatonChatProtocol implements ChatProtocol {
       session: this.session,
       mentionBudgetChars: this.config.mentionBudgetChars,
       modelPreferences: this.modelPreferences,
+      effortPreferences: this.effortPreferences,
       // 交互回调由 runtime 提供（resolver 注册表）：protocol 不再持有交互状态
       createAdapter: (name, handlers) =>
         createProviderAdapter(name as ProviderName, { ...handlers, config: this.config }),
@@ -517,18 +546,28 @@ export class BatonChatProtocol implements ChatProtocol {
     this.changed();
   }
 
+  private async configureEffort(target: ProviderName, effort: { id: string; label: string }): Promise<void> {
+    await this.runtime.setEffort(target, effort.id);
+    saveEffortPreference(this.store.rootDir, target, effort.id);
+    if (effort.id === "default") delete this.effortPreferences[target];
+    else this.effortPreferences[target] = effort.id;
+    this.status = { text: `${target} effort: ${effort.label} (takes effect next turn)`, tone: "info" };
+    this.changed();
+  }
+
   /** 控制命令输出只进入当前 view，不写 session.jsonl，避免污染可恢复的会话历史。 */
   private sessionStatusItem(): TranscriptItem {
     const meta = this.session.meta;
     const active = this.runtime.activeProvider;
     const selectedModel = this.runtime.currentModel(this.agent) ?? "default";
+    const selectedEffort = this.runtime.currentEffort(this.agent) ?? "default";
     const providers = Object.keys(meta.providerSessions).join(", ") || "-";
     const preview = meta.preview ?? meta.title ?? "(empty session)";
     const text = [
       `Session: ${meta.batonSessionId}`,
       `Preview: ${preview}`,
       `Directory: ${meta.cwd}`,
-      `Current: ${this.agent} - model ${selectedModel}`,
+      `Current: ${this.agent} - model ${selectedModel} - effort ${selectedEffort}`,
       `Providers: ${providers}`,
       `Turns: ${this.state.turnSummaries.length} - tokens in ${this.state.usage.inputTokens} / out ${this.state.usage.outputTokens}`,
       `State: ${active ? `running (${active})` : "idle"} - queue ${this.runtime.queueLength}`,

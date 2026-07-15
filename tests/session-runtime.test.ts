@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type {
   AdapterCapabilities,
   AgentAdapter,
+  EffortOption,
   EventSink,
   ModelOption,
   OpenOptions,
@@ -23,6 +24,7 @@ class FakeAdapter implements AgentAdapter {
   openOptions?: OpenOptions;
   sink?: EventSink;
   model: string | null = null;
+  effort: string | null = null;
   synced: string[] = [];
   prompts: string[] = [];
 
@@ -59,6 +61,18 @@ class FakeAdapter implements AgentAdapter {
 
   currentModel(_ref: ProviderSessionRef): string | null {
     return this.model;
+  }
+
+  async listEfforts(_ref: ProviderSessionRef): Promise<EffortOption[]> {
+    return [{ id: "default", label: "Default" }, { id: "high", label: "High" }];
+  }
+
+  async setEffort(_ref: ProviderSessionRef, effortId: string | null): Promise<void> {
+    this.effort = effortId === "default" ? null : effortId;
+  }
+
+  currentEffort(_ref: ProviderSessionRef): string | null {
+    return this.effort;
   }
 
   /** submit 立即回执；事件（含终态）异步经 open 绑定的 sink 上报。user_message 由 runtime 落盘 */
@@ -236,13 +250,14 @@ describe("BatonSessionRuntime", () => {
     expect(session.meta.providerSessions["claude-code"]?.syncedSeq).toBeGreaterThan(0);
   });
 
-  test("resumes native session, restores model, and syncs only other-provider progress", async () => {
+  test("resumes native session, restores config, and syncs only other-provider progress", async () => {
     completedTurn(session, "codex", "t_codex", "old codex work");
     const watermark = session.readEvents().at(-1)?.seq ?? 0;
     session.setProviderSession("codex", {
       provider: "codex",
       providerSessionId: "thread-old",
       model: "fast",
+      effort: "high",
       syncedSeq: watermark,
     });
     completedTurn(session, "claude-code", "t_claude", "new claude work");
@@ -251,6 +266,7 @@ describe("BatonSessionRuntime", () => {
       session,
       mentionBudgetChars: 4096,
       modelPreferences: { codex: "remembered-global-model" },
+      effortPreferences: { codex: "remembered-global-effort" },
       createAdapter: () => codex,
     });
 
@@ -258,6 +274,7 @@ describe("BatonSessionRuntime", () => {
 
     expect(codex.openOptions?.resumeSessionId).toBe("thread-old");
     expect(codex.model).toBe("fast");
+    expect(codex.effort).toBe("high");
     expect(codex.synced[0]).toContain("new claude work");
     expect(codex.synced[0]).not.toContain("old codex work");
     expect(session.meta.providerSessions.codex?.providerSessionId).toBe("codex-native");
@@ -276,6 +293,21 @@ describe("BatonSessionRuntime", () => {
 
     expect(codex.model).toBe("fast");
     expect(session.meta.providerSessions.codex?.model).toBe("fast");
+  });
+
+  test("uses the remembered provider effort for a new BatonSession", async () => {
+    const codex = new FakeAdapter("codex");
+    const runtime = new BatonSessionRuntime({
+      session,
+      mentionBudgetChars: 4096,
+      effortPreferences: { codex: "high" },
+      createAdapter: () => codex,
+    });
+
+    await runtime.submit("codex", [{ type: "text", text: "next" }]);
+
+    expect(codex.effort).toBe("high");
+    expect(session.meta.providerSessions.codex?.effort).toBe("high");
   });
 });
 
