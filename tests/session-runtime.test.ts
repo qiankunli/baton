@@ -137,6 +137,46 @@ function completedTurn(handle: SessionHandle, provider: string, turnId: string, 
 }
 
 describe("BatonSessionRuntime", () => {
+  test("does not publish a second runtime change for persisted streaming events", async () => {
+    class ManualAdapter extends FakeAdapter {
+      turnId?: string;
+
+      override async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+        this.turnId = input.turnId;
+        return { accepted: true };
+      }
+    }
+
+    const adapter = new ManualAdapter("codex");
+    let runtimeChanges = 0;
+    const runtime = new BatonSessionRuntime({
+      session,
+      mentionBudgetChars: 4096,
+      createAdapter: () => adapter,
+      onStateChange: () => runtimeChanges++,
+    });
+
+    const turn = runtime.submit("codex", [{ type: "text", text: "hello" }]);
+    while (!adapter.sink || !adapter.turnId) await Bun.sleep(0);
+
+    const beforeChunk = runtimeChanges;
+    adapter.sink({
+      kind: "agent_message_chunk",
+      provider: "codex",
+      turnId: adapter.turnId,
+      payload: { messageId: "m_stream", content: { type: "text", text: "a" } },
+    });
+    expect(runtimeChanges).toBe(beforeChunk);
+
+    adapter.sink({
+      kind: "state_update",
+      provider: "codex",
+      turnId: adapter.turnId,
+      payload: { state: "idle", stopReason: "end_turn" },
+    });
+    await turn;
+  });
+
   test("accepts provider IDs outside the initially bundled registry", async () => {
     const adapter = new FakeAdapter("example-provider");
     const runtime = new BatonSessionRuntime({
