@@ -4,7 +4,8 @@
 // <select>（自带 ↑↓/Enter）。chat-tui 的 Picker 是"通用选项浮层"这个机制，与这里的
 // "选会话"业务概念不同层；将来会话内入口若与启动入口合流（codex 的 LaunchContext
 // 语义），统一收敛到本文件。
-// 键位对齐 codex：Enter 选中、Esc 新开会话（StartFresh）、Ctrl+C 退出；Tab 切换 list/tree。
+// Enter 选中、Esc/Ctrl+C 取消退出；Tab 切换 list/tree。
+// 新会话应由 `baton` 或 `/new` 显式创建，避免在选择历史会话时误按 Esc 丢失当前视图。
 
 import { useKeyboard } from "@opentui/react";
 import { useState, type ReactNode } from "react";
@@ -26,7 +27,6 @@ export interface SessionPickerProps {
   /** 打开失败（如目标会话被其它 baton 进程锁定）时回显，停留在列表让用户改选 */
   error?: string;
   onPick: (batonSessionId: string) => void;
-  onStartFresh: () => void;
   onExit: () => void;
 }
 
@@ -55,7 +55,7 @@ export function SessionPickerScreen(props: SessionPickerProps): ReactNode {
   const [mode, setMode] = useState<SessionPickerMode>("list");
   useKeyboard((key) => {
     if (key.ctrl && key.name === "c") props.onExit();
-    else if (key.name === "escape") props.onStartFresh();
+    else if (key.name === "escape") props.onExit();
     else if (key.name === "tab") setMode((m) => (m === "list" ? "tree" : "list"));
   });
   return (
@@ -76,7 +76,7 @@ export function SessionPickerScreen(props: SessionPickerProps): ReactNode {
         />
       </box>
       {props.error ? <text fg={theme.error}>{props.error}</text> : null}
-      <text fg={theme.dim}>{`↑↓ select · enter ${props.actionLabel} · tab ${mode === "list" ? "tree" : "list"} view · esc start new session · ctrl+c quit`}</text>
+      <text fg={theme.dim}>{`↑↓ select · enter ${props.actionLabel} · tab ${mode === "list" ? "tree" : "list"} view · esc cancel · ctrl+c quit`}</text>
     </box>
   );
 }
