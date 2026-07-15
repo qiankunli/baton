@@ -706,7 +706,8 @@ export class BatonSessionRuntime {
       // 记 request→turn 归属：requestHandler 随后（同步 await 前）消费，供 cancel-cascade
       this.requestTurns.set(envelope.payload.requestId, envelope.turnId);
     }
-    this.changed();
+    // append 已同步广播给投影；普通流式事件不能再走 runtime 通知，否则每个 chunk
+    // 都会重建两次完整 view。终态对 runtime 私有台账的变更由 finalize 自己通知。
   }
 
   /**
