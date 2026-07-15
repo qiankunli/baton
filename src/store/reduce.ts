@@ -50,6 +50,11 @@ export interface ToolCallState {
   turnId?: string;
 }
 
+export interface PlanState extends PlanUpdate {
+  /** 产生该计划的 provider；pinned plan 只跟随当前输入目标。 */
+  provider?: string;
+}
+
 /** TUI 时间线条目：message / tool_call / plan / notice 按首次出现排序 */
 export interface TimelineItem {
   type: "message" | "tool_call" | "plan" | "notice" | "approval_review";
@@ -92,7 +97,7 @@ export interface SessionState {
   timeline: TimelineItem[];
   messages: Map<string, MessageState>;
   toolCalls: Map<string, ToolCallState>;
-  plans: Map<string, PlanUpdate>;
+  plans: Map<string, PlanState>;
   /** 附带 envelope turnId（payload 本身不含）：request → 所属 turn 的 requires_action 派生需要归属关系 */
   pendingPermissions: Map<string, PermissionRequest & { turnId?: string }>;
   pendingQuestions: Map<string, QuestionRequest & { turnId?: string }>;
@@ -301,7 +306,12 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
     case "plan_update": {
       const p = ev.payload;
       if (!state.plans.has(p.planId)) state.timeline.push({ type: "plan", id: p.planId });
-      state.plans.set(p.planId, { planId: p.planId, entries: [...p.entries] });
+      const existing = state.plans.get(p.planId);
+      state.plans.set(p.planId, {
+        planId: p.planId,
+        entries: [...p.entries],
+        provider: ev.provider ?? existing?.provider,
+      });
       break;
     }
     // request/resolved 驱动 per-turn requires_action ↔ running：不变量收在 reducer，

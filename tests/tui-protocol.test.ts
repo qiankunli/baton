@@ -137,7 +137,7 @@ describe("BatonChatProtocol provider commands", () => {
 describe("BatonChatProtocol view projection", () => {
   type ViewInternals = {
     state: {
-      plans: Map<string, { planId: string; entries: Array<{ content: string; status: string }> }>;
+      plans: Map<string, { planId: string; provider?: string; entries: Array<{ content: string; status: string }> }>;
       timeline: Array<{ type: string; id: string }>;
       activeTurns: Map<
         string,
@@ -188,6 +188,7 @@ describe("BatonChatProtocol view projection", () => {
 
       internals.state.plans.set("p1", {
         planId: "p1",
+        provider: "codex",
         entries: [
           { content: "step one", status: "completed" },
           { content: "step two", status: "in_progress" },
@@ -195,7 +196,7 @@ describe("BatonChatProtocol view projection", () => {
       });
       internals.state.timeline.push({ type: "plan", id: "p1" });
       // pin 是"现在时"层：需有回合在运行（observed run 也算）
-      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "claude-code", origin: "provider", state: "running" });
+      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "codex", origin: "provider", state: "running" });
       internals.changed();
       expect(protocol.getView().plan).toEqual([
         { content: "step one", status: "completed" },
@@ -203,6 +204,15 @@ describe("BatonChatProtocol view projection", () => {
       ]);
       expect(protocol.getView().footer).toContain("plan:1/2");
       // 互补显示：进行中归 pin，transcript 不重复渲染（过去时区域不该有实时改写的块）
+      expect(planInTranscript()).toBe(false);
+
+      // plan 跟随 provider：切到另一家后不再占用 pinned 层，切回则恢复。
+      await protocol.command("claude", "");
+      expect(protocol.getView().plan).toBeUndefined();
+      expect(protocol.getView().footer).not.toContain("plan:");
+      expect(planInTranscript()).toBe(true);
+      await protocol.command("codex", "");
+      expect(protocol.getView().plan).toHaveLength(2);
       expect(planInTranscript()).toBe(false);
 
       // idle 且未完成：pin 卸下（搁置即过去时）——否则状态更新缺失/中途放弃时 pin 永驻
@@ -213,7 +223,7 @@ describe("BatonChatProtocol view projection", () => {
       expect(planInTranscript()).toBe(true);
 
       // 回合重新开跑：未完成 plan 重新上 pin，transcript 卡随之撤下
-      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "claude-code", origin: "provider", state: "running" });
+      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "codex", origin: "provider", state: "running" });
       internals.changed();
       expect(protocol.getView().plan).toHaveLength(2);
       expect(planInTranscript()).toBe(false);
@@ -221,6 +231,7 @@ describe("BatonChatProtocol view projection", () => {
       // 全部完成：即使仍在运行，pin 停发、footer 摘要撤下，终态卡在 transcript 原位供回看
       internals.state.plans.set("p1", {
         planId: "p1",
+        provider: "codex",
         entries: [
           { content: "step one", status: "completed" },
           { content: "step two", status: "completed" },
