@@ -121,6 +121,20 @@ export function runStatusLabel(
   return "thinking…";
 }
 
+function contextUsageText(
+  context: { model?: string; contextUsed?: number; contextSize?: number } | undefined,
+  selectedModel: string,
+): string {
+  if (!context || (context.model && context.model !== selectedModel)) {
+    return "unavailable until the provider reports this model";
+  }
+  if (!context.contextSize || context.contextSize < 0) return "size unavailable";
+  const size = context.contextSize.toLocaleString("en-US");
+  if (context.contextUsed === undefined) return `${size} tokens`;
+  const percent = Math.round((context.contextUsed / context.contextSize) * 100);
+  return `${context.contextUsed.toLocaleString("en-US")} / ${size} tokens (${percent}%)`;
+}
+
 export interface ThoughtDisplayBlock {
   title: string;
   content?: string;
@@ -318,6 +332,15 @@ export class BatonChatProtocol implements ChatProtocol {
         if (argument) throw new Error("/status takes no arguments");
         this.status = null;
         this.commandOutput = this.sessionStatusItem();
+        this.changed();
+        return;
+      }
+      case "compact": {
+        if (argument) throw new Error("/compact takes no arguments");
+        const target = this.agent;
+        this.status = null;
+        await this.runtime.compactContext(target);
+        this.status = { text: `${target} context compacted`, tone: "info" };
         this.changed();
         return;
       }
@@ -570,6 +593,9 @@ export class BatonChatProtocol implements ChatProtocol {
     const active = this.runtime.activeProvider;
     const selectedModel = this.runtime.currentModel(this.agent) ?? "default";
     const selectedEffort = this.runtime.currentEffort(this.agent) ?? "default";
+    const providerId = providerDefinitionFor(this.agent)?.id ?? this.agent;
+    const context = this.state.contextUsageByProvider.get(providerId);
+    const contextText = contextUsageText(context, selectedModel);
     const providers = Object.keys(meta.providerSessions).join(", ") || "-";
     const preview = meta.preview ?? meta.title ?? "(empty session)";
     const text = [
@@ -577,6 +603,7 @@ export class BatonChatProtocol implements ChatProtocol {
       `Preview: ${preview}`,
       `Directory: ${meta.cwd}`,
       `Current: ${this.agent} - model ${selectedModel} - effort ${selectedEffort}`,
+      `Context: ${contextText}`,
       `Providers: ${providers}`,
       `Turns: ${this.state.turnSummaries.length} - tokens in ${this.state.usage.inputTokens} / out ${this.state.usage.outputTokens}`,
       `State: ${active ? `running (${active})` : "idle"} - queue ${this.runtime.queueLength}`,

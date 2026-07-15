@@ -12,6 +12,7 @@ describe("baton command registry", () => {
     expect(parseSlashCommand("/claude review this", COMMANDS)).toEqual({ name: "claude", argument: "review this" });
     expect(parseSlashCommand("/model sonnet", COMMANDS)).toEqual({ name: "model", argument: "sonnet" });
     expect(parseSlashCommand("/effort high", COMMANDS)).toEqual({ name: "effort", argument: "high" });
+    expect(parseSlashCommand("/compact", COMMANDS)).toEqual({ name: "compact", argument: "" });
     expect(parseSlashCommand("/sessions", COMMANDS)).toEqual({ name: "sessions", argument: "" });
     expect(parseSlashCommand("/status", COMMANDS)).toEqual({ name: "status", argument: "" });
     expect(parseSlashCommand("/new", COMMANDS)).toEqual({ name: "new", argument: "" });
@@ -19,7 +20,9 @@ describe("baton command registry", () => {
 
   test("accepts unique command prefixes", () => {
     expect(parseSlashCommand("/cl", COMMANDS)).toEqual({ name: "claude", argument: "" });
-    expect(parseSlashCommand("/co", COMMANDS)).toEqual({ name: "codex", argument: "" });
+    expect(parseSlashCommand("/co", COMMANDS)).toBeNull();
+    expect(parseSlashCommand("/cod", COMMANDS)).toEqual({ name: "codex", argument: "" });
+    expect(parseSlashCommand("/com", COMMANDS)).toEqual({ name: "compact", argument: "" });
     expect(parseSlashCommand("/cla review this", COMMANDS)).toEqual({ name: "claude", argument: "review this" });
     expect(parseSlashCommand("/cod fix this", COMMANDS)).toEqual({ name: "codex", argument: "fix this" });
     expect(parseSlashCommand("/c", COMMANDS)).toBeNull();

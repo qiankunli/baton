@@ -1,6 +1,7 @@
 import {
   isApprovalRoutable,
   isContextSynchronizable,
+  isContextCompactable,
   isEffortConfigurable,
   isModelConfigurable,
   isNativeSessionIdentifiable,
@@ -439,6 +440,74 @@ export class BatonSessionRuntime {
       return this.preferredEffort(provider, key) ?? null;
     }
     return slot.adapter.currentEffort(slot.ref);
+  }
+
+  /**
+   * 用 provider 原生机制压缩当前上下文。它是一个没有 user_message 的 driven control turn：
+   * 仍走统一 running → provider events → idle 流水线，因此 TUI、持久化与崩溃恢复不会旁路。
+   */
+  async compactContext(provider: string): Promise<void> {
+    if (this.draining || this.queue.length > 0) {
+      throw new Error("/compact requires an idle session");
+    }
+    this.draining = true;
+    try {
+      await this.runContextCompaction(provider);
+    } finally {
+      this.draining = false;
+      this.changed();
+      if (this.queue.length > 0) void this.drain();
+    }
+  }
+
+  private async runContextCompaction(provider: string): Promise<void> {
+    this.processingProvider = provider;
+    this.processingStartedAt = Date.now();
+    let record: TurnRecord | undefined;
+    try {
+      const slot = await this.ensureProvider(provider);
+      if (!slot.ref || !slot.adapter.capabilities.compact?.supported || !isContextCompactable(slot.adapter)) {
+        throw new Error(`${provider} does not support /compact`);
+      }
+
+      const turnId = newId("t");
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      record = {
+        turnId,
+        role: "driven",
+        slot,
+        provider: slot.adapter.provider,
+        status: "active",
+        startedAt: Date.now(),
+        steers: [],
+        release,
+      };
+      this.turns.set(turnId, record);
+      this.activeDrivenTurnId = turnId;
+      this.onAdapterEvent(slot, {
+        kind: "state_update",
+        provider: slot.adapter.provider,
+        providerSessionId: this.nativeSessionId(slot),
+        turnId,
+        payload: { state: "running" },
+      });
+      await slot.adapter.compactContext(slot.ref, turnId);
+      await released;
+    } catch (error) {
+      if (record && record.status !== "finalized") {
+        this.synthesizeTerminal(record, {
+          message: error instanceof Error ? error.message : String(error),
+          stopReason: "error",
+        });
+      }
+      throw error;
+    } finally {
+      this.processingProvider = undefined;
+      this.processingStartedAt = undefined;
+    }
   }
 
   /**

@@ -33,6 +33,12 @@ describe("Claude model capability", () => {
     expect(adapter.nativeSessionId(ref)).toBe("claude-session-1");
   });
 
+  test("requires an existing native conversation before compacting", async () => {
+    const adapter = new ClaudeAdapter({ requestHandler });
+    const ref = await adapter.open({ cwd: "/tmp" }, () => {});
+    await expect(adapter.compactContext(ref, "t_compact")).rejects.toThrow("no conversation to compact");
+  });
+
   test("rejects efforts unsupported by the selected Claude model", async () => {
     const adapter = new ClaudeAdapter({ requestHandler });
     const ref = await adapter.open({ cwd: "/tmp" }, () => {});
@@ -57,6 +63,27 @@ describe("Claude model capability", () => {
 });
 
 describe("Codex model capability", () => {
+  test("maps context compaction to thread/compact/start", async () => {
+    const adapter = new CodexAdapter({ requestHandler });
+    const requests: Array<{ method: string; params: unknown }> = [];
+    const runtime = {
+      threadId: "thread-1",
+      peer: {
+        request: async (method: string, params: unknown) => {
+          requests.push({ method, params });
+          return {};
+        },
+      },
+    };
+    (adapter as unknown as { threads: Map<string, typeof runtime> }).threads.set("thread-1", runtime);
+    const ref = { provider: "codex", providerSessionId: "thread-1" };
+
+    await adapter.compactContext(ref, "t_compact");
+    await Bun.sleep(0);
+
+    expect(requests).toEqual([{ method: "thread/compact/start", params: { threadId: "thread-1" } }]);
+  });
+
   test("normalizes model/list and sends the selected model on the next turn", async () => {
     const adapter = new CodexAdapter({ requestHandler });
     const turnRequests: Record<string, unknown>[] = [];

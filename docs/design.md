@@ -80,7 +80,7 @@ baton 是一个 terminal-native 的统一 coding agent 会话：用户始终在 
 
 1. **permission、user input、elicitation 是三类不同契约**。permission 决定是否允许某个动作；user input 是 agent 为继续推理索取答案；elicitation 是工具 / MCP server 索取结构化数据。不能都塞进 `ApprovalRequest`。
 2. **chat-tui picker 不等于 agent question**。picker 只适合单题单选的产品命令；provider question 通过独立 QuestionCard 处理多题、多选、自由文本和 preview，secret 遮罩与超时仍待补齐。
-3. **baton command 不等于 provider command**。`/codex`、`/claude`、`/sessions` 等由 baton core 消费；`/model`、`/effort` 是 baton 统一后再调用 adapter capability；Claude/Codex 私有 slash command 必须经能力发现和显式 adapter 映射，不能把未知 `/xxx` 当文本盲透传。
+3. **baton command 不等于 provider command**。`/codex`、`/claude`、`/sessions` 等由 baton core 消费；`/model`、`/effort`、`/compact` 是 baton 统一后再调用 adapter capability；Claude/Codex 私有 slash command 必须经能力发现和显式 adapter 映射，不能把未知 `/xxx` 当文本盲透传。
 4. structured question 已在 baton 事件层建立独立 request/response 模型，并由 chat-tui 的对应展示形状消费；provider 原始 payload 继续放在 `raw` 中保真。
 
 ## 4. 架构总览

@@ -102,6 +102,28 @@ class FakeAdapter implements AgentAdapter {
   async close(_ref: ProviderSessionRef): Promise<void> {}
 }
 
+class CompactAdapter extends FakeAdapter {
+  override readonly capabilities: AdapterCapabilities = { prompt: {}, compact: { supported: true } };
+  compactCalls: string[] = [];
+
+  async compactContext(_ref: ProviderSessionRef, turnId: string): Promise<PromptReceipt> {
+    this.compactCalls.push(turnId);
+    this.sink?.({
+      kind: "_baton_run_status",
+      provider: this.provider,
+      turnId,
+      payload: { phase: "compacting", title: "Compacting context…" },
+    });
+    this.sink?.({
+      kind: "state_update",
+      provider: this.provider,
+      turnId,
+      payload: { state: "idle", stopReason: "end_turn" },
+    });
+    return { accepted: true };
+  }
+}
+
 let root: string;
 let session: SessionHandle;
 
@@ -348,6 +370,37 @@ describe("BatonSessionRuntime", () => {
 
     expect(codex.effort).toBe("high");
     expect(session.meta.providerSessions.codex?.effort).toBe("high");
+  });
+
+  test("compacts through a control turn without persisting a user message", async () => {
+    const adapter = new CompactAdapter("codex");
+    const runtime = new BatonSessionRuntime({
+      session,
+      mentionBudgetChars: 4096,
+      createAdapter: () => adapter,
+    });
+
+    await runtime.compactContext("codex");
+
+    expect(adapter.compactCalls).toHaveLength(1);
+    const events = session.readEvents();
+    expect(events.filter((event) => event.kind === "user_message")).toHaveLength(0);
+    expect(events.filter((event) => event.kind === "state_update").map((event) => event.payload)).toEqual([
+      { state: "running" },
+      { state: "idle", stopReason: "end_turn" },
+    ]);
+    expect(events.filter((event) => event.kind === "_baton_turn_summary")).toHaveLength(1);
+  });
+
+  test("rejects /compact when the provider does not declare the capability", async () => {
+    const runtime = new BatonSessionRuntime({
+      session,
+      mentionBudgetChars: 4096,
+      createAdapter: () => new FakeAdapter("example"),
+    });
+
+    await expect(runtime.compactContext("example")).rejects.toThrow("does not support /compact");
+    expect(session.readEvents()).toHaveLength(0);
   });
 });
 

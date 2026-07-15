@@ -242,6 +242,15 @@ describe("snapshot vs delta semantics", () => {
     ]);
     expect(state.contextUsage?.cost).toBeUndefined();
   });
+
+  test("context snapshots remain independently addressable per provider", () => {
+    const state = reduceEvents([
+      { ...ev("context_usage_update", { contextSize: 200_000 }), provider: "codex" },
+      { ...ev("context_usage_update", { contextSize: 1_000_000 }), provider: "claude-code" },
+    ]);
+    expect(state.contextUsageByProvider.get("codex")?.contextSize).toBe(200_000);
+    expect(state.contextUsageByProvider.get("claude-code")?.contextSize).toBe(1_000_000);
+  });
 });
 
 describe("error and notice events", () => {

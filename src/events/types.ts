@@ -330,6 +330,8 @@ export interface ConfigOptionUpdate {
  * 旧 session.jsonl 的 delta replay 必须继续得到相同累计结果（design §4.8）。
  */
 export interface ContextUsageUpdate {
+  /** 产生本快照时使用的 adapter model selection；用于避免切 model 后展示旧窗口。 */
+  model?: string;
   contextUsed?: number;
   contextSize?: number;
   cost?: { amount: number; currency: string };

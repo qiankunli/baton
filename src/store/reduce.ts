@@ -114,6 +114,8 @@ export interface SessionState {
   configOptions: SessionConfigOption[];
   /** 当前 context 占用快照。与 usage（增量累加）语义不同：快照替换 */
   contextUsage?: ContextUsageUpdate;
+  /** 多 provider 各有自己的原生上下文；按事件信封 provider 保存最近快照。 */
+  contextUsageByProvider: Map<string, ContextUsageUpdate>;
   /** 最近一次结构化错误；willRetry 时 runState 仍应为 running（由事件源保证） */
   lastError?: ErrorUpdate & { seq: number };
   /**
@@ -147,6 +149,7 @@ export function emptySessionState(): SessionState {
     },
     availableCommands: [],
     configOptions: [],
+    contextUsageByProvider: new Map(),
     notices: [],
     turnSummaries: [],
     lastSeq: 0,
@@ -364,6 +367,7 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       break;
     case "context_usage_update":
       state.contextUsage = { ...ev.payload };
+      state.contextUsageByProvider.set(ev.provider, { ...ev.payload });
       break;
     case "_baton_error_update":
       state.lastError = { ...ev.payload, seq: ev.seq };

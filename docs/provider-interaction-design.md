@@ -418,6 +418,7 @@ interface AdapterCapabilities {
     resourceLink?: CapabilityMarker;
   };
   steer?: CapabilityMarker;
+  compact?: CapabilityMarker;
   commands?: CapabilityMarker;
   config?: CapabilityMarker;
   interactions?: {
@@ -432,7 +433,7 @@ interface CapabilityMarker {
 }
 ```
 
-descriptor 用显式 marker object，给以后扩字段留空间；不能使用 TypeScript 的 `{}`，因为它会接受几乎所有非 nullish 值。行为仍由 `Steerable`、`CommandDiscoverable`、`SessionConfigurable`、`Interactive` 等接口承载。契约测试校验“声明支持就必须实现对应接口”。
+descriptor 用显式 marker object，给以后扩字段留空间；不能使用 TypeScript 的 `{}`，因为它会接受几乎所有非 nullish 值。行为仍由 `Steerable`、`ContextCompactable`、`CommandDiscoverable`、`SessionConfigurable`、`Interactive` 等接口承载。契约测试校验“声明支持就必须实现对应接口”。`/compact` 形成一个无 `user_message` 的 driven control turn：Codex 映射 `thread/compact/start`，Claude 映射内建 `/compact`，过程与终态仍走统一事件流水线。
 
 ### 4.5 Dynamic command
 
