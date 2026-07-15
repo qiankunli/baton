@@ -23,7 +23,7 @@ Usage:
                         specific session; /codex (/cx) and /claude (/cc) switch provider
   baton repl [--agent codex|cx|claude|cc] [--cwd <dir>]   headless REPL
   baton resume [bs_xxx] resume a BatonSession in the TUI; without an id shows a
-                        session list first (enter resume · esc new session ·
+                        session list first (enter resume · esc cancel ·
                         ctrl+c quit; starts fresh if there is no session yet)
   baton fork [bs_xxx|--last]
                         fork a BatonSession (full-history copy, fresh provider
@@ -95,7 +95,7 @@ async function run(command: string): Promise<void> {
     // resume/fork 都转译成 TUI 入口已支持的 flags 再进 TUI，
     // 打开语义（锁、crash recovery）统一收在 openBatonSession，不在这里分叉。
     // 无 id 时默认进前置会话选择屏（对齐 codex CLI）：不预先打开任何会话，
-    // Enter 选中才 resume / 落盘 fork，Esc 新开会话，Ctrl+C 退出
+    // Enter 选中才 resume / 落盘 fork，Esc/Ctrl+C 取消退出
     case "resume": {
       const id = positionalAfterCommand();
       process.argv.push(...(id ? ["--session", id] : ["--pick-session", "resume"]));

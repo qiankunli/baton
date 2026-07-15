@@ -104,8 +104,8 @@ if (openedAtStartup) {
 } else if (store.listSessions().length === 0) {
   startFresh(); // resume 无历史会话：与老的 --continue 语义一致，直接新开
 } else {
-  // session picker（对齐 codex resume/fork picker）：Enter 打开 / fork，
-  // Esc = StartFresh，Ctrl+C = 退出；打开失败回显错误并停留在列表
+  // session picker：Enter 打开 / fork，Esc/Ctrl+C 取消退出；打开失败回显错误并停留在列表。
+  // 新会话只走显式入口，避免 Esc 误触把用户带到空 transcript。
   const intent = pickIntent as "resume" | "fork";
   const showPicker = (error?: string): void =>
     root.render(
@@ -129,7 +129,6 @@ if (openedAtStartup) {
             showPicker(err instanceof Error ? err.message : String(err));
           }
         }}
-        onStartFresh={startFresh}
         onExit={quit}
       />,
     );
