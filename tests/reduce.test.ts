@@ -148,6 +148,7 @@ describe("state / permission / plan / usage", () => {
       ev("plan_update", { planId: "pl1", entries: [{ content: "step1", priority: "high", status: "completed" }] }),
     ]);
     expect(state.plans.get("pl1")!.entries[0]!.status).toBe("completed");
+    expect(state.plans.get("pl1")!.provider).toBe("test");
     expect(state.timeline.filter((t) => t.type === "plan")).toHaveLength(1);
   });
 

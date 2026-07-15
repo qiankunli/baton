@@ -670,14 +670,18 @@ export class BatonChatProtocol implements ChatProtocol {
     // plan 互补显示（design §5.9）：同一时刻只出现在一个地方——进行中归 pin（现在时），
     // 盖棺归 transcript（过去时）。pin 显示期间 transcript 不渲染该 plan 卡（避免同屏两份、
     // 且过去时区域不该有实时改写的块）；全部完成 pin 停发，终态卡在 timeline 原位出现供回看。
-    // pin 同时以运行态门控：idle 后未完成的 plan 也归 transcript（搁置即过去时）——
-    // 否则 provider 状态更新缺失或中途放弃时 pin 永驻；下一回合开跑即重新上 pin。
-    const lastPlan = [...v.plans.values()].at(-1);
+    // pin 还绑定当前输入目标 provider：切换 agent 即表示放弃上一家的现在时，
+    // 上一家未完成的 plan 回到 transcript；切回且该 provider 仍在运行时可恢复 pin。
+    // 同时以同 provider 的运行态门控：idle 后未完成的 plan 也归 transcript，
+    // 避免别家 provider 的回合让已搁置的 plan 重新上 pin。
+    const selectedProvider = providerDefinitionFor(this.agent)?.sessionKey ?? this.agent;
+    const lastPlan = [...v.plans.values()].filter((plan) => plan.provider === selectedProvider).at(-1);
     const planEntries = (lastPlan?.entries ?? []).map((entry) => ({
       content: entry.content,
       status: normalizePlanStatus(entry.status),
     }));
-    const planActive = busy && planEntries.some((entry) => entry.status !== "completed");
+    const providerRunning = [...v.activeTurns.values()].some((turn) => turn.provider === selectedProvider);
+    const planActive = providerRunning && planEntries.some((entry) => entry.status !== "completed");
     const pinnedPlanId = planActive ? lastPlan?.planId : undefined;
     return {
       transcript: [...buildTranscript(v, pinnedPlanId), ...(this.commandOutput ? [this.commandOutput] : [])],
