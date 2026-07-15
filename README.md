@@ -88,6 +88,8 @@ Start the TUI and type a prompt to send it.
 /model <id>          Select the model used by subsequent turns
 /effort              Open the reasoning-effort picker for the active provider
 /effort <level>      Select the reasoning effort used by subsequent turns
+/compact             Ask the active provider to compact its context
+/status              Show the active provider/model context usage and session information
 /sessions            Open the BatonSession picker
 /new                 Start a new BatonSession in the current project
 @bs_...               Reference another baton session

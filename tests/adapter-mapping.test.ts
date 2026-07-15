@@ -531,3 +531,50 @@ describe("run status: context compaction → _baton_run_status", () => {
     expect(statuses.map((e) => e.payload)).toEqual([{ phase: null }]);
   });
 });
+
+describe("context usage → context_usage_update", () => {
+  test("codex maps the latest turn usage and model context window as a snapshot", () => {
+    const { events, notify } = codexHarness();
+    notify("thread/tokenUsage/updated", {
+      threadId: "th1",
+      turnId: "ct1",
+      tokenUsage: {
+        total: { inputTokens: 20_000, cachedInputTokens: 10_000, outputTokens: 2_000 },
+        last: { totalTokens: 12_500 },
+        modelContextWindow: 200_000,
+      },
+    });
+    expect(events.find((event) => event.kind === "context_usage_update")?.payload).toEqual({
+      model: "default",
+      contextUsed: 12_500,
+      contextSize: 200_000,
+    });
+  });
+
+  test("claude maps the primary model usage and context window as a snapshot", () => {
+    const { events, feed } = claudeHarness();
+    feed({
+      type: "result",
+      subtype: "success",
+      usage: {},
+      modelUsage: {
+        "claude-sonnet": {
+          inputTokens: 2_000,
+          outputTokens: 100,
+          cacheReadInputTokens: 8_000,
+          cacheCreationInputTokens: 500,
+          webSearchRequests: 0,
+          costUSD: 0.12,
+          contextWindow: 200_000,
+          maxOutputTokens: 32_000,
+        },
+      },
+    });
+    expect(events.find((event) => event.kind === "context_usage_update")?.payload).toEqual({
+      model: "default",
+      contextUsed: 10_500,
+      contextSize: 200_000,
+      cost: { amount: 0.12, currency: "USD" },
+    });
+  });
+});

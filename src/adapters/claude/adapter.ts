@@ -6,6 +6,7 @@ import {
   query,
   type EffortLevel,
   type ModelInfo,
+  type ModelUsage,
   type Options,
   type PermissionResult,
   type PermissionUpdate,
@@ -360,6 +361,28 @@ function claudeEfforts(rt: ClaudeRuntime): EffortOption[] {
   return claudeEffortsForModel(rt, rt.model);
 }
 
+/** result.modelUsage 可含子 agent/辅助模型；优先当前选择，否则取占用最大的主模型。 */
+function claudeContextUsage(
+  modelUsage: Record<string, ModelUsage>,
+  selectedModel?: string,
+): { contextUsed: number; contextSize: number; cost?: { amount: number; currency: string } } | undefined {
+  const entries = Object.entries(modelUsage);
+  if (entries.length === 0) return undefined;
+  const used = (usage: ModelUsage): number =>
+    usage.inputTokens + usage.cacheReadInputTokens + usage.cacheCreationInputTokens;
+  const selected =
+    entries.find(([model]) => selectedModel && (model === selectedModel || model.includes(selectedModel))) ??
+    entries.toSorted((a, b) => used(b[1]) - used(a[1]))[0];
+  if (!selected || !Number.isFinite(selected[1].contextWindow)) return undefined;
+  return {
+    contextUsed: used(selected[1]),
+    contextSize: selected[1].contextWindow,
+    ...(Number.isFinite(selected[1].costUSD)
+      ? { cost: { amount: selected[1].costUSD, currency: "USD" } }
+      : {}),
+  };
+}
+
 export interface ClaudeAdapterOptions {
   requestHandler: RequestHandler;
   /** claude 可执行文件路径；默认 BATON_CLAUDE_BIN 环境变量，再默认交给 SDK 自己找 */
@@ -370,7 +393,7 @@ export class ClaudeAdapter implements AgentAdapter {
   readonly provider = "claude-code";
   // 当前 adapter 最终只发送 text（design.md §3.1）；可选能力接口落地并验证后才声明
   // 对应 marker——契约测试钉住"声明支持就必须实现对应接口"。
-  readonly capabilities: AdapterCapabilities = { prompt: {} };
+  readonly capabilities: AdapterCapabilities = { prompt: {}, compact: { supported: true } };
   private sessions = new Map<string, ClaudeRuntime>();
 
   constructor(private options: ClaudeAdapterOptions) {}
@@ -448,6 +471,22 @@ export class ClaudeAdapter implements AgentAdapter {
 
   currentEffort(ref: ProviderSessionRef): string | null {
     return this.mustSession(ref).effort ?? null;
+  }
+
+  async compactContext(ref: ProviderSessionRef, turnId: string): Promise<PromptReceipt> {
+    const rt = this.mustSession(ref);
+    if (!rt.claudeSessionId) throw new Error("Claude has no conversation to compact yet");
+    if (rt.activeTurn && !rt.activeTurn.finalized) {
+      throw new Error(`claude turn ${rt.activeTurn.turnId} still active; cannot compact`);
+    }
+    const turn: ClaudeTurn = { turnId, finalized: false, cancelRequested: false };
+    rt.activeTurn = turn;
+    void this.runQuery(
+      rt,
+      { turnId, messageId: newId("m"), blocks: [{ type: "text", text: "/compact" }] },
+      turn,
+    );
+    return { accepted: true };
   }
 
   /** submit 只做 admission 并启动后台消费循环；turn 进展与终结全部经事件报告 */
@@ -847,6 +886,15 @@ export class ClaudeAdapter implements AgentAdapter {
               cacheReadTokens: usage.cache_read_input_tokens ?? 0,
               cacheWriteTokens: usage.cache_creation_input_tokens ?? 0,
             },
+            raw: msg,
+          });
+        }
+        const context = claudeContextUsage(msg.modelUsage, rt.model);
+        if (context) {
+          emit({
+            kind: "context_usage_update",
+            provider: this.provider,
+            payload: { model: rt.model ?? "default", ...context },
             raw: msg,
           });
         }

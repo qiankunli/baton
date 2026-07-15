@@ -25,6 +25,7 @@ const adapters: AgentAdapter[] = [
  */
 const CAPABILITY_CONTRACT: Record<string, string[]> = {
   steer: ["steer"],
+  compact: ["compactContext"],
   // 输入映射型能力：submit 原生承载 PromptInput.syncBlocks（side-channel 注入），
   // 无独立方法可查——行为由 watermark.test / adapter-model.test 钉住
   sync: [],

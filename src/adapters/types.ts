@@ -73,6 +73,8 @@ export interface AdapterCapabilities {
     resourceLink?: CapabilityMarker;
   };
   steer?: CapabilityMarker;
+  /** 声明后必须实现 ContextCompactable：可请求 provider 压缩当前原生会话。 */
+  compact?: CapabilityMarker;
   /**
    * submit 原生承载 `PromptInput.syncBlocks`（side-channel 注入）。与 ContextSynchronizable
    * 互斥使用：syncContext 是"急切注入、resolve 即送达"（水位立即推进）；sync 是"随下一次
@@ -239,6 +241,20 @@ export interface Steerable {
 
 export function isSteerable(adapter: AgentAdapter): adapter is AgentAdapter & Steerable {
   return typeof (adapter as Partial<Steerable>).steer === "function";
+}
+
+/**
+ * 可选能力：让 provider 用自己的原生机制压缩当前会话上下文。
+ *
+ * `turnId` 由 runtime 分配；runtime 已先发 running 开界，adapter 必须把压缩过程事件绑定
+ * 到该 turn，并在所有终结路径发一次 idle。方法 resolve 只表示请求已被接收，不表示压缩完成。
+ */
+export interface ContextCompactable {
+  compactContext(ref: ProviderSessionRef, turnId: string): Promise<PromptReceipt>;
+}
+
+export function isContextCompactable(adapter: AgentAdapter): adapter is AgentAdapter & ContextCompactable {
+  return typeof (adapter as Partial<ContextCompactable>).compactContext === "function";
 }
 
 /** 可把 BatonSession 的缺失历史追加到 provider 自己的 model-visible history。 */

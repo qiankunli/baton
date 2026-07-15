@@ -543,6 +543,7 @@ export class CodexAdapter implements AgentAdapter {
   readonly capabilities: AdapterCapabilities = {
     prompt: {},
     steer: { supported: true },
+    compact: { supported: true },
     sync: { supported: true },
     approvalRouting: { supported: true },
   };
@@ -649,6 +650,20 @@ export class CodexAdapter implements AgentAdapter {
 
   currentEffort(ref: ProviderSessionRef): string | null {
     return this.mustThread(ref).effortSelection ?? null;
+  }
+
+  async compactContext(ref: ProviderSessionRef, turnId: string): Promise<PromptReceipt> {
+    const rt = this.mustThread(ref);
+    if (rt.activeTurn && !rt.activeTurn.finalized) {
+      throw new Error(`codex turn ${rt.activeTurn.turnId} still active; cannot compact`);
+    }
+    const turn: CodexTurn = { turnId, finalized: false };
+    rt.turnId = turnId;
+    rt.activeTurn = turn;
+    void rt.peer.request("thread/compact/start", { threadId: rt.threadId }).catch((error) => {
+      this.failTurn(rt, turn, error instanceof Error ? error.message : String(error));
+    });
+    return { accepted: true };
   }
 
   /** submit 只做 admission 并发出 turn/start；进展与终结全部经通知/终态合成路径报告 */
@@ -1099,6 +1114,7 @@ export class CodexAdapter implements AgentAdapter {
       case "thread/tokenUsage/updated": {
         const usage = (p.tokenUsage ?? {}) as Record<string, unknown>;
         const total = (usage.total ?? {}) as Record<string, number>;
+        const last = (usage.last ?? {}) as Record<string, number>;
         const prev = rt.prevUsage ?? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 };
         const cur = {
           inputTokens: total.inputTokens ?? 0,
@@ -1115,6 +1131,23 @@ export class CodexAdapter implements AgentAdapter {
         };
         if (delta.inputTokens || delta.outputTokens || delta.cacheReadTokens || delta.reasoningTokens) {
           this.emit(rt, { kind: "usage_update", provider: this.provider, payload: delta }, params);
+        }
+        const contextSize = typeof usage.modelContextWindow === "number" ? usage.modelContextWindow : undefined;
+        const contextUsed = typeof last.totalTokens === "number" ? last.totalTokens : undefined;
+        if (contextSize !== undefined || contextUsed !== undefined) {
+          this.emit(
+            rt,
+            {
+              kind: "context_usage_update",
+              provider: this.provider,
+              payload: {
+                model: rt.model ?? "default",
+                ...(contextUsed !== undefined ? { contextUsed } : {}),
+                ...(contextSize !== undefined ? { contextSize } : {}),
+              },
+            },
+            params,
+          );
         }
         break;
       }

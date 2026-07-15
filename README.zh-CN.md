@@ -88,6 +88,8 @@ Codex 审批默认跟随 Codex 自己的配置（`~/.codex/config.toml`、profil
 /model <id>          设置后续 turn 使用的模型
 /effort              打开当前 provider 的推理强度选择器
 /effort <level>      设置后续 turn 使用的推理强度
+/compact             请求当前 provider 压缩上下文
+/status              查看当前 provider/model 的上下文用量和会话信息
 /sessions            打开 BatonSession 选择器
 /new                 在当前项目新建 BatonSession
 @bs_...               引用另一个 baton 会话

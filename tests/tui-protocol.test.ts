@@ -67,14 +67,21 @@ describe("BatonChatProtocol status command", () => {
       const store = new SessionStore(root);
       const session = store.createSession({ cwd: "/repo" });
       session.setPreviewIfEmpty("Implement status command");
+      session.append({
+        kind: "context_usage_update",
+        provider: "codex",
+        payload: { model: "default", contextUsed: 12_500, contextSize: 200_000 },
+      });
+      const eventCount = session.readEvents().length;
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
       await protocol.command("status", "");
-      expect(protocol.getView().transcript.at(-1)).toMatchObject({
+      const status = protocol.getView().transcript.at(-1);
+      expect(status).toMatchObject({
         id: "_baton_status",
         author: "baton",
-        text: expect.stringContaining(`Session: ${session.id}`),
+        text: expect.stringContaining("Context: 12,500 / 200,000 tokens (6%)"),
       });
-      expect(session.readEvents()).toHaveLength(0);
+      expect(session.readEvents()).toHaveLength(eventCount);
       const internals = protocol as unknown as { runtime: { submit: () => Promise<"completed"> } };
       internals.runtime.submit = async () => "completed";
       await protocol.submit("continue");
@@ -94,11 +101,18 @@ describe("BatonChatProtocol provider commands", () => {
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
       const submitted: Array<{ provider: string; text: string }> = [];
       const internals = protocol as unknown as {
-        runtime: { submit: (provider: string, blocks: Array<{ type: string; text?: string }>) => Promise<"completed"> };
+        runtime: {
+          submit: (provider: string, blocks: Array<{ type: string; text?: string }>) => Promise<"completed">;
+          compactContext: (provider: string) => Promise<void>;
+        };
       };
       internals.runtime.submit = async (provider, blocks) => {
         submitted.push({ provider, text: blocks[0]?.text ?? "" });
         return "completed";
+      };
+      const compacted: string[] = [];
+      internals.runtime.compactContext = async (provider) => {
+        compacted.push(provider);
       };
 
       await protocol.command("claude", "");
@@ -119,6 +133,10 @@ describe("BatonChatProtocol provider commands", () => {
 
       await protocol.command("codex", "implement it");
       expect(submitted.at(-1)).toEqual({ provider: "codex", text: "implement it" });
+
+      await protocol.command("compact", "");
+      expect(compacted).toEqual(["codex"]);
+      expect(protocol.getView().status?.text).toBe("codex context compacted");
 
       await protocol.submit("/c ambiguous");
       expect(submitted).toHaveLength(4);
