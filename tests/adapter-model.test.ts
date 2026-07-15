@@ -1,7 +1,7 @@
 import type { RequestHandler } from "../src/adapters/types.ts";
 import { describe, expect, test } from "bun:test";
 
-import { ClaudeAdapter } from "../src/adapters/claude/adapter.ts";
+import { ClaudeAdapter, type ClaudeAdapterOptions } from "../src/adapters/claude/adapter.ts";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
 
 const requestHandler: RequestHandler = async (req) =>
@@ -10,12 +10,52 @@ const requestHandler: RequestHandler = async (req) =>
     : { kind: "question", requestId: req.requestId, answers: {} };
 
 describe("Claude model capability", () => {
-  test("stores model for subsequent queries and exposes fallback catalog", async () => {
-    const adapter = new ClaudeAdapter({ requestHandler });
+  test("discovers models before the first turn without sending a user message", async () => {
+    let prompt: unknown;
+    let closes = 0;
+    const queryFactory: NonNullable<ClaudeAdapterOptions["queryFactory"]> = ((params) => {
+      prompt = params.prompt;
+      return {
+        initializationResult: async () => ({
+          models: [
+            {
+              value: "default",
+              resolvedModel: "claude-opus-4-8[1m]",
+              displayName: "Default (recommended)",
+              description: "Opus 4.8 with 1M context",
+              supportedEffortLevels: ["high"],
+            },
+            {
+              value: "claude-fable-5[1m]",
+              resolvedModel: "claude-fable-5",
+              displayName: "Fable",
+              description: "Fable 5",
+              supportedEffortLevels: ["high", "max"],
+            },
+            {
+              value: "sonnet",
+              resolvedModel: "claude-sonnet-5",
+              displayName: "Sonnet",
+              description: "Sonnet 5",
+              supportedEffortLevels: ["high"],
+            },
+          ],
+        }),
+        close: () => closes++,
+      } as unknown as ReturnType<NonNullable<ClaudeAdapterOptions["queryFactory"]>>;
+    }) as NonNullable<ClaudeAdapterOptions["queryFactory"]>;
+    const adapter = new ClaudeAdapter({ requestHandler, queryFactory });
     const ref = await adapter.open({ cwd: "/tmp" }, () => {});
 
-    expect((await adapter.listModels(ref)).map((model) => model.id)).toContain("sonnet");
-    expect((await adapter.listEfforts(ref)).map((effort) => effort.id)).toContain("high");
+    expect((await adapter.listModels(ref)).map((model) => model.id)).toEqual([
+      "default",
+      "claude-fable-5[1m]",
+      "sonnet",
+    ]);
+    expect(closes).toBe(1);
+    expect(typeof (prompt as AsyncIterable<unknown>)[Symbol.asyncIterator]).toBe("function");
+    expect((await adapter.listEfforts(ref)).map((effort) => effort.id)).toEqual(["default", "high"]);
+    expect(closes).toBe(1); // model catalog is cached; /effort must not start another CLI
     await adapter.setModel(ref, "sonnet");
     await adapter.setEffort(ref, "high");
     expect(adapter.currentModel(ref)).toBe("sonnet");

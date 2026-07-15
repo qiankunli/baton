@@ -11,7 +11,9 @@ import {
   type PermissionResult,
   type PermissionUpdate,
   type Query,
+  type SDKControlInitializeResponse,
   type SDKMessage,
+  type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 
 import { newId } from "../../events/ids.ts";
@@ -303,6 +305,9 @@ interface ClaudeRuntime {
   /** SDK 的 session_id，首个 turn 的 init 消息里拿到；resume 靠它 */
   claudeSessionId?: string;
   activeQuery?: Query;
+  /** 冷启动模型发现不占 turn，也不能冒充 activeQuery；close 时仍需能终止其子进程。 */
+  modelDiscoveryQuery?: Query;
+  modelDiscovery?: Promise<void>;
   /** 当前被接受、尚未逻辑终结的 turn */
   activeTurn?: ClaudeTurn;
   /** 用户在 baton 中选择的模型；只在下一次 query 创建时生效。 */
@@ -327,14 +332,45 @@ const CLAUDE_FALLBACK_MODELS: ModelOption[] = [
 ];
 
 function claudeModels(models: ModelInfo[]): ModelOption[] {
-  return [
-    CLAUDE_FALLBACK_MODELS[0] as ModelOption,
-    ...models.map((model) => ({
-      id: model.value,
-      label: model.displayName,
-      description: model.description,
-    })),
-  ];
+  const discovered = models.map((model) => ({
+    id: model.value,
+    label: model.displayName,
+    description: model.description,
+  }));
+  return discovered.some((model) => model.id === "default")
+    ? discovered
+    : [CLAUDE_FALLBACK_MODELS[0] as ModelOption, ...discovered];
+}
+
+const CLAUDE_MODEL_DISCOVERY_TIMEOUT_MS = 30_000;
+
+/** streaming input 只为完成 initialize 握手；不 yield，因此不会创建用户消息或 turn。 */
+function idleClaudeInput(): { stream: AsyncGenerator<SDKUserMessage>; close: () => void } {
+  let close = () => {};
+  const closed = new Promise<void>((resolve) => {
+    close = resolve;
+  });
+  return {
+    stream: (async function* () {
+      await closed;
+    })(),
+    close,
+  };
+}
+
+async function initializeWithTimeout(queryHandle: Query): Promise<SDKControlInitializeResponse> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("Claude model discovery timed out")),
+      CLAUDE_MODEL_DISCOVERY_TIMEOUT_MS,
+    );
+  });
+  try {
+    return await Promise.race([queryHandle.initializationResult(), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 const CLAUDE_EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
@@ -387,6 +423,8 @@ export interface ClaudeAdapterOptions {
   requestHandler: RequestHandler;
   /** claude 可执行文件路径；默认 BATON_CLAUDE_BIN 环境变量，再默认交给 SDK 自己找 */
   executablePath?: string;
+  /** 测试注入点；生产始终使用 Agent SDK 的 query。 */
+  queryFactory?: typeof query;
 }
 
 export class ClaudeAdapter implements AgentAdapter {
@@ -420,13 +458,10 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async listModels(ref: ProviderSessionRef): Promise<ModelOption[]> {
     const rt = this.mustSession(ref);
-    if (rt.activeQuery) {
-      try {
-        rt.modelInfos = await rt.activeQuery.supportedModels();
-        rt.models = claudeModels(rt.modelInfos);
-      } catch {
-        // 首个 query 尚未完成 initialize 时允许退回稳定别名，picker 不应阻塞发送链路。
-      }
+    try {
+      await this.ensureModelCatalog(rt);
+    } catch {
+      // CLI 初始化失败时仍允许用稳定别名发起首轮，不让模型发现阻断发送链路。
     }
     return rt.models ?? CLAUDE_FALLBACK_MODELS;
   }
@@ -446,13 +481,10 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async listEfforts(ref: ProviderSessionRef): Promise<EffortOption[]> {
     const rt = this.mustSession(ref);
-    if (rt.activeQuery) {
-      try {
-        rt.modelInfos = await rt.activeQuery.supportedModels();
-        rt.models = claudeModels(rt.modelInfos);
-      } catch {
-        // 与 model picker 一致：initialize 尚未完成时使用 SDK 的稳定 effort 词表。
-      }
+    try {
+      await this.ensureModelCatalog(rt);
+    } catch {
+      // 与 model picker 一致：发现失败时使用 SDK 的稳定 effort 词表。
     }
     return claudeEfforts(rt);
   }
@@ -471,6 +503,45 @@ export class ClaudeAdapter implements AgentAdapter {
 
   currentEffort(ref: ProviderSessionRef): string | null {
     return this.mustSession(ref).effort ?? null;
+  }
+
+  private async ensureModelCatalog(rt: ClaudeRuntime): Promise<void> {
+    if (rt.models) return;
+    rt.modelDiscovery ??= this.discoverModelCatalog(rt);
+    try {
+      await rt.modelDiscovery;
+    } finally {
+      rt.modelDiscovery = undefined;
+    }
+  }
+
+  private async discoverModelCatalog(rt: ClaudeRuntime): Promise<void> {
+    if (rt.activeQuery) {
+      rt.modelInfos = await rt.activeQuery.supportedModels();
+      rt.models = claudeModels(rt.modelInfos);
+      return;
+    }
+
+    const executable = this.options.executablePath ?? process.env.BATON_CLAUDE_BIN;
+    const idleInput = idleClaudeInput();
+    const queryHandle = (this.options.queryFactory ?? query)({
+      prompt: idleInput.stream,
+      options: {
+        cwd: rt.cwd,
+        env: { ...(process.env as Record<string, string>), ...rt.env },
+        ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
+      },
+    });
+    rt.modelDiscoveryQuery = queryHandle;
+    try {
+      const initialized = await initializeWithTimeout(queryHandle);
+      rt.modelInfos = initialized.models;
+      rt.models = claudeModels(initialized.models);
+    } finally {
+      if (rt.modelDiscoveryQuery === queryHandle) rt.modelDiscoveryQuery = undefined;
+      idleInput.close();
+      queryHandle.close();
+    }
   }
 
   async compactContext(ref: ProviderSessionRef, turnId: string): Promise<PromptReceipt> {
@@ -530,7 +601,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     let q: Query | undefined;
     try {
-      q = query({ prompt: textOf(input.blocks), options: sdkOptions });
+      q = (this.options.queryFactory ?? query)({ prompt: textOf(input.blocks), options: sdkOptions });
       rt.activeQuery = q;
       void q
         .initializationResult()
@@ -617,6 +688,7 @@ export class ClaudeAdapter implements AgentAdapter {
     this.sessions.delete(ref.providerSessionId);
     const turn = rt.activeTurn;
     if (turn) turn.cancelRequested = true;
+    rt.modelDiscoveryQuery?.close();
     await rt.activeQuery?.interrupt().catch(() => {});
     // 宿主主动 close 时若仍有活跃 turn，合成终态，不留"已接受未终结"的悬挂状态
     if (turn) this.finishTurn(rt, (ev) => this.emit(rt, ev, turn), turn, "cancelled");
