@@ -4,6 +4,8 @@
 
 import {
   query,
+  type EffortLevel,
+  type ModelInfo,
   type Options,
   type PermissionResult,
   type PermissionUpdate,
@@ -26,6 +28,7 @@ import { textOf } from "../../events/types.ts";
 import type {
   AdapterCapabilities,
   AgentAdapter,
+  EffortOption,
   EventSink,
   ModelOption,
   OpenOptions,
@@ -304,6 +307,9 @@ interface ClaudeRuntime {
   /** 用户在 baton 中选择的模型；只在下一次 query 创建时生效。 */
   model?: string;
   models?: ModelOption[];
+  modelInfos?: ModelInfo[];
+  /** 用户在 baton 中选择的推理强度；只在下一次 query 创建时生效。 */
+  effort?: EffortLevel;
   /** 已归一成 plan_update 的 tool_use id：其 tool_result 也要跳过，避免时间线出现重复工具卡 */
   suppressedToolIds: Set<string>;
   /** Task 工具族归一的任务表（跨 turn 持久）：每次成功落账后整表投影成 plan_update */
@@ -319,7 +325,7 @@ const CLAUDE_FALLBACK_MODELS: ModelOption[] = [
   { id: "haiku", label: "Haiku" },
 ];
 
-function claudeModels(models: Array<{ value: string; displayName: string; description?: string }>): ModelOption[] {
+function claudeModels(models: ModelInfo[]): ModelOption[] {
   return [
     CLAUDE_FALLBACK_MODELS[0] as ModelOption,
     ...models.map((model) => ({
@@ -328,6 +334,30 @@ function claudeModels(models: Array<{ value: string; displayName: string; descri
       description: model.description,
     })),
   ];
+}
+
+const CLAUDE_EFFORT_LEVELS: readonly EffortLevel[] = ["low", "medium", "high", "xhigh", "max"];
+
+function effortLabel(effort: string): string {
+  return effort === "xhigh" ? "Extra high" : effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+function claudeEffortsForModel(rt: ClaudeRuntime, modelId: string | undefined): EffortOption[] {
+  const defaultOption: EffortOption = {
+    id: "default",
+    label: "Default",
+    description: "Use the Claude Code default effort",
+  };
+  const model = modelId
+    ? rt.modelInfos?.find((candidate) => candidate.value === modelId || candidate.resolvedModel === modelId)
+    : rt.modelInfos?.find((candidate) => candidate.value === "default") ?? rt.modelInfos?.[0];
+  if (model?.supportsEffort === false) return [defaultOption];
+  const levels = model?.supportedEffortLevels?.length ? model.supportedEffortLevels : CLAUDE_EFFORT_LEVELS;
+  return [defaultOption, ...levels.map((id) => ({ id, label: effortLabel(id) }))];
+}
+
+function claudeEfforts(rt: ClaudeRuntime): EffortOption[] {
+  return claudeEffortsForModel(rt, rt.model);
 }
 
 export interface ClaudeAdapterOptions {
@@ -369,7 +399,8 @@ export class ClaudeAdapter implements AgentAdapter {
     const rt = this.mustSession(ref);
     if (rt.activeQuery) {
       try {
-        rt.models = claudeModels(await rt.activeQuery.supportedModels());
+        rt.modelInfos = await rt.activeQuery.supportedModels();
+        rt.models = claudeModels(rt.modelInfos);
       } catch {
         // 首个 query 尚未完成 initialize 时允许退回稳定别名，picker 不应阻塞发送链路。
       }
@@ -379,11 +410,44 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async setModel(ref: ProviderSessionRef, modelId: string | null): Promise<void> {
     const rt = this.mustSession(ref);
-    rt.model = !modelId || modelId === "default" ? undefined : modelId;
+    const model = !modelId || modelId === "default" ? undefined : modelId;
+    if (rt.effort && !claudeEffortsForModel(rt, model).some((candidate) => candidate.id === rt.effort)) {
+      throw new Error(`Claude model ${model ?? "default"} does not support effort ${rt.effort}`);
+    }
+    rt.model = model;
   }
 
   currentModel(ref: ProviderSessionRef): string | null {
     return this.mustSession(ref).model ?? null;
+  }
+
+  async listEfforts(ref: ProviderSessionRef): Promise<EffortOption[]> {
+    const rt = this.mustSession(ref);
+    if (rt.activeQuery) {
+      try {
+        rt.modelInfos = await rt.activeQuery.supportedModels();
+        rt.models = claudeModels(rt.modelInfos);
+      } catch {
+        // 与 model picker 一致：initialize 尚未完成时使用 SDK 的稳定 effort 词表。
+      }
+    }
+    return claudeEfforts(rt);
+  }
+
+  async setEffort(ref: ProviderSessionRef, effortId: string | null): Promise<void> {
+    const rt = this.mustSession(ref);
+    if (!effortId || effortId === "default") {
+      rt.effort = undefined;
+      return;
+    }
+    if (!claudeEfforts(rt).some((candidate) => candidate.id === effortId)) {
+      throw new Error(`Claude model ${rt.model ?? "default"} does not support effort ${effortId}`);
+    }
+    rt.effort = effortId as EffortLevel;
+  }
+
+  currentEffort(ref: ProviderSessionRef): string | null {
+    return this.mustSession(ref).effort ?? null;
   }
 
   /** submit 只做 admission 并启动后台消费循环；turn 进展与终结全部经事件报告 */
@@ -420,6 +484,7 @@ export class ClaudeAdapter implements AgentAdapter {
       resume: rt.claudeSessionId,
       includePartialMessages: true,
       ...(rt.model ? { model: rt.model } : {}),
+      ...(rt.effort ? { effort: rt.effort } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       canUseTool: (toolName, toolInput, meta) => this.handleCanUseTool(emit, toolName, toolInput, meta),
     };
@@ -431,6 +496,7 @@ export class ClaudeAdapter implements AgentAdapter {
       void q
         .initializationResult()
         .then((result) => {
+          rt.modelInfos = result.models;
           rt.models = claudeModels(result.models);
         })
         .catch(() => {});

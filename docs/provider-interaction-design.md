@@ -465,7 +465,7 @@ interface SessionConfigurable {
 - 返回完整配置快照，允许 model 改变后 reasoning 选项联动变化；
 - 首批 category：model、mode、model_config、thought_level；
 - approval/sandbox 虽可展示为 config，但 adapter 必须保留 provider 安全语义和约束，不把任意 key/value 直接写入 wire；
-- 现有 `/model` 成为 category=model 的快捷入口，而不是独立状态真相源。
+- 现有 `/model`、`/effort` 分别成为 category=model / thought_level 的快捷入口，而不是独立状态真相源。
 
 ### 4.7 用户响应
 

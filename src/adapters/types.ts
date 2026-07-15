@@ -62,7 +62,7 @@ export interface CapabilityMarker {
 /**
  * 可展示的能力 descriptor（design §4.4）：声明"这个 adapter 支持哪些可选能力"，
  * 供 runtime/UI 决策（如不支持 image 时 admission 报错、不展示 steer 选项）。
- * 行为仍由可选接口承载（ModelConfigurable、后续的 Steerable/CommandDiscoverable/
+ * 行为仍由可选接口承载（ModelConfigurable、EffortConfigurable、Steerable/CommandDiscoverable/
  * SessionConfigurable/Interactive）；契约测试保证"声明支持就必须实现对应接口"。
  */
 export interface AdapterCapabilities {
@@ -162,6 +162,31 @@ export function isModelConfigurable(adapter: AgentAdapter): adapter is AgentAdap
     typeof candidate.listModels === "function" &&
     typeof candidate.setModel === "function" &&
     typeof candidate.currentModel === "function"
+  );
+}
+
+export interface EffortOption {
+  id: string;
+  label: string;
+  description?: string;
+}
+
+/**
+ * 可选推理强度能力。候选值可随当前 model 变化，因此由 adapter 动态返回；setEffort
+ * 与 setModel 一样只影响后续 prompt，不改变正在运行的 turn。
+ */
+export interface EffortConfigurable {
+  listEfforts(ref: ProviderSessionRef): Promise<EffortOption[]>;
+  setEffort(ref: ProviderSessionRef, effortId: string | null): Promise<void>;
+  currentEffort(ref: ProviderSessionRef): string | null;
+}
+
+export function isEffortConfigurable(adapter: AgentAdapter): adapter is AgentAdapter & EffortConfigurable {
+  const candidate = adapter as Partial<EffortConfigurable>;
+  return (
+    typeof candidate.listEfforts === "function" &&
+    typeof candidate.setEffort === "function" &&
+    typeof candidate.currentEffort === "function"
   );
 }
 

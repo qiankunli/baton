@@ -5,7 +5,7 @@ import { providerPrefixMatches, PROVIDERS, parseProvider, type ProviderName } fr
 
 export { PROVIDERS, parseProvider, type ProviderName };
 
-export type CommandName = ProviderName | "model" | "sessions" | "status" | "new" | "exit";
+export type CommandName = ProviderName | "model" | "effort" | "sessions" | "status" | "new" | "exit";
 
 export interface CommandDefinition {
   name: CommandName;
@@ -25,6 +25,12 @@ export const COMMANDS: readonly CommandDefinition[] = [
   {
     name: "model",
     description: "Set the model for the current provider's next turns",
+    scope: "provider",
+    runPolicy: "always",
+  },
+  {
+    name: "effort",
+    description: "Set the reasoning effort for the current provider's next turns",
     scope: "provider",
     runPolicy: "always",
   },

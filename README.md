@@ -34,7 +34,7 @@ See [`docs/kernel.md`](docs/kernel.md) for the stable kernel — core concepts, 
 ## Features
 
 - Use Claude Code and Codex from the same terminal interface
-- Switch directly with `/codex` or `/claude`, and configure the active provider with `/model`
+- Switch directly with `/codex` or `/claude`, and configure its model and reasoning effort separately
 - Open a previous BatonSession with `/sessions`, or start a clean one with `/new`
 - Continue the latest session in a project with `baton -c`, or open one by ID with `baton -s <id>`
 - Reference previous sessions with `@<session-id>` and inject a compact summary automatically
@@ -86,6 +86,8 @@ Start the TUI and type a prompt to send it.
 /cla <message>       Unique provider-name prefixes work too
 /model               Open the model picker for the active provider
 /model <id>          Select the model used by subsequent turns
+/effort              Open the reasoning-effort picker for the active provider
+/effort <level>      Select the reasoning effort used by subsequent turns
 /sessions            Open the BatonSession picker
 /new                 Start a new BatonSession in the current project
 @bs_...               Reference another baton session

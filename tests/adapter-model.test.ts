@@ -15,10 +15,15 @@ describe("Claude model capability", () => {
     const ref = await adapter.open({ cwd: "/tmp" }, () => {});
 
     expect((await adapter.listModels(ref)).map((model) => model.id)).toContain("sonnet");
+    expect((await adapter.listEfforts(ref)).map((effort) => effort.id)).toContain("high");
     await adapter.setModel(ref, "sonnet");
+    await adapter.setEffort(ref, "high");
     expect(adapter.currentModel(ref)).toBe("sonnet");
+    expect(adapter.currentEffort(ref)).toBe("high");
     await adapter.setModel(ref, "default");
+    await adapter.setEffort(ref, "default");
     expect(adapter.currentModel(ref)).toBeNull();
+    expect(adapter.currentEffort(ref)).toBeNull();
   });
 
   test("records a native session id for resume", async () => {
@@ -27,19 +32,55 @@ describe("Claude model capability", () => {
     expect(ref.resumed).toBe(true);
     expect(adapter.nativeSessionId(ref)).toBe("claude-session-1");
   });
+
+  test("rejects efforts unsupported by the selected Claude model", async () => {
+    const adapter = new ClaudeAdapter({ requestHandler });
+    const ref = await adapter.open({ cwd: "/tmp" }, () => {});
+    const runtime = (
+      adapter as unknown as {
+        sessions: Map<string, { modelInfos?: unknown[] }>;
+      }
+    ).sessions.get(ref.providerSessionId);
+    if (!runtime) throw new Error("missing Claude test runtime");
+    runtime.modelInfos = [
+      { value: "opus", displayName: "Opus", supportedEffortLevels: ["high"] },
+      { value: "haiku", displayName: "Haiku", supportedEffortLevels: ["low"] },
+    ];
+
+    await adapter.setModel(ref, "opus");
+    await adapter.setEffort(ref, "high");
+    await expect(adapter.setEffort(ref, "low")).rejects.toThrow(/does not support effort low/);
+    await expect(adapter.setModel(ref, "haiku")).rejects.toThrow(/does not support effort high/);
+    expect(adapter.currentModel(ref)).toBe("opus");
+    expect(adapter.currentEffort(ref)).toBe("high");
+  });
 });
 
 describe("Codex model capability", () => {
   test("normalizes model/list and sends the selected model on the next turn", async () => {
     const adapter = new CodexAdapter({ requestHandler });
-    let turnParams: Record<string, unknown> | undefined;
+    const turnRequests: Record<string, unknown>[] = [];
     const peer = {
       request: async (method: string, params: Record<string, unknown>) => {
         if (method === "model/list") {
-          return { data: [{ id: "gpt-5", displayName: "GPT-5", description: "default" }] };
+          return {
+            data: [
+              {
+                id: "gpt-5",
+                displayName: "GPT-5",
+                description: "default",
+                isDefault: true,
+                defaultReasoningEffort: "medium",
+                supportedReasoningEfforts: [
+                  { reasoningEffort: "low", description: "Fast" },
+                  { reasoningEffort: "high", description: "Deep" },
+                ],
+              },
+            ],
+          };
         }
         if (method === "turn/start") {
-          turnParams = params;
+          turnRequests.push(params);
           return { turn: { id: "turn-1", status: "completed" } };
         }
         throw new Error(`unexpected request: ${method}`);
@@ -53,10 +94,55 @@ describe("Codex model capability", () => {
 
     expect((await adapter.listModels(ref)).map((model) => model.id)).toEqual(["default", "gpt-5"]);
     await adapter.setModel(ref, "gpt-5");
+    expect((await adapter.listEfforts(ref)).map((effort) => effort.id)).toEqual(["default", "low", "high"]);
+    await adapter.setEffort(ref, "high");
     await adapter.submit(ref, { turnId: "t_1", messageId: "m_1", blocks: [{ type: "text", text: "hello" }] });
     await Bun.sleep(0); // turn/start 在 submit 回执后异步发出，等微任务刷新
 
-    expect(turnParams?.model).toBe("gpt-5");
+    expect(turnRequests[0]?.model).toBe("gpt-5");
+    expect(turnRequests[0]?.effort).toBe("high");
+    await adapter.setEffort(ref, "default");
+    expect(adapter.currentEffort(ref)).toBeNull();
+    await adapter.submit(ref, { turnId: "t_2", messageId: "m_2", blocks: [{ type: "text", text: "again" }] });
+    await Bun.sleep(0);
+    expect(turnRequests[1]?.effort).toBe("medium");
+  });
+
+  test("rejects efforts unsupported by the selected Codex model", async () => {
+    const adapter = new CodexAdapter({ requestHandler });
+    const catalog = {
+      data: [
+        {
+          id: "gpt-5",
+          displayName: "GPT-5",
+          isDefault: true,
+          supportedReasoningEfforts: [{ reasoningEffort: "high" }],
+        },
+        {
+          id: "gpt-5-mini",
+          displayName: "GPT-5 mini",
+          supportedReasoningEfforts: [{ reasoningEffort: "low" }],
+        },
+      ],
+    };
+    const peer = {
+      request: async (method: string) => {
+        if (method === "model/list") return catalog;
+        throw new Error(`unexpected request: ${method}`);
+      },
+    };
+    const runtime = { threadId: "thread-1", peer };
+    (
+      adapter as unknown as { threads: Map<string, typeof runtime> }
+    ).threads.set("thread-1", runtime);
+    const ref = { provider: "codex", providerSessionId: "thread-1" };
+
+    await adapter.setModel(ref, "gpt-5");
+    await adapter.setEffort(ref, "high");
+    await expect(adapter.setEffort(ref, "low")).rejects.toThrow(/does not support effort low/);
+    await expect(adapter.setModel(ref, "gpt-5-mini")).rejects.toThrow(/does not support effort high/);
+    expect(adapter.currentModel(ref)).toBe("gpt-5");
+    expect(adapter.currentEffort(ref)).toBe("high");
   });
 
   test("delivers BatonSession catch-up via turn/start.additionalContext", async () => {

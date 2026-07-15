@@ -156,11 +156,13 @@ describe("session lifecycle", () => {
       providerSessionId: "thread_123",
       resumeCursor: "42",
       model: "gpt-5",
+      effort: "high",
     });
     const reopened = store.openSession(h.id);
     expect(reopened.meta.providerSessions["codex"]!.providerSessionId).toBe("thread_123");
     expect(reopened.meta.providerSessions["codex"]!.resumeCursor).toBe("42");
     expect(reopened.meta.providerSessions["codex"]!.model).toBe("gpt-5");
+    expect(reopened.meta.providerSessions["codex"]!.effort).toBe("high");
   });
 });
 
@@ -404,7 +406,7 @@ describe("forkSession", () => {
     expect(source.readEvents()).toHaveLength(sourceEvents.length);
   });
 
-  test("providerSessions keep only provider + model (child must not resume source native sessions)", () => {
+  test("providerSessions keep only provider config (child must not resume source native sessions)", () => {
     const source = store.createSession({ cwd: "/tmp/proj" });
     source.setProviderSession("codex", {
       provider: "codex",
@@ -412,11 +414,12 @@ describe("forkSession", () => {
       resumeCursor: "42",
       syncedSeq: 7,
       model: "gpt-5",
+      effort: "high",
     });
     source.setProviderSession("claude-code", { provider: "claude-code", providerSessionId: "sess_9" });
 
     const child = store.forkSession(source.id);
-    expect(child.meta.providerSessions["codex"]).toEqual({ provider: "codex", model: "gpt-5" });
+    expect(child.meta.providerSessions["codex"]).toEqual({ provider: "codex", model: "gpt-5", effort: "high" });
     expect(child.meta.providerSessions["claude-code"]).toEqual({ provider: "claude-code" });
   });
 

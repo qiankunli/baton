@@ -34,7 +34,7 @@ baton 是一条双向流水线：chat-tui 只承载 `intent`/`render`，runtime 
 ## 功能
 
 - 在同一个终端界面中使用 Claude Code 和 Codex
-- 使用 `/codex` 或 `/claude` 直接切换 agent，使用 `/model` 配置当前 provider
+- 使用 `/codex` 或 `/claude` 直接切换 agent，并分别配置当前 provider 的模型与推理强度
 - 使用 `/sessions` 打开历史 BatonSession，或用 `/new` 新建干净会话
 - 使用 `baton -c` 继续当前项目最近会话，或用 `baton -s <id>` 打开指定会话
 - 使用 `@<session-id>` 引用历史会话，并自动注入紧凑摘要
@@ -86,6 +86,8 @@ Codex 审批默认跟随 Codex 自己的配置（`~/.codex/config.toml`、profil
 /cla <消息>          provider 名的唯一前缀也可使用
 /model               打开当前 provider 的模型选择器
 /model <id>          设置后续 turn 使用的模型
+/effort              打开当前 provider 的推理强度选择器
+/effort <level>      设置后续 turn 使用的推理强度
 /sessions            打开 BatonSession 选择器
 /new                 在当前项目新建 BatonSession
 @bs_...               引用另一个 baton 会话

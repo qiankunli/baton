@@ -43,6 +43,8 @@ export interface ProviderSessionMeta {
   providerSessionId?: string;
   /** 该 provider session 后续 turn 使用的模型；缺省表示 provider 默认值。 */
   model?: string;
+  /** 该 provider session 后续 turn 使用的推理强度；缺省表示 provider 默认值。 */
+  effort?: string;
   /** provider 侧恢复所需的游标（如 Claude SDK resume cursor），语义归 adapter */
   resumeCursor?: string;
   /** 该原生会话已同步到的 BatonSession 事件序号。 */
@@ -252,7 +254,7 @@ export class SessionStore {
    * 复制的前缀与源是同一段逻辑历史（git-branch 语义）：seq 与 turn/message/toolCall ID
    * 原样保留，只换 batonSessionId——不做 ID remap（toolCallId 等本就是 provider 原生
    * ID，remap 只会破坏与 raw 的对照），谱系由 meta.forkedFrom 表达。
-   * providerSessions 只保留 provider 与 model 偏好：child 不得 resume 源的原生
+   * providerSessions 只保留 provider 与 model / effort 偏好：child 不得 resume 源的原生
    * ProviderSession（否则两个 BatonSession 会写进同一份 provider 历史）；child 首 turn
    * 由 runtime 走 fresh native + 全量补课（syncedSeq 缺省=0）重建上下文。
    * opts.cwd 支持跨 project fork：历史跟源走，project 归属跟 fork 发起位置走；
@@ -277,7 +279,11 @@ export class SessionStore {
     }
     const providerSessions: Record<string, ProviderSessionMeta> = {};
     for (const [key, ps] of Object.entries(source.meta.providerSessions)) {
-      providerSessions[key] = { provider: ps.provider, ...(ps.model !== undefined ? { model: ps.model } : {}) };
+      providerSessions[key] = {
+        provider: ps.provider,
+        ...(ps.model !== undefined ? { model: ps.model } : {}),
+        ...(ps.effort !== undefined ? { effort: ps.effort } : {}),
+      };
     }
     const now = new Date().toISOString();
     const sourceTitle = explicitSessionTitle(source.meta);
