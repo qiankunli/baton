@@ -44,9 +44,10 @@ import {
 import { openBatonSession } from "../session/open.ts";
 import { BatonSessionRuntime } from "../session/runtime.ts";
 import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from "../store/reduce.ts";
-import type { SessionHandle, SessionStore } from "../store/store.ts";
+import { sessionDisplayTitle, type SessionHandle, type SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
 import { sessionPickerOptions, type SessionPickerMode } from "./session-picker.tsx";
+import { setTerminalTabTitle } from "./terminal-title.ts";
 
 /**
  * 双轴 → chat-tui 既有的 `kind` 词表。双轴是 baton 的内部模型，在边界投影回接入方
@@ -179,6 +180,7 @@ export class BatonChatProtocol implements ChatProtocol {
     private readonly quit: (sessionId?: string) => void,
   ) {
     this.session = opened.session;
+    this.syncTerminalTitle();
     this.agent = config.defaultAgent;
     this.modelPreferences = loadModelPreferences(store.rootDir);
     this.effortPreferences = loadEffortPreferences(store.rootDir);
@@ -244,7 +246,9 @@ export class BatonChatProtocol implements ChatProtocol {
     const target = this.agent;
     this.status = null;
     this.commandOutput = null;
+    const previousTitle = sessionDisplayTitle(this.session.meta);
     this.session.setPreviewIfEmpty(text);
+    if (sessionDisplayTitle(this.session.meta) !== previousTitle) this.syncTerminalTitle();
     const { prompt } = expandMentions(this.store, text, this.config.mentionBudgetChars);
     const blocks: PromptBlock[] = [{ type: "text", text: prompt }];
 
@@ -511,6 +515,10 @@ export class BatonChatProtocol implements ChatProtocol {
     });
   }
 
+  private syncTerminalTitle(): void {
+    setTerminalTabTitle(sessionDisplayTitle(this.session.meta));
+  }
+
   /**
    * open 以回调传入且在 busy 检查之后才执行：目标会话的锁在 openBatonSession 里
    * 获取，若先锁后检查，busy 抛错会把已锁的目标泄漏给当前进程。
@@ -526,6 +534,7 @@ export class BatonChatProtocol implements ChatProtocol {
     this.unsubscribeSession();
     this.session.releaseLock();
     this.session = next.session;
+    this.syncTerminalTitle();
     this.commandOutput = null;
     this.runtime = this.createRuntime();
     this.state = next.session.loadState();
