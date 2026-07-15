@@ -168,6 +168,10 @@ function codexEfforts(result: unknown, modelId?: string): EffortOption[] {
   ];
 }
 
+function codexModelSupportsEffort(model: CodexModelInfo, effort: string): boolean {
+  return model.efforts.some((candidate) => candidate.id === effort);
+}
+
 // codex CommandExecutionApprovalDecision / FileChangeApprovalDecision 的字符串成员。
 // 注意 cancel 的 "deny + 中断 turn"：中断属于 Control 轴，不是更强的拒绝范围——
 // 两轴上它与 decline 同为 (reject, once)，差别只由 name 承载。
@@ -603,10 +607,15 @@ export class CodexAdapter implements AgentAdapter {
   async setModel(ref: ProviderSessionRef, modelId: string | null): Promise<void> {
     const rt = this.mustThread(ref);
     const model = !modelId || modelId === "default" ? undefined : modelId;
-    if (rt.effortUsesDefault) {
-      const catalog = await rt.peer.request("model/list", { limit: 200 });
-      rt.effort = selectedCodexModel(catalog, model)?.defaultEffort;
+    const catalog =
+      rt.effortUsesDefault || rt.effortSelection
+        ? await rt.peer.request("model/list", { limit: 200 })
+        : undefined;
+    const selected = catalog === undefined ? undefined : selectedCodexModel(catalog, model);
+    if (rt.effortSelection && selected && !codexModelSupportsEffort(selected, rt.effortSelection)) {
+      throw new Error(`Codex model ${selected.id} does not support effort ${rt.effortSelection}`);
     }
+    if (rt.effortUsesDefault) rt.effort = selected?.defaultEffort;
     rt.model = model;
   }
 
@@ -627,6 +636,11 @@ export class CodexAdapter implements AgentAdapter {
       rt.effortSelection = undefined;
       rt.effortUsesDefault = true;
       return;
+    }
+    const catalog = await rt.peer.request("model/list", { limit: 200 });
+    const selected = selectedCodexModel(catalog, rt.model);
+    if (selected && !codexModelSupportsEffort(selected, effortId)) {
+      throw new Error(`Codex model ${selected.id} does not support effort ${effortId}`);
     }
     rt.effort = effortId;
     rt.effortSelection = effortId;

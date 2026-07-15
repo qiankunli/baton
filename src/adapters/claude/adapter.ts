@@ -342,18 +342,22 @@ function effortLabel(effort: string): string {
   return effort === "xhigh" ? "Extra high" : effort.charAt(0).toUpperCase() + effort.slice(1);
 }
 
-function claudeEfforts(rt: ClaudeRuntime): EffortOption[] {
+function claudeEffortsForModel(rt: ClaudeRuntime, modelId: string | undefined): EffortOption[] {
   const defaultOption: EffortOption = {
     id: "default",
     label: "Default",
     description: "Use the Claude Code default effort",
   };
-  const model = rt.model
-    ? rt.modelInfos?.find((candidate) => candidate.value === rt.model || candidate.resolvedModel === rt.model)
+  const model = modelId
+    ? rt.modelInfos?.find((candidate) => candidate.value === modelId || candidate.resolvedModel === modelId)
     : rt.modelInfos?.find((candidate) => candidate.value === "default") ?? rt.modelInfos?.[0];
   if (model?.supportsEffort === false) return [defaultOption];
   const levels = model?.supportedEffortLevels?.length ? model.supportedEffortLevels : CLAUDE_EFFORT_LEVELS;
   return [defaultOption, ...levels.map((id) => ({ id, label: effortLabel(id) }))];
+}
+
+function claudeEfforts(rt: ClaudeRuntime): EffortOption[] {
+  return claudeEffortsForModel(rt, rt.model);
 }
 
 export interface ClaudeAdapterOptions {
@@ -406,7 +410,11 @@ export class ClaudeAdapter implements AgentAdapter {
 
   async setModel(ref: ProviderSessionRef, modelId: string | null): Promise<void> {
     const rt = this.mustSession(ref);
-    rt.model = !modelId || modelId === "default" ? undefined : modelId;
+    const model = !modelId || modelId === "default" ? undefined : modelId;
+    if (rt.effort && !claudeEffortsForModel(rt, model).some((candidate) => candidate.id === rt.effort)) {
+      throw new Error(`Claude model ${model ?? "default"} does not support effort ${rt.effort}`);
+    }
+    rt.model = model;
   }
 
   currentModel(ref: ProviderSessionRef): string | null {
@@ -432,8 +440,8 @@ export class ClaudeAdapter implements AgentAdapter {
       rt.effort = undefined;
       return;
     }
-    if (!CLAUDE_EFFORT_LEVELS.includes(effortId as EffortLevel)) {
-      throw new Error(`Unknown Claude effort: ${effortId}`);
+    if (!claudeEfforts(rt).some((candidate) => candidate.id === effortId)) {
+      throw new Error(`Claude model ${rt.model ?? "default"} does not support effort ${effortId}`);
     }
     rt.effort = effortId as EffortLevel;
   }
