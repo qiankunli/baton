@@ -472,6 +472,16 @@ export function codexHooksRequiringTrust(result: unknown): HookTrustCandidate[] 
   return [...candidates.values()];
 }
 
+/** Trust 仍逐 hook 校验；这里只按 owner 聚合启动通知，避免同一插件的多条 hook 刷屏。 */
+function summarizeTrustedHookOwners(hooks: HookTrustCandidate[]): string {
+  const owners = new Map<string, number>();
+  for (const hook of hooks) {
+    const owner = hook.pluginId || hook.sourcePath || hook.key;
+    owners.set(owner, (owners.get(owner) ?? 0) + 1);
+  }
+  return [...owners].map(([owner, count]) => (count === 1 ? owner : `${owner} (${count} hooks)`)).join("\n");
+}
+
 /** codex 方言 → 归一路由。未知取值不猜（不变量 #2）。 */
 function approvalRouteOf(reviewer: unknown): ApprovalRoute | null {
   if (reviewer === "user") return "user";
@@ -672,8 +682,8 @@ export class CodexAdapter implements AgentAdapter {
             provider: this.provider,
             payload: {
               level: "info",
-              title: "Enabled previously trusted Codex hooks",
-              detail: hooks.map((hook) => hook.pluginId ?? hook.sourcePath ?? hook.key).join("\n"),
+              title: `Enabled ${hooks.length} previously trusted Codex hook${hooks.length === 1 ? "" : "s"}`,
+              detail: summarizeTrustedHookOwners(hooks),
             },
           });
         }

@@ -39,6 +39,7 @@ See [`docs/kernel.md`](docs/kernel.md) for the stable kernel — core concepts, 
 - Continue the latest session in a project with `baton -c`, or open one by ID with `baton -s <id>`
 - Reference previous sessions with `@<session-id>` and inject a compact summary automatically
 - Record messages, thoughts, tool calls, file changes, plans, and token usage in a unified format
+- Preserve provider startup interactions such as Codex hook trust, reusing unchanged trusted definitions with a visible notice
 - Append events to a local `session.jsonl` for state reconstruction and future references
 - Reuse local Claude Code and Codex credentials without storing them in baton
 - Use a headless REPL to debug agent integrations

@@ -39,6 +39,7 @@ baton 是一条双向流水线：chat-tui 只承载 `intent`/`render`，runtime 
 - 使用 `baton -c` 继续当前项目最近会话，或用 `baton -s <id>` 打开指定会话
 - 使用 `@<session-id>` 引用历史会话，并自动注入紧凑摘要
 - 统一记录消息、思考、工具调用、文件改动、计划和 token usage
+- 保留 Codex hook trust 等 provider 启动交互；已信任且未变化的定义会自动复用并明确留痕
 - 将事件追加写入本地 `session.jsonl`，支持状态重建和后续引用
 - 复用本机 Claude Code / Codex 登录态，不托管凭证
 - 提供 headless REPL，方便调试 agent 接入链路
