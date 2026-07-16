@@ -1,7 +1,7 @@
 {
   "name": "@qiankun01/baton",
   "version": "0.0.3",
-  "description": "One durable terminal session across coding-agent providers.",
+  "description": "A terminal-native workspace for coding agents, built on durable sessions.",
   "type": "module",
   "license": "Apache-2.0",
   "repository": "github:qiankunli/baton",

@@ -4,7 +4,7 @@
 
 > Pass context between coding agents like a baton.
 
-baton is a terminal-native coding-agent session, inspired by [tutti](https://github.com/tutti-os/tutti). A BatonSession remains the same durable conversation while you switch providers with `/codex` or `/claude`, including after closing and reopening baton. Claude Code and Codex are the first bundled providers, not a closed support list.
+baton is a terminal-native workspace for coding agents, built around durable, provider-independent sessions and inspired by [tutti](https://github.com/tutti-os/tutti). Today, it lets you use Claude Code and Codex in one TUI and switch between them without carrying context. Because BatonSession is owned by baton rather than any provider, the same foundation can grow from agent handoffs into multi-agent collaboration and orchestration. Claude Code and Codex are the first bundled providers, not a closed support list.
 
 Provider-native sessions are resume optimizations; BatonSession history remains available even when a native session cannot be resumed.
 
