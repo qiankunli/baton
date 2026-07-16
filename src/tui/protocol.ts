@@ -32,6 +32,7 @@ import {
   textOf,
   type ApprovalReviewUpdate,
   type DiffBlock,
+  type EventKind,
   type HookTrustRequest,
   type PermissionOption,
   type PromptBlock,
@@ -49,6 +50,17 @@ import { sessionDisplayTitle, type SessionHandle, type SessionStore } from "../s
 import { sessionMentionCandidates } from "./mentions.ts";
 import { sessionPickerOptions, type SessionPickerMode } from "./session-picker.tsx";
 import { setTerminalTabTitle } from "./terminal-title.ts";
+
+// OpenTUI 以 30 FPS 绘制；逐 token 同步发布完整 view 只会让 React 重复重建 transcript，
+// 还会挤占 composer 的终端光标刷新。只合并高频、可安全追加的流式事件；请求、终态和
+// 完整快照仍立即发布，并顺带冲刷此前积累的 chunk，避免交互卡片被延迟。
+const STREAM_VIEW_FRAME_MS = 33;
+const COALESCED_STREAM_EVENT_KINDS: ReadonlySet<EventKind> = new Set([
+  "agent_message_chunk",
+  "agent_thought_chunk",
+  "tool_call_content_chunk",
+  "usage_update",
+]);
 
 /**
  * 双轴 → chat-tui 既有的 `kind` 词表。双轴是 baton 的内部模型，在边界投影回接入方
@@ -189,6 +201,7 @@ export class BatonChatProtocol implements ChatProtocol {
   private listeners = new Set<() => void>();
   private view: ChatViewState;
   private unsubscribeSession: () => void;
+  private streamViewTimer: ReturnType<typeof setTimeout> | undefined;
   // 输入历史（shell 式 ↑/↓ 回溯）：会话级，从事件流的 user 消息种入、提交时追加。
   // 事件流是真相源——不另存磁盘文件；resume/切换会话后 loadState 重建 state 即可重新种入。
   private history: string[] = [];
@@ -225,7 +238,8 @@ export class BatonChatProtocol implements ChatProtocol {
   private subscribeSession(session: SessionHandle): () => void {
     return session.subscribe((envelope) => {
       applyEvent(this.state, envelope);
-      this.changed();
+      if (COALESCED_STREAM_EVENT_KINDS.has(envelope.kind)) this.scheduleStreamViewChanged();
+      else this.changed();
     });
   }
 
@@ -658,8 +672,21 @@ export class BatonChatProtocol implements ChatProtocol {
     this.changed();
   }
 
+  /** 高频流式事件按 renderer 帧合并；state 已同步 reduce，这里只延迟昂贵的完整 view 投影。 */
+  private scheduleStreamViewChanged(): void {
+    if (this.streamViewTimer !== undefined) return;
+    this.streamViewTimer = setTimeout(() => {
+      this.streamViewTimer = undefined;
+      this.changed();
+    }, STREAM_VIEW_FRAME_MS);
+  }
+
   /** 快照式更新：每次变更整体替换 view 再通知（getView 引用稳定性要求） */
   private changed(): void {
+    if (this.streamViewTimer !== undefined) {
+      clearTimeout(this.streamViewTimer);
+      this.streamViewTimer = undefined;
+    }
     this.view = this.buildView();
     for (const listener of this.listeners) listener();
   }

@@ -119,6 +119,78 @@ describe("BatonChatProtocol status command", () => {
   });
 });
 
+describe("BatonChatProtocol streaming projection", () => {
+  test("coalesces synchronous stream chunks into one view notification", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-stream-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+      let notifications = 0;
+      protocol.subscribe(() => notifications++);
+
+      for (const text of ["one ", "two ", "three"]) {
+        session.append({
+          kind: "agent_message_chunk",
+          provider: "codex",
+          turnId: "t1",
+          payload: { messageId: "m_stream", content: { type: "text", text } },
+        });
+      }
+
+      expect(notifications).toBe(0);
+      await Bun.sleep(50);
+      expect(notifications).toBe(1);
+      expect(protocol.getView().transcript).toContainEqual(
+        expect.objectContaining({ id: "m_stream", text: "one two three" }),
+      );
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("flushes pending stream state immediately when an interaction arrives", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-stream-interaction-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+      let notifications = 0;
+      protocol.subscribe(() => notifications++);
+
+      session.append({
+        kind: "agent_message_chunk",
+        provider: "codex",
+        turnId: "t1",
+        payload: { messageId: "m_stream", content: { type: "text", text: "latest output" } },
+      });
+      session.append({
+        kind: "permission_request",
+        provider: "codex",
+        turnId: "t1",
+        payload: {
+          kind: "permission",
+          requestId: "ar_stream",
+          title: "Run command?",
+          options: [],
+        },
+      });
+
+      expect(notifications).toBe(1);
+      expect(protocol.getView().approval?.id).toBe("ar_stream");
+      expect(protocol.getView().transcript).toContainEqual(
+        expect.objectContaining({ id: "m_stream", text: "latest output" }),
+      );
+      await Bun.sleep(50);
+      expect(notifications).toBe(1);
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("BatonChatProtocol provider commands", () => {
   test("switches the input target and sends a trailing message in one action", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-provider-command-"));
