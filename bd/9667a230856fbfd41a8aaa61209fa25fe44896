@@ -1,0 +1,27 @@
+src/store/reduce.ts
+  s_3251ac38e2c962::t_ef30b51050dc37 59-71,130-131,166,330,334,336-337,401-402,433-442
+src/tui/protocol.ts
+  s_3251ac38e2c962::t_d643417cb2cf86 614-617,726-727
+tests/reduce.test.ts
+  s_3251ac38e2c962::t_3a2c1f1bf84e3e 260,268,276-288
+tests/tui-protocol.test.ts
+  s_3251ac38e2c962::t_0f2e12beaedce0 93-119,186,244-245
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bd9667a230856fbfd41a8aaa61209fa25fe44896",
+  "prompts": {},
+  "sessions": {
+    "s_3251ac38e2c962": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "11720e4f-ff0d-46cd-b601-c1243c70624f",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
