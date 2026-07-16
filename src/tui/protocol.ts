@@ -611,8 +611,10 @@ export class BatonChatProtocol implements ChatProtocol {
     const active = this.runtime.activeProvider;
     const selectedModel = this.runtime.currentModel(this.agent) ?? "default";
     const selectedEffort = this.runtime.currentEffort(this.agent) ?? "default";
-    const providerId = providerDefinitionFor(this.agent)?.id ?? this.agent;
-    const context = this.state.contextUsageByProvider.get(providerId);
+    // perProvider 的键是信封 provider（= sessionKey），不是 canonical id：
+    // claude 两者不同（"claude" vs "claude-code"），曾用 id 查导致 context 永远 unavailable
+    const providerKey = providerDefinitionFor(this.agent)?.sessionKey ?? this.agent;
+    const context = this.state.perProvider.get(providerKey)?.contextUsage;
     const contextText = contextUsageText(context, selectedModel);
     const providers = Object.keys(meta.providerSessions).join(", ") || "-";
     const preview = meta.preview ?? meta.title ?? "(empty session)";
@@ -721,7 +723,8 @@ export class BatonChatProtocol implements ChatProtocol {
     // 同时以同 provider 的运行态门控：idle 后未完成的 plan 也归 transcript，
     // 避免别家 provider 的回合让已搁置的 plan 重新上 pin。
     const selectedProvider = providerDefinitionFor(this.agent)?.sessionKey ?? this.agent;
-    const lastPlan = [...v.plans.values()].filter((plan) => plan.provider === selectedProvider).at(-1);
+    const lastPlanId = v.perProvider.get(selectedProvider)?.lastPlanId;
+    const lastPlan = lastPlanId ? v.plans.get(lastPlanId) : undefined;
     const planEntries = (lastPlan?.entries ?? []).map((entry) => ({
       content: entry.content,
       status: normalizePlanStatus(entry.status),
