@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
-import { SessionStore } from "../src/store/store.ts";
+import { sessionDisplayTitle, SessionStore } from "../src/store/store.ts";
 import { BatonChatProtocol, runStatusLabel, thoughtDisplayBlocks, toolTranscriptItem } from "../src/tui/protocol.ts";
 
 describe("BatonChatProtocol exit", () => {
@@ -53,6 +53,33 @@ describe("BatonChatProtocol session preview", () => {
       await protocol.submit("Implement session previews");
       await protocol.submit("Do not replace the preview");
       expect(store.openSession(session.id).meta.preview).toBe("Implement session previews");
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("names a fork from its first queued input and keeps the source as description", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-fork-name-"));
+    try {
+      const store = new SessionStore(root);
+      const source = store.createSession({ cwd: "/repo" });
+      source.setPreviewIfEmpty("Design session labels");
+      const session = store.forkSession(source.id);
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+      const internals = protocol as unknown as {
+        runtime: { submit: () => Promise<"completed">; close: () => Promise<void> };
+      };
+      internals.runtime.submit = async () => "completed";
+
+      expect(sessionDisplayTitle(session.meta)).toBe("fork: Design session labels");
+      await protocol.submit("Implement fork session labels");
+      await protocol.submit("Do not replace the fork name");
+
+      const reopened = store.openSession(session.id);
+      expect(reopened.meta.title).toBe("Implement fork session labels");
+      expect(reopened.meta.description).toBe("fork: Design session labels");
+      expect(sessionDisplayTitle(reopened.meta)).toBe("Implement fork session labels");
       await protocol.exit();
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -311,10 +338,14 @@ describe("BatonChatProtocol view projection", () => {
       });
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
 
-      expect(protocol.getView().runStatus?.[0]?.label).toBe("default · idle · context 12,500/200,000 (6%)");
+      expect(protocol.getView().runStatus).toHaveLength(2);
+      expect(protocol.getView().runStatus?.[0]?.label).toBe("default · idle");
+      expect(protocol.getView().runStatus?.[1]?.label).toBe("context 12,500/200,000 (6%)");
       expect(protocol.getView().footer).not.toContain("context");
       await protocol.command("claude", "");
-      expect(protocol.getView().runStatus?.[0]?.label).toBe("default · idle · context 80,000/200,000 (40%)");
+      expect(protocol.getView().runStatus).toHaveLength(2);
+      expect(protocol.getView().runStatus?.[0]?.label).toBe("default · idle");
+      expect(protocol.getView().runStatus?.[1]?.label).toBe("context 80,000/200,000 (40%)");
       expect(protocol.getView().footer).not.toContain("context");
 
       await protocol.exit();

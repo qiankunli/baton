@@ -49,7 +49,7 @@ import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from
 import { sessionDisplayTitle, type SessionHandle, type SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
 import { sessionPickerOptions, type SessionPickerMode } from "./session-picker.tsx";
-import { formatTerminalTabTitle, setTerminalTabTitle } from "./terminal-title.ts";
+import { setTerminalTabTitle } from "./terminal-title.ts";
 
 // OpenTUI 以 30 FPS 绘制；逐 token 同步发布完整 view 只会让 React 重复重建 transcript，
 // 还会挤占 composer 的终端光标刷新。只合并高频、可安全追加的流式事件；请求、终态和
@@ -303,7 +303,8 @@ export class BatonChatProtocol implements ChatProtocol {
     this.status = null;
     this.commandOutput = null;
     const previousTitle = sessionDisplayTitle(this.session.meta);
-    this.session.setPreviewIfEmpty(text);
+    if (this.session.meta.forkedFrom) this.session.setTitleIfEmpty(text);
+    else this.session.setPreviewIfEmpty(text);
     if (sessionDisplayTitle(this.session.meta) !== previousTitle) this.syncTerminalTitle();
     const { prompt } = expandMentions(this.store, text, this.config.mentionBudgetChars);
     const blocks: PromptBlock[] = [{ type: "text", text: prompt }];
@@ -588,9 +589,7 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   private syncTerminalTitle(): void {
-    setTerminalTabTitle(
-      formatTerminalTabTitle(sessionDisplayTitle(this.session.meta), this.session.meta.forkedFrom !== undefined),
-    );
+    setTerminalTabTitle(sessionDisplayTitle(this.session.meta));
   }
 
   /**
@@ -650,10 +649,10 @@ export class BatonChatProtocol implements ChatProtocol {
     const context = this.state.perProvider.get(providerKey)?.contextUsage;
     const contextText = contextUsageText(context, selectedModel);
     const providers = Object.keys(meta.providerSessions).join(", ") || "-";
-    const preview = meta.preview ?? meta.title ?? "(empty session)";
     const text = [
       `Session: ${meta.batonSessionId}`,
-      `Preview: ${preview}`,
+      `Name: ${sessionDisplayTitle(meta)}`,
+      ...(meta.description ? [`Description: ${meta.description}`] : []),
       `Directory: ${meta.cwd}`,
       `Current: ${this.agent} - model ${selectedModel} - effort ${selectedEffort}`,
       `Context: ${contextText}`,
@@ -720,9 +719,9 @@ export class BatonChatProtocol implements ChatProtocol {
     const question = v.pendingQuestions.values().next().value;
     const observedRuns = [...v.activeTurns.values()].filter((turn) => turn.origin === "provider");
     const observedRun = observedRuns.at(-1);
-    // baton 当前只呈现一条 Agent Status：driven turn 优先，其次是 provider 自发的
-    // background turn，完全空闲时才回落到当前输入目标。多运行者并发尚未进入产品范围，
-    // 不应提前把同一 provider 画成 idle + background 两行。
+    // baton 当前只呈现一个 agent 的状态：driven turn 优先，其次是 provider 自发的
+    // background turn，完全空闲时才回落到当前输入目标。状态本体与附加信息可拆成两行，
+    // 但仍是同一个 agent；多运行者并发尚未进入产品范围。
     const activeTurnId = this.runtime.activeTurnId;
     const statusProvider = active ?? observedRun?.provider ?? this.agent;
     const statusProviderDefinition = providerDefinitionFor(statusProvider);
@@ -730,40 +729,47 @@ export class BatonChatProtocol implements ChatProtocol {
     const statusModel = statusProviderId ? (this.runtime.currentModel(statusProviderId) ?? "default") : "default";
     const statusProviderKey = statusProviderDefinition?.sessionKey ?? statusProvider;
     const contextStatus = contextUsageStatusText(v.perProvider.get(statusProviderKey)?.contextUsage, statusModel);
-    const contextMode = contextStatus ? ` · ${contextStatus}` : "";
     // 审批路由问 adapter 要（provider 自己报的生效值），不读 config——config 是意图，
     // 且投影层不得按 provider 分支（不变量 #3）。曾经这里硬编码 codexApprovalReviewer，
     // 于是跟 claude 对话时 footer 照样显示 codex 的委托状态。
-    const approvalMode =
+    const approvalStatus =
       statusProviderId && this.runtime.approvalRoute(statusProviderId) === "delegated"
-        ? " · approvals:auto-review"
-        : "";
+        ? "approvals:auto-review"
+        : undefined;
+    const statusDetails = [contextStatus, approvalStatus].filter((detail): detail is string => detail !== undefined);
+    const splitStatus = (item: RunStatusItem): RunStatusItem[] => {
+      if (statusDetails.length === 0) return [item];
+      const { startedAt, hint, ...primary } = item;
+      return [
+        primary,
+        {
+          id: `${item.id}:details`,
+          label: statusDetails.join(" · "),
+          ...(startedAt !== undefined ? { startedAt } : {}),
+          ...(hint ? { hint } : {}),
+        },
+      ];
+    };
     const runStatus: RunStatusItem[] = active
-      ? [
-          {
-            id: `run:${active}`,
-            author: providerAuthor(active),
-            label: `${statusModel} · ${runStatusLabel(v, activeTurnId)}${contextMode}${approvalMode}`,
-            startedAt: this.runtime.activeStartedAt,
-            hint: "Esc to interrupt",
-          },
-        ]
+      ? splitStatus({
+          id: `run:${active}`,
+          author: providerAuthor(active),
+          label: `${statusModel} · ${runStatusLabel(v, activeTurnId)}`,
+          startedAt: this.runtime.activeStartedAt,
+          hint: "Esc to interrupt",
+        })
       : observedRun
-        ? [
-            {
-              id: `run:observed:${observedRun.turnId}`,
-              author: providerAuthor(statusProvider),
-              label: `${statusModel} · ${runStatusLabel(v, observedRun.turnId)} · background${contextMode}${approvalMode}`,
-              startedAt: observedRun.startedAt,
-            },
-          ]
-        : [
-            {
-              id: `agent:${this.agent}`,
-              author: providerAuthor(this.agent),
-              label: `${statusModel} · idle${contextMode}${approvalMode}`,
-            },
-          ];
+        ? splitStatus({
+            id: `run:observed:${observedRun.turnId}`,
+            author: providerAuthor(statusProvider),
+            label: `${statusModel} · ${runStatusLabel(v, observedRun.turnId)} · background`,
+            startedAt: observedRun.startedAt,
+          })
+        : splitStatus({
+            id: `agent:${this.agent}`,
+            author: providerAuthor(this.agent),
+            label: `${statusModel} · idle`,
+          });
     const busy = active !== undefined || observedRuns.length > 0;
     // plan 互补显示（design §5.9）：同一时刻只出现在一个地方——进行中归 pin（现在时），
     // 盖棺归 transcript（过去时）。pin 显示期间 transcript 不渲染该 plan 卡（避免同屏两份、

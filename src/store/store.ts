@@ -63,10 +63,12 @@ export interface SessionForkOrigin {
 
 export interface SessionMeta {
   batonSessionId: string;
-  /** 用户显式名称；自动生成的旧版 `chat @ cwd` 仅作兼容占位，不覆盖 preview。 */
+  /** Session 名称：可由用户显式指定；fork 未命名时由第一条 queue 补齐。 */
   title?: string;
   /** 第一条真实用户输入的紧凑预览，只写一次；供 resume/list/@ 发现会话。 */
   preview?: string;
+  /** 会话名称之外的补充说明；fork session 用它快照来源会话。 */
+  description?: string;
   cwd: string;
   createdAt: string;
   updatedAt?: string;
@@ -115,7 +117,11 @@ function explicitSessionTitle(meta: SessionMeta): string | undefined {
 }
 
 export function sessionDisplayTitle(meta: SessionMeta): string {
-  return explicitSessionTitle(meta) ?? meta.preview?.trim() ?? `chat @ ${meta.cwd}`;
+  const explicitTitle = explicitSessionTitle(meta);
+  if (meta.forkedFrom) {
+    return explicitTitle ?? meta.description?.trim() ?? `fork: chat @ ${meta.cwd}`;
+  }
+  return explicitTitle ?? meta.preview?.trim() ?? `chat @ ${meta.cwd}`;
 }
 
 function previewFromSessionLog(dir: string): string | undefined {
@@ -288,11 +294,11 @@ export class SessionStore {
       };
     }
     const now = new Date().toISOString();
-    const sourceTitle = explicitSessionTitle(source.meta);
+    const sourceQuestion = source.meta.preview?.trim() ?? sessionDisplayTitle(source.meta);
     const meta: SessionMeta = {
       batonSessionId: id,
-      title: opts.title ?? (sourceTitle ? `${sourceTitle} (fork)` : undefined),
-      preview: source.meta.preview,
+      title: opts.title,
+      description: `fork: ${sourceQuestion}`,
       cwd,
       createdAt: now,
       updatedAt: now,
@@ -516,6 +522,12 @@ export class SessionHandle {
     if (this.meta.preview?.trim()) return;
     const preview = sessionPreview(text);
     if (preview) this.updateMeta({ preview });
+  }
+
+  setTitleIfEmpty(text: string): void {
+    if (this.meta.title?.trim()) return;
+    const title = sessionPreview(text);
+    if (title) this.updateMeta({ title });
   }
 
   setProviderSession(key: string, ps: ProviderSessionMeta): void {

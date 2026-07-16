@@ -54,19 +54,25 @@ describe("sessionPickerOptions", () => {
     const fork: SessionMeta = {
       ...sessions[1]!,
       batonSessionId: "bs_fork",
+      title: "Inspect provider logs",
+      description: "fork: Implement resume titles",
       updatedAt: "2026-07-04T00:00:00Z",
       forkedFrom: { batonSessionId: "bs_titled", throughSeq: 3 },
     };
-    const names = sessionPickerOptions([fork, ...sessions], {
+    const options = sessionPickerOptions([fork, ...sessions], {
       mode: "tree",
       currentSessionId: "bs_fork",
-    }).map((o) => o.name);
+    });
+    const names = options.map((o) => o.name);
     // fork（07-04）把 bs_titled 整棵树浮顶；fork 缩进挂在源下并保留 ● 标记
     expect(names).toEqual([
       "Implement resume titles",
       "└ ● Inspect provider logs",
       "Inspect provider logs",
     ]);
+    expect(options[1]!.description).toBe(
+      "fork: Implement resume titles · bs_fork · /other · 2026-07-04T00:00:00Z · [-]",
+    );
   });
 
   test("list mode keeps incoming order untouched", () => {

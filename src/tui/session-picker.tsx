@@ -43,7 +43,7 @@ export function sessionPickerOptions(
     opts.mode === "tree" ? sessionTreeRows(sessions) : sessions.map((meta) => ({ meta, depth: 0 }));
   return rows.map(({ meta, depth }) => ({
     name: `${treeRowPrefix(depth)}${meta.batonSessionId === opts.currentSessionId ? "● " : ""}${sessionDisplayTitle(meta)}`,
-    description: `${meta.batonSessionId} · ${meta.cwd} · ${meta.updatedAt ?? meta.createdAt} · [${
+    description: `${meta.description ? `${meta.description} · ` : ""}${meta.batonSessionId} · ${meta.cwd} · ${meta.updatedAt ?? meta.createdAt} · [${
       Object.keys(meta.providerSessions).join(",") || "-"
     }]`,
     value: meta.batonSessionId,

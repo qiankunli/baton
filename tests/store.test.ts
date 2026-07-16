@@ -412,7 +412,9 @@ describe("forkSession", () => {
     const child = store.forkSession(source.id);
     expect(child.id).not.toBe(source.id);
     expect(child.meta.cwd).toBe("/tmp/proj");
-    expect(child.meta.title).toBe("demo (fork)");
+    expect(child.meta.title).toBeUndefined();
+    expect(child.meta.description).toBe("fork: do the thing");
+    expect(sessionDisplayTitle(child.meta)).toBe("fork: do the thing");
     expect(child.meta.forkedFrom).toEqual({
       batonSessionId: source.id,
       throughSeq: sourceEvents.at(-1)!.seq,
@@ -432,6 +434,18 @@ describe("forkSession", () => {
     expect(next.seq).toBe(sourceEvents.at(-1)!.seq + 1);
     // 源不受影响
     expect(source.readEvents()).toHaveLength(sourceEvents.length);
+  });
+
+  test("keeps an explicit fork title distinct from the source-question preview", () => {
+    const source = store.createSession({ cwd: "/tmp/proj" });
+    source.setPreviewIfEmpty("Investigate the original issue");
+
+    const child = store.forkSession(source.id, { title: "Try the cache approach" });
+    child.setTitleIfEmpty("This first queue must not replace the explicit name");
+
+    expect(child.meta.title).toBe("Try the cache approach");
+    expect(child.meta.description).toBe("fork: Investigate the original issue");
+    expect(sessionDisplayTitle(child.meta)).toBe("Try the cache approach");
   });
 
   test("providerSessions keep only provider config (child must not resume source native sessions)", () => {
