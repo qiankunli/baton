@@ -18,15 +18,26 @@ import {
 } from "../adapters/types.ts";
 import { buildProviderCatchUpContext } from "../context/mention.ts";
 import { newId } from "../events/ids.ts";
-import type { AnyEventEnvelope, AnyNewEvent, PromptBlock, StopReason } from "../events/types.ts";
+import {
+  isRequestEventKind,
+  type AnyEventEnvelope,
+  type AnyNewEvent,
+  type PromptBlock,
+  type StopReason,
+} from "../events/types.ts";
 import type { SessionHandle } from "../store/store.ts";
 
 interface ProviderSlot {
   adapter: AgentAdapter;
   ref?: ProviderSessionRef;
   starting?: Promise<void>;
-  /** 冷启动由哪个 driven turn 触发；open-time request 用它归属，不依赖 adapter 首个 await 时序。 */
-  startingTurnId?: string;
+  /**
+   * provider **setup 阶段**（slot 创建 → open 完成）由哪个 driven turn 触发。
+   * setup 是 turn 生命周期之外的活动窗口：adapter 可能阻塞征询用户（hook trust）、
+   * 拉模型目录、失败自清资源；其间发出的 request 事件天然无 turnId，一律用本字段
+   * 归属回触发冷启动的 turn（onAdapterEvent 唯一入口补齐），不依赖 adapter 首个 await 时序。
+   */
+  setupTurnId?: string;
   freshNative: boolean;
 }
 
@@ -473,31 +484,13 @@ export class BatonSessionRuntime {
       }
 
       const turnId = newId("t");
-      let release!: () => void;
-      const released = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      record = {
+      const admitted = this.admitDrivenTurn(slot, {
         turnId,
-        role: "driven",
-        slot,
-        provider: slot.adapter.provider,
-        status: "active",
-        startedAt: Date.now(),
-        steers: [],
-        release,
-      };
-      this.turns.set(turnId, record);
-      this.activeDrivenTurnId = turnId;
-      this.onAdapterEvent(slot, {
-        kind: "state_update",
-        provider: slot.adapter.provider,
         providerSessionId: this.nativeSessionId(slot),
-        turnId,
-        payload: { state: "running" },
       });
+      record = admitted.record;
       await slot.adapter.compactContext(slot.ref, turnId);
-      await released;
+      await admitted.released;
     } catch (error) {
       if (record && record.status !== "finalized") {
         this.synthesizeTerminal(record, {
@@ -593,6 +586,53 @@ export class BatonSessionRuntime {
     }
   }
 
+  /**
+   * driven turn 开界的唯一入口（kernel §3 admit）：入台账、置为当前 driven turn、
+   * 落 user_message + state_update(running)。**control turn**（/compact 这类无用户
+   * 输入、占用 turn 形状的控制操作）不传 input，跳过 user_message——两类 driven turn
+   * 的开界序列只活在这里，不允许旁路再手搭一份。
+   */
+  private admitDrivenTurn(
+    slot: ProviderSlot,
+    opts: { turnId: string; input?: InputRecord; providerSessionId?: string },
+  ): { record: TurnRecord; released: Promise<void> } {
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const providerKey = slot.adapter.provider;
+    const record: TurnRecord = {
+      turnId: opts.turnId,
+      role: "driven",
+      slot,
+      provider: providerKey,
+      status: "active",
+      startedAt: Date.now(),
+      turn: opts.input,
+      steers: [],
+      release,
+    };
+    this.turns.set(opts.turnId, record);
+    this.activeDrivenTurnId = opts.turnId;
+    if (opts.input) {
+      this.onAdapterEvent(slot, {
+        kind: "user_message",
+        provider: providerKey,
+        providerSessionId: opts.providerSessionId,
+        turnId: opts.turnId,
+        payload: { messageId: opts.input.messageId, content: opts.input.blocks },
+      });
+    }
+    this.onAdapterEvent(slot, {
+      kind: "state_update",
+      provider: providerKey,
+      providerSessionId: opts.providerSessionId,
+      turnId: opts.turnId,
+      payload: { state: "running" },
+    });
+    return { record, released };
+  }
+
   private async runTurn(turn: InputRecord): Promise<void> {
     this.processingProvider = turn.provider;
     this.processingStartedAt = Date.now();
@@ -603,37 +643,10 @@ export class BatonSessionRuntime {
     // <baton-sync> 注入只进 provider transport（syncContext / prepend），不进正典历史。
     const slot = this.slotFor(turn.provider, turn.turnId);
     const providerKey = slot.adapter.provider;
-    let release!: () => void;
-    const released = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const record: TurnRecord = {
+    const { record, released } = this.admitDrivenTurn(slot, {
       turnId: turn.turnId,
-      role: "driven",
-      slot,
-      provider: providerKey,
-      status: "active",
-      startedAt: Date.now(),
-      turn,
-      steers: [],
-      release,
-    };
-    this.turns.set(turn.turnId, record);
-    this.activeDrivenTurnId = turn.turnId;
-    const knownProviderSessionId = this.options.session.meta.providerSessions[providerKey]?.providerSessionId;
-    this.onAdapterEvent(slot, {
-      kind: "user_message",
-      provider: providerKey,
-      providerSessionId: knownProviderSessionId,
-      turnId: turn.turnId,
-      payload: { messageId: turn.messageId, content: turn.blocks },
-    });
-    this.onAdapterEvent(slot, {
-      kind: "state_update",
-      provider: providerKey,
-      providerSessionId: knownProviderSessionId,
-      turnId: turn.turnId,
-      payload: { state: "running" },
+      input: turn,
+      providerSessionId: this.options.session.meta.providerSessions[providerKey]?.providerSessionId,
     });
     const coldStart = !slot.ref;
     if (coldStart) {
@@ -749,12 +762,14 @@ export class BatonSessionRuntime {
    * 单通道保证，不依赖"是否有活跃 turn"。
    */
   private onAdapterEvent(slot: ProviderSlot, ev: AnyNewEvent): void {
-    // provider 冷启动阶段也可能阻塞询问（当前是 Codex hook trust）。此时 adapter 尚无
-    // ProviderSessionRef，但它仍属于触发冷启动的 driven turn；在唯一事件入口补归属，
-    // 让 requires_action、cancel-cascade 与普通 turn 内 request 走同一条生命周期。
-    if (ev.kind === "hook_trust_request" && !ev.turnId) {
+    // provider setup 阶段（冷启动）也可能阻塞征询用户（当前是 Codex hook trust；将来
+    // 可能是登录确认等 permission / question）。此时 adapter 尚无 ProviderSessionRef，
+    // 但活动仍归属触发冷启动的 driven turn；在唯一事件入口按"是不是 request"统一补归属
+    // ——不按具体 kind 特判，让 requires_action、cancel-cascade 与普通 turn 内 request
+    // 走同一条生命周期，新增 request kind 或新 provider 的 setup 交互都零改动。
+    if (isRequestEventKind(ev.kind) && !ev.turnId) {
       const active = this.activeDriven();
-      const turnId = active?.slot === slot ? active.turnId : slot.startingTurnId;
+      const turnId = active?.slot === slot ? active.turnId : slot.setupTurnId;
       if (turnId) ev = { ...ev, turnId };
     }
     const envelope = this.options.session.append(ev) as AnyEventEnvelope;
@@ -778,14 +793,12 @@ export class BatonSessionRuntime {
         // 终态必带 turnId，由契约测试钉住）。
         if (envelope.turnId) this.finalize(envelope.turnId, p.stopReason);
       }
-    } else if (
-      (envelope.kind === "permission_request" ||
-        envelope.kind === "question_request" ||
-        envelope.kind === "hook_trust_request") &&
-      envelope.turnId
-    ) {
-      // 记 request→turn 归属：requestHandler 随后（同步 await 前）消费，供 cancel-cascade
-      this.requestTurns.set(envelope.payload.requestId, envelope.turnId);
+    } else if (isRequestEventKind(envelope.kind) && envelope.turnId) {
+      // 记 request→turn 归属：requestHandler 随后（同步 await 前）消费，供 cancel-cascade。
+      // 所有 request payload 均带 requestId（Request↔Response 轴的契约）；kind 谓词
+      // 不足以让 TS 收窄判别联合的 payload，此处显式断言该契约字段。
+      const { requestId } = envelope.payload as { requestId: string };
+      this.requestTurns.set(requestId, envelope.turnId);
     }
     // append 已同步广播给投影；普通流式事件不能再走 runtime 通知，否则每个 chunk
     // 都会重建两次完整 view。终态对 runtime 私有台账的变更由 finalize 自己通知。
@@ -908,13 +921,13 @@ export class BatonSessionRuntime {
    * 与事件 sink 在这里就绪——runTurn 依赖这一点在 open() 完成**之前**落 user_message。
    * 启动完成的等待在 ensureProvider。
    */
-  private slotFor(provider: string, startingTurnId?: string): ProviderSlot {
+  private slotFor(provider: string, setupTurnId?: string): ProviderSlot {
     let slot = this.slots.get(provider);
     if (!slot) {
       const adapter = this.options.createAdapter(provider, {
         requestHandler: this.requestHandler,
       });
-      const created: ProviderSlot = { adapter, freshNative: true, startingTurnId };
+      const created: ProviderSlot = { adapter, freshNative: true, setupTurnId };
       slot = created;
       this.slots.set(provider, created);
       created.starting = (async () => {
@@ -945,7 +958,7 @@ export class BatonSessionRuntime {
             ...(effort ? { effort } : {}),
           });
         } finally {
-          created.startingTurnId = undefined;
+          created.setupTurnId = undefined; // setup 阶段结束：此后的无 turnId request 不再归属该 turn
         }
       })();
       // starting 的消费方（ensureProvider）可能晚一拍才 await：先挂空 handler 防

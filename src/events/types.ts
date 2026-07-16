@@ -459,6 +459,19 @@ export type EventPayloadMap = {
 
 export type EventKind = keyof EventPayloadMap;
 
+/**
+ * Request↔Response 交互轴（kernel §6）的 request 事件 kinds：provider 阻塞征询用户、
+ * 等待带 requestId 的 Response。turn 归属、requires_action 派生、setup 阶段补归属等
+ * 生命周期逻辑按"是不是 request"判断，不逐个枚举 kind——新增 kind 只扩这张表。
+ */
+export const REQUEST_EVENT_KINDS = ["permission_request", "question_request", "hook_trust_request"] as const;
+
+export type RequestEventKind = (typeof REQUEST_EVENT_KINDS)[number];
+
+export function isRequestEventKind(kind: EventKind): kind is RequestEventKind {
+  return (REQUEST_EVENT_KINDS as readonly string[]).includes(kind);
+}
+
 /** session.jsonl 每行一条。payload 供渲染/检索/摘要，raw 保真原始 wire 消息。 */
 export interface EventEnvelope<K extends EventKind = EventKind> {
   v: typeof ENVELOPE_VERSION;
