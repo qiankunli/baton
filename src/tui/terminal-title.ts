@@ -8,6 +8,10 @@ export function sanitizeTerminalTitle(title: string): string {
   return title.replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ").replace(/\s+/gu, " ").trim();
 }
 
+export function formatTerminalTabTitle(title: string, forked: boolean): string {
+  return forked ? `fork: ${title}` : title;
+}
+
 /** OSC 1 sets the terminal icon name, which Otty uses as the tab name. */
 export function setTerminalTabTitle(
   title: string,

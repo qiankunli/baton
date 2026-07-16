@@ -1,8 +1,17 @@
 import { describe, expect, test } from "bun:test";
 
-import { sanitizeTerminalTitle, setTerminalTabTitle } from "../src/tui/terminal-title.ts";
+import {
+  formatTerminalTabTitle,
+  sanitizeTerminalTitle,
+  setTerminalTabTitle,
+} from "../src/tui/terminal-title.ts";
 
 describe("terminal tab title", () => {
+  test("prefixes forked session titles", () => {
+    expect(formatTerminalTabTitle("first question", true)).toBe("fork: first question");
+    expect(formatTerminalTabTitle("first question", false)).toBe("first question");
+  });
+
   test("sanitizes control characters from user-controlled titles", () => {
     expect(sanitizeTerminalTitle(" fix\nlogin\x1b]2;owned\x07 ")).toBe("fix login ]2;owned");
   });
