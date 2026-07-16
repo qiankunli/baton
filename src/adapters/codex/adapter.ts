@@ -5,6 +5,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
 import { FileHookTrustStore, type HookTrustStore } from "../../config/hook.ts";
+import type { DiagnosticSink } from "../../diagnostics.ts";
+import { diagnosticError } from "../../diagnostics.ts";
 import { newId } from "../../events/ids.ts";
 import { closedTerminal } from "../normalize.ts";
 import type {
@@ -92,6 +94,8 @@ interface ThreadRuntime {
   approvalSeenItemIds?: Set<string>;
   /** 已提示过的"认不出的 decision"形状键：同一形状每 thread 只吵一次，不每次审批都刷屏。 */
   unmappedDecisionKeys?: Set<string>;
+  /** 未映射 notification 计数：首见与每 100 次写诊断，避免未知高频 delta 刷爆日志。 */
+  unmappedNotificationCounts?: Map<string, number>;
   /** 收到权威 auto-review 回执的 item：避免 declined 终态再触发旧的启发式旁路告警。 */
   autoReviewedItemIds?: Set<string>;
 }
@@ -503,6 +507,7 @@ function stopReasonOf(turnStatus: string): StopReason {
 
 export interface CodexAdapterOptions {
   requestHandler: RequestHandler;
+  diagnostic?: DiagnosticSink;
   /** 缺省由 auto-review 审批；显式 user 时请求进入 Baton TUI。 */
   approvalReviewer?: "user" | "auto_review";
   /** 覆盖二进制，测试用 */
@@ -624,18 +629,46 @@ export class CodexAdapter implements AgentAdapter {
       env: { ...process.env, ...opts.env },
       stdio: ["pipe", "pipe", "pipe"],
     });
-    const peer = new JsonRpcPeer((line) => child.stdin.write(line));
+    const diagnostic = this.options.diagnostic ?? (() => {});
+    const peer = new JsonRpcPeer((line) => child.stdin.write(line), diagnostic);
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => peer.feed(chunk));
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      const message = chunk.trim();
+      if (!message) return;
+      diagnostic({
+        level: "warn",
+        component: "codex.stderr",
+        provider: this.provider,
+        message: "codex app-server wrote to stderr",
+        details: { output: message.slice(0, 4096) },
+      });
+    });
 
     const rt: ThreadRuntime = { child, peer, threadId: "", approvalRoute: null, sink };
     // transport 终结 = 该 session 所有在途工作的终结点：pending request 全部 reject，
     // 活跃 turn 必须在此合成终态，否则 runtime 永远等不到 idle（design §4.1 终态保证）。
     child.on("close", (code) => {
+      if (code !== 0) {
+        diagnostic({
+          level: "error",
+          component: "codex.process",
+          provider: this.provider,
+          message: `codex app-server exited (code ${code})`,
+        });
+      }
       peer.close(`codex app-server exited (${code})`);
       this.failTurn(rt, rt.activeTurn, `codex app-server exited (code ${code})`);
     });
     child.on("error", (error) => {
+      diagnostic({
+        level: "error",
+        component: "codex.process",
+        provider: this.provider,
+        message: "codex app-server spawn error",
+        error: diagnosticError(error),
+      });
       peer.close(`codex app-server spawn error: ${error.message}`);
       this.failTurn(rt, rt.activeTurn, `codex app-server error: ${error.message}`);
     });
@@ -1344,7 +1377,22 @@ export class CodexAdapter implements AgentAdapter {
         break;
       }
       default:
-        break; // 其余通知 M1 不消费
+        {
+          const counts = (rt.unmappedNotificationCounts ??= new Map<string, number>());
+          const count = (counts.get(method) ?? 0) + 1;
+          counts.set(method, count);
+          if (count === 1 || count % 100 === 0) {
+            this.options.diagnostic?.({
+              level: "warn",
+              component: "codex.notification",
+              provider: this.provider,
+              turnId: rt.activeTurn?.turnId,
+              message: `unmapped codex notification: ${method}`,
+              details: { method, count },
+            });
+          }
+          break;
+        }
     }
   }
 

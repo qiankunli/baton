@@ -7,12 +7,14 @@ import { CodexAdapter } from "../adapters/codex/adapter.ts";
 import type { AgentAdapter, RequestHandler } from "../adapters/types.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { FileHookTrustStore } from "../config/hook.ts";
+import type { DiagnosticSink } from "../diagnostics.ts";
 import { PROVIDER_IDENTITIES, PROVIDERS, parseProvider, type ProviderName } from "./ids.ts";
 
 export { PROVIDERS, parseProvider, type ProviderName };
 
 export interface ProviderAdapterOptions {
   requestHandler: RequestHandler;
+  diagnostic?: DiagnosticSink;
   config: BatonConfig;
   rootDir?: string;
 }
@@ -45,9 +47,10 @@ export const PROVIDER_REGISTRY = [
     sessionKey: "codex",
     shortName: "codex",
     color: "#73daca", // 青
-    create: ({ requestHandler, config, rootDir }) =>
+    create: ({ requestHandler, diagnostic, config, rootDir }) =>
       new CodexAdapter({
         requestHandler,
+        diagnostic,
         command: config.codexCommand,
         approvalReviewer: config.codexApprovalReviewer,
         hookTrustStore: new FileHookTrustStore(rootDir),
@@ -59,8 +62,8 @@ export const PROVIDER_REGISTRY = [
     sessionKey: "claude-code",
     shortName: "claude",
     color: "#ff9e64", // 橙
-    create: ({ requestHandler, config }) =>
-      new ClaudeAdapter({ requestHandler, executablePath: config.claudeExecutable }),
+    create: ({ requestHandler, diagnostic, config }) =>
+      new ClaudeAdapter({ requestHandler, diagnostic, executablePath: config.claudeExecutable }),
   },
 ] as const satisfies readonly ProviderDefinition<ProviderName>[];
 

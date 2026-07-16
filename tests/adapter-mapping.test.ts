@@ -14,6 +14,7 @@ import {
   todoWritePlan,
 } from "../src/adapters/claude/adapter.ts";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
+import type { DiagnosticEntry } from "../src/diagnostics.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
 import type { RequestHandler } from "../src/adapters/types.ts";
 
@@ -54,6 +55,26 @@ function codexHarness(): { events: AnyNewEvent[]; notify: (method: string, param
     );
   return { events, notify };
 }
+
+describe("codex: unmapped notifications", () => {
+  test("writes a throttled diagnostic instead of entering the session timeline", () => {
+    const diagnostics: DiagnosticEntry[] = [];
+    const adapter = new CodexAdapter({ requestHandler, diagnostic: (entry) => diagnostics.push(entry) });
+    const rt = { threadId: "th1", activeTurn: { turnId: "t1", finalized: false } };
+    const notify = () =>
+      (adapter as unknown as { handleNotification: (r: unknown, m: string, p: unknown) => void }).handleNotification(
+        rt,
+        "future/event",
+        { threadId: "th1" },
+      );
+
+    notify();
+    notify();
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.message).toContain("future/event");
+    expect(diagnostics[0]!.details?.count).toBe(1);
+  });
+});
 
 describe("claude: TodoWrite → plan_update", () => {
   test("emits plan_update with mapped entries, no tool card", () => {

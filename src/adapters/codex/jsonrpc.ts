@@ -1,4 +1,7 @@
 // 行分隔 JSON-RPC 2.0 peer（codex app-server 走 stdio）。
+
+import type { DiagnosticSink } from "../../diagnostics.ts";
+import { diagnosticError } from "../../diagnostics.ts";
 // 三类入站消息：响应（id 无 method）、服务端请求（id + method，需要回包）、通知（仅 method）。
 
 export interface JsonRpcRequestMessage {
@@ -31,7 +34,10 @@ export class JsonRpcPeer {
   private serverRequestHandler: ServerRequestHandler | undefined;
   private closed = false;
 
-  constructor(private write: (line: string) => void) {}
+  constructor(
+    private write: (line: string) => void,
+    private diagnostic: DiagnosticSink = () => {},
+  ) {}
 
   onNotification(handler: NotificationHandler): void {
     this.notificationHandler = handler;
@@ -101,13 +107,32 @@ export class JsonRpcPeer {
     let msg: JsonRpcRequestMessage & JsonRpcResponseMessage;
     try {
       msg = JSON.parse(line);
-    } catch {
-      return; // 非 JSON 行（stderr 混入等）直接忽略
+    } catch (error) {
+      this.diagnostic({
+        level: "warn",
+        component: "codex.jsonrpc",
+        provider: "codex",
+        message: "ignored non-JSON app-server output",
+        error: diagnosticError(error),
+        details: { line: line.slice(0, 4096) },
+      });
+      return;
     }
     if (msg.method !== undefined && msg.id !== undefined) {
       void this.handleServerRequest(msg);
     } else if (msg.method !== undefined) {
-      this.notificationHandler?.(msg.method, msg.params);
+      try {
+        this.notificationHandler?.(msg.method, msg.params);
+      } catch (error) {
+        this.diagnostic({
+          level: "error",
+          component: "codex.notification",
+          provider: "codex",
+          message: `notification handler failed: ${msg.method}`,
+          error: diagnosticError(error),
+          details: { method: msg.method },
+        });
+      }
     } else if (msg.id !== undefined) {
       const p = this.pending.get(msg.id);
       if (!p) return;
@@ -123,6 +148,14 @@ export class JsonRpcPeer {
       const result = await this.serverRequestHandler(msg.method, msg.params);
       this.write(`${JSON.stringify({ jsonrpc: "2.0", id: msg.id, result })}\n`);
     } catch (err) {
+      this.diagnostic({
+        level: "error",
+        component: "codex.server-request",
+        provider: "codex",
+        message: `server request handler failed: ${msg.method}`,
+        error: diagnosticError(err),
+        details: { method: msg.method },
+      });
       this.write(
         `${JSON.stringify({
           jsonrpc: "2.0",

@@ -187,6 +187,34 @@ describe("event append / read", () => {
     expect(reopened.readEvents()).toHaveLength(3);
   });
 
+  test("session diagnostics are paired with session.jsonl without entering its event stream", () => {
+    const h = store.createSession({ cwd: "/tmp/proj" });
+
+    const event = h.append({
+      kind: "_baton_error_update",
+      provider: "codex",
+      turnId: "t_1",
+      payload: { message: "provider failed" },
+    });
+    h.diagnostic({
+      level: "error",
+      component: "codex.jsonrpc",
+      provider: "codex",
+      turnId: "t_1",
+      message: "mapping failed",
+      error: { name: "Error", message: "boom", stack: "stack" },
+    });
+
+    expect(h.readEvents()).toEqual([event]);
+
+    const log = JSON.parse(readFileSync(join(h.dir, "session.log"), "utf8").trim());
+    expect(log.batonSessionId).toBe(h.id);
+    expect(log.component).toBe("codex.jsonrpc");
+    expect(log.error.message).toBe("boom");
+
+    expect(readFileSync(join(h.dir, "session.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
+  });
+
   test("raw is preserved verbatim (细节保真)", () => {
     const h = store.createSession({ cwd: "/tmp/proj" });
     const raw = { method: "item/agentMessage/delta", params: { weird: [1, { deep: true }] } };

@@ -1,4 +1,4 @@
-// 会话存储：~/.baton/projects/<cwd 转义>/<id>/session.jsonl + meta.json。
+// 会话存储：~/.baton/projects/<cwd 转义>/<id>/session.jsonl + session.log + meta.json。
 // 与 Claude Code 一样按项目目录分组，方便按项目浏览与清理；项目目录名不可逆，
 // 真相源仍是 meta.json 里的 cwd。session.jsonl 承载 BatonSession 的统一逻辑历史；
 // ProviderSession 元数据只用于优先恢复 provider 私有状态，缺失时仍可从 BatonSession 重建上下文。
@@ -22,6 +22,8 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import type { DiagnosticEntry } from "../diagnostics.ts";
+import { diagnosticError } from "../diagnostics.ts";
 import { newId } from "../events/ids.ts";
 import {
   ENVELOPE_VERSION,
@@ -341,6 +343,28 @@ export class SessionHandle {
     return join(this.dir, "session.jsonl");
   }
 
+  private logPath(): string {
+    return join(this.dir, "session.log");
+  }
+
+  /**
+   * 本 run 的旁路诊断日志。日志失败必须静默：它服务排障，不能反向影响正典会话。
+   */
+  diagnostic(entry: DiagnosticEntry): void {
+    try {
+      appendFileSync(
+        this.logPath(),
+        `${JSON.stringify({
+          ts: new Date().toISOString(),
+          batonSessionId: this.id,
+          ...entry,
+        })}\n`,
+      );
+    } catch {
+      // session 目录本身不可写时只能放弃；调用方仍按自己的错误语义继续或失败。
+    }
+  }
+
   private lockPath(): string {
     return join(this.dir, "lock");
   }
@@ -427,12 +451,30 @@ export class SessionHandle {
       batonSessionId: this.id,
       ...ev,
     };
-    appendFileSync(this.jsonlPath(), `${JSON.stringify(envelope)}\n`);
+    const line = `${JSON.stringify(envelope)}\n`;
+    try {
+      appendFileSync(this.jsonlPath(), line);
+    } catch (error) {
+      this.diagnostic({
+        level: "error",
+        component: "store.session",
+        message: "failed to append session.jsonl",
+        error: diagnosticError(error),
+      });
+      throw error;
+    }
     for (const listener of this.listeners) {
       try {
         listener(envelope as AnyEventEnvelope);
-      } catch {
+      } catch (error) {
         // 投影侧异常不能污染写入路径：事件已落盘，订阅者自己负责健壮性
+        this.diagnostic({
+          level: "error",
+          component: "store.listener",
+          message: "session event listener threw",
+          error: diagnosticError(error),
+          details: { seq: envelope.seq, kind: envelope.kind },
+        });
       }
     }
     return envelope;

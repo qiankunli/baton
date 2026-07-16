@@ -548,7 +548,7 @@ interface Interactive {
 - provider error 必须同时产生结构化 error event；若结束工作，再产生 `idle` + 对应 stopReason；
 - retrying error 不得错误地把 session 切 idle；
 - mapped event 的 wire 原文继续保存在 `raw`；
-- 完全未知的 notification 不进入主 session timeline，进入有界 adapter diagnostic log，并记录 method/type 与计数；不能无声 `default: break`；
+- 完全未知的 notification 不进入主 session timeline，进入 session 目录下与 `session.jsonl` 配对的 `session.log`，并记录 method/type 与计数；不能无声 `default: break`；
 - adapter mapping contract test 固定当前支持的 request / notification 清单，provider schema 升级时显式看到新增未映射项。
 
 ### 4.10 Store 与 reduce 不变量

@@ -17,6 +17,8 @@ import {
   type SteerReceipt,
 } from "../adapters/types.ts";
 import { buildProviderCatchUpContext } from "../context/mention.ts";
+import type { DiagnosticSink } from "../diagnostics.ts";
+import { diagnosticError } from "../diagnostics.ts";
 import { newId } from "../events/ids.ts";
 import {
   isRequestEventKind,
@@ -163,6 +165,7 @@ export type SteerOutcome =
 /** runtime 注入给 adapter 构造器的交互回调（见注入点 slotFor）：统一的 Request→Response 通道 */
 export interface InteractionHandlers {
   requestHandler: RequestHandler;
+  diagnostic: DiagnosticSink;
 }
 
 export interface BatonSessionRuntimeOptions {
@@ -492,6 +495,14 @@ export class BatonSessionRuntime {
       await slot.adapter.compactContext(slot.ref, turnId);
       await admitted.released;
     } catch (error) {
+      this.options.session.diagnostic({
+        level: "error",
+        component: "runtime.compact",
+        provider,
+        turnId: record?.turnId,
+        message: "provider context compaction failed",
+        error: diagnosticError(error),
+      });
       if (record && record.status !== "finalized") {
         this.synthesizeTerminal(record, {
           message: error instanceof Error ? error.message : String(error),
@@ -549,6 +560,14 @@ export class BatonSessionRuntime {
     try {
       await active.slot.adapter.cancel(active.slot.ref);
     } catch (error) {
+      this.options.session.diagnostic({
+        level: "error",
+        component: "runtime.cancel",
+        provider: active.provider,
+        turnId: active.turnId,
+        message: "provider cancel request failed",
+        error: diagnosticError(error),
+      });
       // cancel 请求本身失败（transport 已断等）：不再等 provider，直接合成终态
       this.synthesizeTerminal(active, {
         message: `cancel request failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -560,7 +579,19 @@ export class BatonSessionRuntime {
   async close(): Promise<void> {
     const closing: Promise<void>[] = [];
     for (const slot of this.slots.values()) {
-      if (slot.ref) closing.push(slot.adapter.close(slot.ref).catch(() => {}));
+      if (slot.ref) {
+        closing.push(
+          slot.adapter.close(slot.ref).catch((error) => {
+            this.options.session.diagnostic({
+              level: "warn",
+              component: "runtime.close",
+              provider: slot.adapter.provider,
+              message: "provider close failed",
+              error: diagnosticError(error),
+            });
+          }),
+        );
+      }
     }
     await Promise.all(closing);
   }
@@ -741,6 +772,14 @@ export class BatonSessionRuntime {
       // 迟到的启动错误不再作为本 turn 的失败上抛（事件历史已闭合）
       if (record.status === "finalized") return;
       const detail = error instanceof Error ? error.message : String(error);
+      this.options.session.diagnostic({
+        level: "error",
+        component: "runtime.turn",
+        provider: turn.provider,
+        turnId: turn.turnId,
+        message: "provider startup or prompt admission failed",
+        error: diagnosticError(error),
+      });
       // 启动/admission 失败：合成结构化终态（error + idle + summary）——user_message 已
       // 落盘，必须有结局，不允许"输入消失且无历史"的半状态；随后仍上抛给 submit 调用方。
       this.synthesizeTerminal(record, { message: detail, stopReason: "error" });
@@ -926,6 +965,7 @@ export class BatonSessionRuntime {
     if (!slot) {
       const adapter = this.options.createAdapter(provider, {
         requestHandler: this.requestHandler,
+        diagnostic: (entry) => this.options.session.diagnostic(entry),
       });
       const created: ProviderSlot = { adapter, freshNative: true, setupTurnId };
       slot = created;
