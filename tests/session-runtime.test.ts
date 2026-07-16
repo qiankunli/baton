@@ -498,8 +498,7 @@ describe("interaction resolver registry", () => {
     ).toMatchObject({ requestId: "qr_1", outcome: "answered", answers: { q1: ["prod"] } });
     // 事件流收支平衡：pending 投影最终为空
     const state = session.loadState();
-    expect(state.pendingPermissions.size).toBe(0);
-    expect(state.pendingQuestions.size).toBe(0);
+    expect(state.pendingRequests.size).toBe(0);
   });
 
   test("a provider-startup hook trust request belongs to the preparing turn", async () => {
@@ -564,7 +563,7 @@ describe("interaction resolver registry", () => {
     expect(request?.turnId).toBeDefined();
     expect(runtime.respond({ kind: "hook_trust", requestId: "htr_start", decision: "trust" })).toBe(true);
     await outcome;
-    expect(session.loadState().pendingHookTrusts.size).toBe(0);
+    expect(session.loadState().pendingRequests.size).toBe(0);
   });
 });
 

@@ -119,12 +119,12 @@ describe("state / permission / plan / usage", () => {
       options: [{ optionId: "allow", name: "Allow once", polarity: "allow" as const, lifetime: "once" as const }],
     };
     const pending = reduceEvents([ev("permission_request", req)]);
-    expect(pending.pendingPermissions.has("ar1")).toBe(true);
+    expect(pending.pendingRequests.get("ar1")?.kind).toBe("permission");
     const resolved = reduceEvents([
       ev("permission_request", req),
       ev("permission_resolved", { requestId: "ar1", outcome: "selected", optionId: "allow" }),
     ]);
-    expect(resolved.pendingPermissions.size).toBe(0);
+    expect(resolved.pendingRequests.size).toBe(0);
   });
 
   test("question request pends until resolved", () => {
@@ -134,12 +134,12 @@ describe("state / permission / plan / usage", () => {
       questions: [{ questionId: "q1", header: "Mode", question: "Which mode?" }],
     };
     const pending = reduceEvents([ev("question_request", request)]);
-    expect(pending.pendingQuestions.has("qr1")).toBe(true);
+    expect(pending.pendingRequests.get("qr1")?.kind).toBe("question");
     const resolved = reduceEvents([
       ev("question_request", request),
       ev("question_resolved", { requestId: "qr1", outcome: "answered", answers: { q1: ["fast"] } }),
     ]);
-    expect(resolved.pendingQuestions.size).toBe(0);
+    expect(resolved.pendingRequests.size).toBe(0);
   });
 
   test("hook trust request pends until resolved", () => {
@@ -158,13 +158,13 @@ describe("state / permission / plan / usage", () => {
       ],
     };
     const pending = reduceEvents([ev("hook_trust_request", request)]);
-    expect(pending.pendingHookTrusts.has("htr1")).toBe(true);
+    expect(pending.pendingRequests.get("htr1")?.kind).toBe("hook_trust");
     expect(pending.runState).toBe("requires_action");
     const resolved = reduceEvents([
       ev("hook_trust_request", request),
       ev("hook_trust_resolved", { requestId: "htr1", outcome: "trusted" }),
     ]);
-    expect(resolved.pendingHookTrusts.size).toBe(0);
+    expect(resolved.pendingRequests.size).toBe(0);
   });
 
   test("plan update replaces entries per planId", () => {

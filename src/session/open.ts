@@ -88,33 +88,19 @@ function recoverInterruptedState(session: SessionHandle): boolean {
   }
 
   const interruptedTurns = [...state.activeTurns.keys()];
-  if (
-    interruptedTurns.length === 0 &&
-    unsummarized.length === 0 &&
-    state.pendingPermissions.size === 0 &&
-    state.pendingQuestions.size === 0 &&
-    state.pendingHookTrusts.size === 0
-  ) {
+  if (interruptedTurns.length === 0 && unsummarized.length === 0 && state.pendingRequests.size === 0) {
     return false;
   }
 
-  for (const requestId of state.pendingPermissions.keys()) {
+  // 崩溃残留的待决 request 一律取消收口：注册表统一遍历，新增 request kind 只需扩这张表
+  const resolvedKind = {
+    permission: "permission_resolved",
+    question: "question_resolved",
+    hook_trust: "hook_trust_resolved",
+  } as const;
+  for (const [requestId, pending] of state.pendingRequests) {
     session.append({
-      kind: "permission_resolved",
-      provider: "baton",
-      payload: { requestId, outcome: "cancelled" },
-    });
-  }
-  for (const requestId of state.pendingQuestions.keys()) {
-    session.append({
-      kind: "question_resolved",
-      provider: "baton",
-      payload: { requestId, outcome: "cancelled" },
-    });
-  }
-  for (const requestId of state.pendingHookTrusts.keys()) {
-    session.append({
-      kind: "hook_trust_resolved",
+      kind: resolvedKind[pending.kind],
       provider: "baton",
       payload: { requestId, outcome: "cancelled" },
     });

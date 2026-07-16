@@ -44,7 +44,13 @@ import {
 } from "../providers/registry.ts";
 import { openBatonSession } from "../session/open.ts";
 import { BatonSessionRuntime } from "../session/runtime.ts";
-import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from "../store/reduce.ts";
+import {
+  applyEvent,
+  firstPendingOfKind,
+  isTurnRunning,
+  type SessionState,
+  type ToolCallState,
+} from "../store/reduce.ts";
 import { sessionDisplayTitle, type SessionHandle, type SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
 import { sessionPickerOptions, type SessionPickerMode } from "./session-picker.tsx";
@@ -442,9 +448,11 @@ export class BatonChatProtocol implements ChatProtocol {
    * reduced pending 删除后视图自然更新——UI 只消费事件流投影，不维护第二份状态。
    */
   resolveApproval(id: string, optionId: string): void {
-    const response = this.state.pendingHookTrusts.has(id)
-      ? ({ kind: "hook_trust", requestId: id, decision: optionId === "trust" ? "trust" : "skip" } as const)
-      : ({ kind: "permission", requestId: id, optionId } as const);
+    // response kind 直接读注册表记录（hook trust 复用审批卡是展示层取舍，语义 kind 不因此含糊）
+    const response =
+      this.state.pendingRequests.get(id)?.kind === "hook_trust"
+        ? ({ kind: "hook_trust", requestId: id, decision: optionId === "trust" ? "trust" : "skip" } as const)
+        : ({ kind: "permission", requestId: id, optionId } as const);
     if (!this.runtime.respond(response)) {
       // 无 resolver：请求已被应答，或是崩溃残留（新进程没有等待中的 adapter）
       this.status = { text: "approval request is no longer pending", tone: "info" };
@@ -667,11 +675,11 @@ export class BatonChatProtocol implements ChatProtocol {
   private buildView(): ChatViewState {
     const v = this.state;
     const active = this.runtime.activeProvider;
-    // pending 交互从事件流投影（Map 保插入序，取最早的一个）；id 即 requestId，
+    // pending 交互从事件流投影（注册表保插入序，各 kind 取最早的一个）；id 即 requestId，
     // 应答经 runtime 的 resolver 注册表回到 adapter 的 await 点
-    const permission = v.pendingPermissions.values().next().value;
-    const hookTrust = v.pendingHookTrusts.values().next().value;
-    const question = v.pendingQuestions.values().next().value;
+    const permission = firstPendingOfKind(v, "permission");
+    const hookTrust = firstPendingOfKind(v, "hook_trust");
+    const question = firstPendingOfKind(v, "question");
     const observedRuns = [...v.activeTurns.values()].filter((turn) => turn.origin === "provider");
     const observedRun = observedRuns.at(-1);
     // baton 当前只呈现一条 Agent Status：driven turn 优先，其次是 provider 自发的

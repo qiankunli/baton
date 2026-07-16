@@ -57,6 +57,35 @@ export interface PlanState extends PlanUpdate {
 }
 
 /**
+ * 待决 request 的统一注册表条目：kind 判别 + 原始 request + turn 归属。
+ * 三类 request 的**语义契约各自独立**（design §3.1 边界 1，不合成万能字段），
+ * 但"待决集合、requires_action 派生、崩溃取消"对所有 kind 同构——同构管道收敛
+ * 到这一个注册表，新增 kind 只加一个 union 成员 + reducer 两个 case，
+ * 不再在 deriveRunState / crash recovery / respond 路由 / 投影五处并行加分支。
+ */
+export type PendingRequestState =
+  | { kind: "permission"; turnId?: string; request: PermissionRequest }
+  | { kind: "question"; turnId?: string; request: QuestionRequest }
+  | { kind: "hook_trust"; turnId?: string; request: HookTrustRequest };
+
+interface PendingRequestOfKind {
+  permission: PermissionRequest;
+  question: QuestionRequest;
+  hook_trust: HookTrustRequest;
+}
+
+/** 注册表中最早的指定 kind request（Map 保插入序）；投影层据此为各类卡片取数 */
+export function firstPendingOfKind<K extends PendingRequestState["kind"]>(
+  state: SessionState,
+  kind: K,
+): PendingRequestOfKind[K] | undefined {
+  for (const pending of state.pendingRequests.values()) {
+    if (pending.kind === kind) return pending.request as PendingRequestOfKind[K];
+  }
+  return undefined;
+}
+
+/**
  * provider-scoped 会话状态的统一槽位，键 = 事件信封 `provider`（即 registry 的
  * sessionKey / wire key，不是 canonical id——两套词汇混用曾让投影查空）。
  * 约定：新增"每个 provider 各有一份"的状态时，在这里加字段，不要在 SessionState
@@ -112,10 +141,8 @@ export interface SessionState {
   messages: Map<string, MessageState>;
   toolCalls: Map<string, ToolCallState>;
   plans: Map<string, PlanState>;
-  /** 附带 envelope turnId（payload 本身不含）：request → 所属 turn 的 requires_action 派生需要归属关系 */
-  pendingPermissions: Map<string, PermissionRequest & { turnId?: string }>;
-  pendingQuestions: Map<string, QuestionRequest & { turnId?: string }>;
-  pendingHookTrusts: Map<string, HookTrustRequest & { turnId?: string }>;
+  /** 待决 request 统一注册表，键 = requestId；turnId 取自 envelope（payload 本身不含） */
+  pendingRequests: Map<string, PendingRequestState>;
   /**
    * auto-review 回执，按回执自身的 `reviewId` 归档（kernel.md §6）。与 pendingPermissions
    * 正交：这是“已被 reviewer 决策”的留痕，不是待决，不派生 requires_action。每条回执是
@@ -149,9 +176,7 @@ export function emptySessionState(): SessionState {
     messages: new Map(),
     toolCalls: new Map(),
     plans: new Map(),
-    pendingPermissions: new Map(),
-    pendingQuestions: new Map(),
-    pendingHookTrusts: new Map(),
+    pendingRequests: new Map(),
     approvalReviews: new Map(),
     usage: {
       inputTokens: 0,
@@ -248,10 +273,24 @@ function applyToolCallUpdate(state: SessionState, ev: EventEnvelope<"tool_call_u
 
 /** 该 turn 是否还有未决的 blocking request——per-turn requires_action 的派生依据 */
 function hasPendingBlocking(state: SessionState, turnId: string): boolean {
-  for (const req of state.pendingPermissions.values()) if (req.turnId === turnId) return true;
-  for (const req of state.pendingQuestions.values()) if (req.turnId === turnId) return true;
-  for (const req of state.pendingHookTrusts.values()) if (req.turnId === turnId) return true;
+  for (const req of state.pendingRequests.values()) if (req.turnId === turnId) return true;
   return false;
+}
+
+/** *_request 事件入注册表 + 挂起所属 turn：所有 request kind 的同构半边收敛在此 */
+function admitPendingRequest(
+  state: SessionState,
+  entry: PendingRequestState,
+): void {
+  state.pendingRequests.set(entry.request.requestId, entry);
+  flagRequiresAction(state, entry.turnId);
+}
+
+/** *_resolved 事件出注册表 + 视情况恢复所属 turn：与 admit 对偶 */
+function settlePendingRequest(state: SessionState, requestId: string): void {
+  const turnId = state.pendingRequests.get(requestId)?.turnId;
+  state.pendingRequests.delete(requestId);
+  unflagRequiresAction(state, turnId);
 }
 
 /**
@@ -261,7 +300,7 @@ function hasPendingBlocking(state: SessionState, turnId: string): boolean {
  * （缺 turnId 的旧事件）也不会漏。每个事件后重算：派生纯函数，正确性不依赖事件顺序。
  */
 function deriveRunState(state: SessionState): SessionRunState {
-  if (state.pendingPermissions.size > 0 || state.pendingQuestions.size > 0 || state.pendingHookTrusts.size > 0) {
+  if (state.pendingRequests.size > 0) {
     return "requires_action";
   }
   if (state.activeTurns.size === 0) return "idle";
@@ -341,19 +380,12 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
     // 不要求 adapter 自觉配对 state_update（事件流是唯一真相源；design §4.1）。
     // 原生 state_update(requires_action) 仍然有效——覆盖登录、设备确认等没有结构化
     // request 的场景（provider-interaction-design：反向不强制成立）。
-    case "permission_request": {
-      const p = ev.payload;
-      state.pendingPermissions.set(p.requestId, { ...p, turnId: ev.turnId });
-      flagRequiresAction(state, ev.turnId);
+    case "permission_request":
+      admitPendingRequest(state, { kind: "permission", turnId: ev.turnId, request: ev.payload });
       break;
-    }
-    case "permission_resolved": {
-      const p = ev.payload;
-      const turnId = state.pendingPermissions.get(p.requestId)?.turnId;
-      state.pendingPermissions.delete(p.requestId);
-      unflagRequiresAction(state, turnId);
+    case "permission_resolved":
+      settlePendingRequest(state, ev.payload.requestId);
       break;
-    }
     case "approval_review_update": {
       // 一等回执：按自己的 reviewId 归档、首见即进 timeline（无 target 也留痕、多次决策各自成条）。
       // 纯留痕，不参与 requires_action 派生。
@@ -364,30 +396,18 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       state.approvalReviews.set(p.reviewId, p);
       break;
     }
-    case "question_request": {
-      const p = ev.payload;
-      state.pendingQuestions.set(p.requestId, { ...p, turnId: ev.turnId });
-      flagRequiresAction(state, ev.turnId);
+    case "question_request":
+      admitPendingRequest(state, { kind: "question", turnId: ev.turnId, request: ev.payload });
       break;
-    }
-    case "question_resolved": {
-      const turnId = state.pendingQuestions.get(ev.payload.requestId)?.turnId;
-      state.pendingQuestions.delete(ev.payload.requestId);
-      unflagRequiresAction(state, turnId);
+    case "question_resolved":
+      settlePendingRequest(state, ev.payload.requestId);
       break;
-    }
-    case "hook_trust_request": {
-      const p = ev.payload;
-      state.pendingHookTrusts.set(p.requestId, { ...p, turnId: ev.turnId });
-      flagRequiresAction(state, ev.turnId);
+    case "hook_trust_request":
+      admitPendingRequest(state, { kind: "hook_trust", turnId: ev.turnId, request: ev.payload });
       break;
-    }
-    case "hook_trust_resolved": {
-      const turnId = state.pendingHookTrusts.get(ev.payload.requestId)?.turnId;
-      state.pendingHookTrusts.delete(ev.payload.requestId);
-      unflagRequiresAction(state, turnId);
+    case "hook_trust_resolved":
+      settlePendingRequest(state, ev.payload.requestId);
       break;
-    }
     case "usage_update":
       accumulateUsage(state.usage, ev.payload);
       break;
