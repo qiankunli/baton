@@ -649,66 +649,91 @@ export class CodexAdapter implements AgentAdapter {
   async open(opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
     const command = codexLaunchCommand(this.options.command);
     let rt = this.launch(command, opts, sink);
-    await this.initialize(rt);
+    try {
+      await this.initialize(rt);
 
-    if (codexSupportsHookTrustPreflight(command)) {
-      const hooksResult = await rt.peer.request("hooks/list", {});
-      const hooks = codexHooksRequiringTrust(hooksResult);
-      const hooksNeedingUserTrust = hooks.filter((hook) => !this.hookTrustStore.isTrusted(this.provider, hook));
-      let trustAll = hooks.length > 0 && hooksNeedingUserTrust.length === 0;
-      if (trustAll) {
-        this.emit(rt, {
-          kind: "_baton_notice",
-          provider: this.provider,
-          payload: {
-            level: "info",
-            title: "Enabled previously trusted Codex hooks",
-            detail: hooks.map((hook) => hook.pluginId ?? hook.sourcePath ?? hook.key).join("\n"),
-          },
-        });
-      }
-      if (hooksNeedingUserTrust.length > 0) {
-        const request: HookTrustRequest = {
-          kind: "hook_trust",
-          requestId: newId("htr"),
-          providerName: "Codex",
-          hooks: hooksNeedingUserTrust,
-        };
-        this.emit(rt, { kind: "hook_trust_request", provider: this.provider, payload: request }, hooksResult);
-        const response = await this.options.requestHandler(request);
-        if (response.kind === "cancelled") {
+      if (codexSupportsHookTrustPreflight(command)) {
+        const hooksResult = await rt.peer.request("hooks/list", {});
+        const hooks = codexHooksRequiringTrust(hooksResult);
+        const hooksNeedingUserTrust = hooks.filter(
+          (hook) => !this.hookTrustStore.isTrusted(this.provider, hook),
+        );
+        for (const warning of this.hookTrustStore.takeWarnings?.() ?? []) {
+          this.emit(rt, {
+            kind: "_baton_notice",
+            provider: this.provider,
+            payload: { level: "warning", title: "Could not load saved hook trust", detail: warning },
+          });
+        }
+        let trustAll = hooks.length > 0 && hooksNeedingUserTrust.length === 0;
+        if (trustAll) {
+          this.emit(rt, {
+            kind: "_baton_notice",
+            provider: this.provider,
+            payload: {
+              level: "info",
+              title: "Enabled previously trusted Codex hooks",
+              detail: hooks.map((hook) => hook.pluginId ?? hook.sourcePath ?? hook.key).join("\n"),
+            },
+          });
+        }
+        if (hooksNeedingUserTrust.length > 0) {
+          const request: HookTrustRequest = {
+            kind: "hook_trust",
+            requestId: newId("htr"),
+            providerName: "Codex",
+            hooks: hooksNeedingUserTrust,
+          };
+          this.emit(rt, { kind: "hook_trust_request", provider: this.provider, payload: request }, hooksResult);
+          const response = await this.options.requestHandler(request);
+          if (response.kind === "cancelled") {
+            this.emit(rt, {
+              kind: "hook_trust_resolved",
+              provider: this.provider,
+              payload: { requestId: request.requestId, outcome: "cancelled" },
+            });
+            throw new Error("Codex hook trust request was cancelled");
+          }
+          const trust = response.kind === "hook_trust" && response.decision === "trust";
+          if (trust) {
+            try {
+              this.hookTrustStore.trust(this.provider, hooksNeedingUserTrust);
+            } catch (error) {
+              this.emit(rt, {
+                kind: "hook_trust_resolved",
+                provider: this.provider,
+                payload: { requestId: request.requestId, outcome: "failed" },
+              });
+              throw error;
+            }
+          }
+          trustAll = trust;
           this.emit(rt, {
             kind: "hook_trust_resolved",
             provider: this.provider,
-            payload: { requestId: request.requestId, outcome: "cancelled" },
+            payload: { requestId: request.requestId, outcome: trust ? "trusted" : "skipped" },
           });
-          rt.child.kill();
-          throw new Error("Codex hook trust request was cancelled");
         }
-        const trust = response.kind === "hook_trust" && response.decision === "trust";
-        if (trust) this.hookTrustStore.trust(this.provider, hooksNeedingUserTrust);
-        trustAll = trust;
-        this.emit(rt, {
-          kind: "hook_trust_resolved",
-          provider: this.provider,
-          payload: { requestId: request.requestId, outcome: trust ? "trusted" : "skipped" },
-        });
+        if (trustAll) {
+          // app-server 没有写 trust 的 RPC。Baton 已持久校验精确 hash 后，用官方 bypass 参数
+          // 重启；旧进程尚未创建 thread/turn，退出不会丢 provider 状态。
+          rt.child.kill();
+          rt = this.launch(codexCommandWithHookTrustBypass(command), opts, sink);
+          await this.initialize(rt);
+        }
       }
-      if (trustAll) {
-        // app-server 没有写 trust 的 RPC。Baton 已持久校验精确 hash 后，用官方 bypass 参数
-        // 重启；旧进程尚未创建 thread/turn，退出不会丢 provider 状态。
-        rt.child.kill();
-        rt = this.launch(codexCommandWithHookTrustBypass(command), opts, sink);
-        await this.initialize(rt);
-      }
-    }
 
-    const opened = await openCodexThread(rt.peer, { ...opts, approvalReviewer: this.options.approvalReviewer });
-    const threadId = opened.threadId;
-    rt.threadId = threadId;
-    rt.approvalRoute = opened.route;
-    this.threads.set(threadId, rt);
-    return { provider: this.provider, providerSessionId: threadId, resumed: opened.resumed };
+      const opened = await openCodexThread(rt.peer, { ...opts, approvalReviewer: this.options.approvalReviewer });
+      const threadId = opened.threadId;
+      rt.threadId = threadId;
+      rt.approvalRoute = opened.route;
+      this.threads.set(threadId, rt);
+      return { provider: this.provider, providerSessionId: threadId, resumed: opened.resumed };
+    } catch (error) {
+      // open() 尚未返回 ProviderSessionRef，runtime 无法调用 close()；adapter 必须清掉自己已启动的进程。
+      rt.child.kill();
+      throw error;
+    }
   }
 
   /** ApprovalRoutable：报告 codex 回吐的生效路由，而非 baton 请求的值（企业策略可能打回）。 */

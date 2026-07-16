@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -58,6 +58,92 @@ describe("persisted hook trust", () => {
     const changed = candidate({ currentHash: undefined, command: "/plugins/devloop/changed.py" });
     expect(hookTrustFingerprint(one)).toBe(hookTrustFingerprint(same));
     expect(hookTrustFingerprint(one)).not.toBe(hookTrustFingerprint(changed));
+  });
+
+  test("preserves unrelated hook settings and trust fields when adding a provider", () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-hook-state-preserve-"));
+    roots.push(root);
+    const path = hookStatePath(root);
+    mkdirSync(join(root, "state"), { recursive: true });
+    writeFileSync(
+      path,
+      `${JSON.stringify({
+        display: { showStatus: true },
+        trust: { policy: "exact", providers: { claude: { existing: "sha256:claude" } } },
+      })}\n`,
+    );
+
+    new FileHookTrustStore(root).trust("codex", [candidate()]);
+
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+      display: { showStatus: true },
+      trust: {
+        policy: "exact",
+        providers: {
+          claude: { existing: "sha256:claude" },
+          codex: { [candidate().key]: "sha256:one" },
+        },
+      },
+    });
+  });
+
+  test("fails closed with a visible warning and does not overwrite malformed state", () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-hook-state-corrupt-"));
+    roots.push(root);
+    const path = hookStatePath(root);
+    mkdirSync(join(root, "state"), { recursive: true });
+    writeFileSync(path, "{not json\n");
+    const store = new FileHookTrustStore(root);
+
+    expect(store.isTrusted("codex", candidate())).toBe(false);
+    expect(store.takeWarnings()).toEqual([expect.stringContaining(`could not read ${path}`)]);
+    expect(() => store.trust("codex", [candidate()])).toThrow(/Cannot update hook trust/);
+    expect(readFileSync(path, "utf8")).toBe("{not json\n");
+  });
+
+  test("recovers a hook state lock left by a dead process", () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-hook-state-stale-lock-"));
+    roots.push(root);
+    const path = hookStatePath(root);
+    mkdirSync(join(root, "state"), { recursive: true });
+    writeFileSync(`${path}.lock`, "999999999:stale");
+
+    new FileHookTrustStore(root).trust("codex", [candidate()]);
+
+    expect(existsSync(`${path}.lock`)).toBe(false);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
+      trust: { providers: { codex: { [candidate().key]: "sha256:one" } } },
+    });
+  });
+
+  test("serializes concurrent processes without losing either update", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-hook-state-concurrent-"));
+    roots.push(root);
+    const path = hookStatePath(root);
+    const holderScript = `
+      const fs = require("node:fs");
+      const path = ${JSON.stringify(path)};
+      fs.mkdirSync(require("node:path").dirname(path), { recursive: true });
+      fs.writeFileSync(path + ".lock", process.pid + ":holder", { flag: "wx" });
+      process.stdout.write("locked\\n");
+      setTimeout(() => {
+        fs.writeFileSync(path, JSON.stringify({ display: { compact: true } }) + "\\n");
+        fs.rmSync(path + ".lock");
+      }, 50);
+    `;
+    const holder = Bun.spawn([process.execPath, "-e", holderScript], { stdout: "pipe", stderr: "pipe" });
+    const reader = holder.stdout.getReader();
+    const ready = await reader.read();
+    reader.releaseLock();
+    expect(new TextDecoder().decode(ready.value)).toContain("locked");
+
+    new FileHookTrustStore(root).trust("codex", [candidate()]);
+
+    expect(await holder.exited).toBe(0);
+    expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
+      display: { compact: true },
+      trust: { providers: { codex: { [candidate().key]: "sha256:one" } } },
+    });
   });
 });
 
@@ -140,5 +226,57 @@ describe("Codex hook trust provider interaction", () => {
       detail: "devloop@devloop",
     });
     await second.close(secondRef);
+  });
+
+  test("resolves the request and kills the startup process when persistence fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-hook-trust-write-failure-"));
+    roots.push(root);
+    const killed = join(root, "killed.log");
+    const script = `
+      const fs = require("node:fs");
+      process.on("SIGTERM", () => { fs.appendFileSync(${JSON.stringify(killed)}, "killed\\n"); process.exit(0); });
+      const readline = require("node:readline");
+      const rl = readline.createInterface({ input: process.stdin });
+      const send = (o) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...o }) + "\\n");
+      rl.on("line", (line) => {
+        const msg = JSON.parse(line);
+        if (msg.method === "initialize") send({ id: msg.id, result: {} });
+        else if (msg.method === "hooks/list") send({ id: msg.id, result: { data: [{ hooks: [{
+          key: "devloop:pre_tool_use:0", source: "plugin", sourcePath: "/plugins/devloop/hooks.codex.json",
+          trustStatus: "modified", enabled: true, command: "/plugins/devloop/pretool.py", currentHash: "sha256:one"
+        }] }] } });
+      });
+    `;
+    const failingStore: HookTrustStore = {
+      isTrusted: () => false,
+      takeWarnings: () => ["could not read /tmp/hook.json: permission denied"],
+      trust: () => {
+        throw new Error("disk full");
+      },
+    };
+    const events: AnyNewEvent[] = [];
+    const adapter = new CodexAdapter({
+      command: ["bun", "-e", script, "app-server"],
+      hookTrustStore: failingStore,
+      requestHandler: async (request) => ({
+        kind: "hook_trust",
+        requestId: request.requestId,
+        decision: "trust",
+      }),
+    });
+
+    await expect(adapter.open({ cwd: "/tmp" }, (event) => events.push(event))).rejects.toThrow("disk full");
+    for (let attempt = 0; attempt < 20 && !existsSync(killed); attempt++) await Bun.sleep(5);
+
+    expect(readFileSync(killed, "utf8")).toBe("killed\n");
+    expect(events.filter((event) => event.kind === "hook_trust_resolved")).toHaveLength(1);
+    expect(events.find((event) => event.kind === "hook_trust_resolved")?.payload).toMatchObject({
+      outcome: "failed",
+    });
+    expect(events.find((event) => event.kind === "_baton_notice")?.payload).toMatchObject({
+      level: "warning",
+      title: "Could not load saved hook trust",
+      detail: expect.stringContaining("permission denied"),
+    });
   });
 });
