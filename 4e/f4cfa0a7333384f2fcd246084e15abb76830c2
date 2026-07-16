@@ -1,0 +1,21 @@
+tests/notification-channel.test.ts
+  s_553463afa3e741::t_8c628475896d47 1-154
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "4ef4cfa0a7333384f2fcd246084e15abb76830c2",
+  "prompts": {},
+  "sessions": {
+    "s_553463afa3e741": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "agent-ac8d9f9a91699774f",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
