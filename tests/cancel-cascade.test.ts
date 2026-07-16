@@ -96,7 +96,7 @@ describe("cancel cascades to pending requests", () => {
 
     const turn = runtime.submit("codex", text("do it"));
     // 阻塞在审批：pending 落盘 → 会话派生 requires_action
-    await until(() => session.loadState().pendingPermissions.size === 1);
+    await until(() => session.loadState().pendingRequests.size === 1);
     expect(session.loadState().runState).toBe("requires_action");
 
     await runtime.control({ kind: "interrupt" });
@@ -108,7 +108,7 @@ describe("cancel cascades to pending requests", () => {
     expect(resolved?.payload).toMatchObject({ requestId: "ar_hold", outcome: "cancelled" });
 
     const state = session.loadState();
-    expect(state.pendingPermissions.size).toBe(0); // 不再悬挂
+    expect(state.pendingRequests.size).toBe(0); // 不再悬挂
     expect(state.runState).toBe("idle"); // requires_action 落下
     // 打断标记仍在（turn 确实被取消）
     expect(events.some((e) => e.kind === "_baton_notice")).toBe(true);

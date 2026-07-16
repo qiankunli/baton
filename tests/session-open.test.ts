@@ -174,7 +174,7 @@ describe("crash recovery on open", () => {
 
     const result = openBatonSession(store, { cwd: "/repo", sessionId: h.id });
     expect(result.recovered).toBe(true);
-    expect(result.session.loadState().pendingPermissions.size).toBe(0);
+    expect(result.session.loadState().pendingRequests.size).toBe(0);
   });
 
   test("dangling question requests are cancelled", () => {
@@ -193,7 +193,7 @@ describe("crash recovery on open", () => {
 
     const result = openBatonSession(store, { cwd: "/repo", sessionId: h.id });
     expect(result.recovered).toBe(true);
-    expect(result.session.loadState().pendingQuestions.size).toBe(0);
+    expect(result.session.loadState().pendingRequests.size).toBe(0);
   });
 
   test("dangling hook trust requests are cancelled", () => {
@@ -221,7 +221,7 @@ describe("crash recovery on open", () => {
 
     const result = openBatonSession(store, { cwd: "/repo", sessionId: h.id });
     expect(result.recovered).toBe(true);
-    expect(result.session.loadState().pendingHookTrusts.size).toBe(0);
+    expect(result.session.loadState().pendingRequests.size).toBe(0);
   });
 
   test("clean session is untouched", () => {
