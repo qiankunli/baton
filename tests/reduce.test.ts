@@ -142,6 +142,31 @@ describe("state / permission / plan / usage", () => {
     expect(resolved.pendingQuestions.size).toBe(0);
   });
 
+  test("hook trust request pends until resolved", () => {
+    const request = {
+      kind: "hook_trust" as const,
+      requestId: "htr1",
+      providerName: "Codex",
+      hooks: [
+        {
+          key: "hook1",
+          source: "plugin",
+          sourcePath: "/plugins/devloop/hooks.json",
+          trustStatus: "modified" as const,
+          command: "python hook.py",
+        },
+      ],
+    };
+    const pending = reduceEvents([ev("hook_trust_request", request)]);
+    expect(pending.pendingHookTrusts.has("htr1")).toBe(true);
+    expect(pending.runState).toBe("requires_action");
+    const resolved = reduceEvents([
+      ev("hook_trust_request", request),
+      ev("hook_trust_resolved", { requestId: "htr1", outcome: "trusted" }),
+    ]);
+    expect(resolved.pendingHookTrusts.size).toBe(0);
+  });
+
   test("plan update replaces entries per planId", () => {
     const state = reduceEvents([
       ev("plan_update", { planId: "pl1", entries: [{ content: "step1", priority: "high", status: "pending" }] }),

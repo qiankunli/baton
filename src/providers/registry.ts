@@ -6,6 +6,7 @@ import { ClaudeAdapter } from "../adapters/claude/adapter.ts";
 import { CodexAdapter } from "../adapters/codex/adapter.ts";
 import type { AgentAdapter, RequestHandler } from "../adapters/types.ts";
 import type { BatonConfig } from "../config/config.ts";
+import { FileHookTrustStore } from "../config/hook.ts";
 import { PROVIDER_IDENTITIES, PROVIDERS, parseProvider, type ProviderName } from "./ids.ts";
 
 export { PROVIDERS, parseProvider, type ProviderName };
@@ -13,6 +14,7 @@ export { PROVIDERS, parseProvider, type ProviderName };
 export interface ProviderAdapterOptions {
   requestHandler: RequestHandler;
   config: BatonConfig;
+  rootDir?: string;
 }
 
 export interface ProviderDefinition<Id extends string = string> {
@@ -43,11 +45,12 @@ export const PROVIDER_REGISTRY = [
     sessionKey: "codex",
     shortName: "codex",
     color: "#73daca", // 青
-    create: ({ requestHandler, config }) =>
+    create: ({ requestHandler, config, rootDir }) =>
       new CodexAdapter({
         requestHandler,
         command: config.codexCommand,
         approvalReviewer: config.codexApprovalReviewer,
+        hookTrustStore: new FileHookTrustStore(rootDir),
       }),
   },
   {

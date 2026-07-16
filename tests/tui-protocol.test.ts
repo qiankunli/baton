@@ -615,6 +615,51 @@ describe("interaction eventization: pending projects from the event stream", () 
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("hook trust request uses the approval primitive but keeps its own response kind", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-hook-trust-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+      session.append({
+        kind: "hook_trust_request",
+        provider: "codex",
+        turnId: "t1",
+        payload: {
+          kind: "hook_trust",
+          requestId: "htr_1",
+          providerName: "Codex",
+          hooks: [
+            {
+              key: "hook1",
+              source: "plugin",
+              sourcePath: "/plugins/devloop/hooks.json",
+              trustStatus: "modified",
+              command: "python hook.py",
+              pluginId: "devloop@devloop",
+            },
+          ],
+        },
+      });
+      expect(protocol.getView().approval).toMatchObject({
+        id: "htr_1",
+        title: "Trust 1 Codex hook?",
+        options: [{ optionId: "trust" }, { optionId: "skip" }],
+      });
+      protocol.resolveApproval("htr_1", "trust");
+      expect(protocol.getView().status?.text).toContain("no longer pending");
+      session.append({
+        kind: "hook_trust_resolved",
+        provider: "baton",
+        payload: { requestId: "htr_1", outcome: "cancelled" },
+      });
+      expect(protocol.getView().approval).toBeNull();
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("BatonChatProtocol steer submit", () => {

@@ -501,6 +501,71 @@ describe("interaction resolver registry", () => {
     expect(state.pendingPermissions.size).toBe(0);
     expect(state.pendingQuestions.size).toBe(0);
   });
+
+  test("a provider-startup hook trust request belongs to the preparing turn", async () => {
+    class StartupTrustAdapter implements AgentAdapter {
+      readonly provider = "codex";
+      readonly capabilities: AdapterCapabilities = { prompt: {} };
+      private sink?: EventSink;
+
+      constructor(private readonly handlers: InteractionHandlers) {}
+
+      async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+        this.sink = sink;
+        const request = {
+          kind: "hook_trust" as const,
+          requestId: "htr_start",
+          providerName: "Codex",
+          hooks: [
+            {
+              key: "hook1",
+              source: "plugin",
+              sourcePath: "/plugins/devloop/hooks.json",
+              trustStatus: "modified" as const,
+              command: "python hook.py",
+            },
+          ],
+        };
+        sink({ kind: "hook_trust_request", provider: this.provider, payload: request });
+        const response = await this.handlers.requestHandler(request);
+        sink({
+          kind: "hook_trust_resolved",
+          provider: this.provider,
+          payload: {
+            requestId: request.requestId,
+            outcome: response.kind === "hook_trust" && response.decision === "trust" ? "trusted" : "skipped",
+          },
+        });
+        return { provider: this.provider, providerSessionId: "startup-trust", resumed: false };
+      }
+
+      async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+        this.sink?.({
+          kind: "state_update",
+          provider: this.provider,
+          turnId: input.turnId,
+          payload: { state: "idle", stopReason: "end_turn" },
+        });
+        return { accepted: true };
+      }
+
+      async cancel(): Promise<void> {}
+      async close(): Promise<void> {}
+    }
+
+    const runtime = new BatonSessionRuntime({
+      session,
+      mentionBudgetChars: 4096,
+      createAdapter: (_name, handlers) => new StartupTrustAdapter(handlers),
+    });
+    const outcome = runtime.submit("codex", [{ type: "text", text: "go" }]);
+    await Bun.sleep(5);
+    const request = session.readEvents().find((event) => event.kind === "hook_trust_request");
+    expect(request?.turnId).toBeDefined();
+    expect(runtime.respond({ kind: "hook_trust", requestId: "htr_start", decision: "trust" })).toBe(true);
+    await outcome;
+    expect(session.loadState().pendingHookTrusts.size).toBe(0);
+  });
 });
 
 // 委托状态必须对当前活跃 provider 可见（kernel §3 审批闭环），但可见性的来源只能是

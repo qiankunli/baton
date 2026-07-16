@@ -32,6 +32,7 @@ import {
   textOf,
   type ApprovalReviewUpdate,
   type DiffBlock,
+  type HookTrustRequest,
   type PermissionOption,
   type PromptBlock,
 } from "../events/types.ts";
@@ -68,6 +69,16 @@ function approvalOptionKind(option: PermissionOption): string {
     : lasting
       ? "reject_always"
       : "reject_once";
+}
+
+function hookTrustDescription(request: HookTrustRequest): string {
+  return request.hooks
+    .map((hook) => {
+      const owner = hook.pluginId ?? hook.source;
+      const matcher = hook.matcher ? ` · matcher: ${hook.matcher}` : "";
+      return `${owner} · ${hook.trustStatus}${matcher}\n${hook.sourcePath}\n${hook.command}`;
+    })
+    .join("\n\n");
 }
 
 /** provider（id 或 wire key）→ 时间线 author 展示名；归一与着色 key 统一走 registry。 */
@@ -427,11 +438,14 @@ export class BatonChatProtocol implements ChatProtocol {
 
   /**
    * 审批卡片应答 → runtime 的 resolver 注册表（id 即事件流里的 requestId）。
-   * 卡片消失不在这里发生：被唤醒的 adapter 发 permission_resolved 落盘，
+   * 卡片消失不在这里发生：被唤醒的 adapter 发对应 *_resolved 落盘，
    * reduced pending 删除后视图自然更新——UI 只消费事件流投影，不维护第二份状态。
    */
   resolveApproval(id: string, optionId: string): void {
-    if (!this.runtime.respond({ kind: "permission", requestId: id, optionId })) {
+    const response = this.state.pendingHookTrusts.has(id)
+      ? ({ kind: "hook_trust", requestId: id, decision: optionId === "trust" ? "trust" : "skip" } as const)
+      : ({ kind: "permission", requestId: id, optionId } as const);
+    if (!this.runtime.respond(response)) {
       // 无 resolver：请求已被应答，或是崩溃残留（新进程没有等待中的 adapter）
       this.status = { text: "approval request is no longer pending", tone: "info" };
       this.changed();
@@ -532,7 +546,11 @@ export class BatonChatProtocol implements ChatProtocol {
       effortPreferences: this.effortPreferences,
       // 交互回调由 runtime 提供（resolver 注册表）：protocol 不再持有交互状态
       createAdapter: (name, handlers) =>
-        createProviderAdapter(name as ProviderName, { ...handlers, config: this.config }),
+        createProviderAdapter(name as ProviderName, {
+          ...handlers,
+          config: this.config,
+          rootDir: this.store.rootDir,
+        }),
       providerSessionKey: (name) => providerSessionKey(name as ProviderName),
       onStateChange: () => this.changed(),
     });
@@ -649,7 +667,8 @@ export class BatonChatProtocol implements ChatProtocol {
     const active = this.runtime.activeProvider;
     // pending 交互从事件流投影（Map 保插入序，取最早的一个）；id 即 requestId，
     // 应答经 runtime 的 resolver 注册表回到 adapter 的 await 点
-    const approval = v.pendingPermissions.values().next().value;
+    const permission = v.pendingPermissions.values().next().value;
+    const hookTrust = v.pendingHookTrusts.values().next().value;
     const question = v.pendingQuestions.values().next().value;
     const observedRuns = [...v.activeTurns.values()].filter((turn) => turn.origin === "provider");
     const observedRun = observedRuns.at(-1);
@@ -723,18 +742,32 @@ export class BatonChatProtocol implements ChatProtocol {
       picker: this.picker
         ? { id: this.picker.id, title: this.picker.title, options: this.picker.options }
         : null,
-      approval: approval
+      approval: permission
         ? {
-            id: approval.requestId,
-            title: approval.title,
-            description: approval.description,
-            options: approval.options.map((option) => ({
+            id: permission.requestId,
+            title: permission.title,
+            description: permission.description,
+            options: permission.options.map((option) => ({
               optionId: option.optionId,
               name: option.name,
               kind: approvalOptionKind(option),
             })),
           }
-        : null,
+        : hookTrust
+          ? {
+              id: hookTrust.requestId,
+              title: `Trust ${hookTrust.hooks.length} ${hookTrust.providerName} hook${hookTrust.hooks.length === 1 ? "" : "s"}?`,
+              description: hookTrustDescription(hookTrust),
+              options: [
+                {
+                  optionId: "trust",
+                  name: "Trust current definitions (ask again if changed)",
+                  kind: "allow_always",
+                },
+                { optionId: "skip", name: "Continue without Codex hooks", kind: "reject_once" },
+              ],
+            }
+          : null,
       question: question
         ? {
             id: question.requestId,

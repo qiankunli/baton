@@ -92,7 +92,8 @@ function recoverInterruptedState(session: SessionHandle): boolean {
     interruptedTurns.length === 0 &&
     unsummarized.length === 0 &&
     state.pendingPermissions.size === 0 &&
-    state.pendingQuestions.size === 0
+    state.pendingQuestions.size === 0 &&
+    state.pendingHookTrusts.size === 0
   ) {
     return false;
   }
@@ -107,6 +108,13 @@ function recoverInterruptedState(session: SessionHandle): boolean {
   for (const requestId of state.pendingQuestions.keys()) {
     session.append({
       kind: "question_resolved",
+      provider: "baton",
+      payload: { requestId, outcome: "cancelled" },
+    });
+  }
+  for (const requestId of state.pendingHookTrusts.keys()) {
+    session.append({
+      kind: "hook_trust_resolved",
       provider: "baton",
       payload: { requestId, outcome: "cancelled" },
     });
