@@ -26,8 +26,8 @@ export function ulid(now: number = Date.now()): string {
   return encodeTime(now, 10) + encodeRandom(16);
 }
 
-/** bs=BatonSession run=一次本地打开 ps=ProviderSession t=Turn m=Message tc=ToolCall pl=Plan ar=ApprovalRequest arv=ApprovalReview qr=QuestionRequest htr=HookTrustRequest */
-export type IdPrefix = "bs" | "run" | "ps" | "t" | "m" | "tc" | "pl" | "ar" | "arv" | "qr" | "htr";
+/** bs=BatonSession ps=ProviderSession t=Turn m=Message tc=ToolCall pl=Plan ar=ApprovalRequest arv=ApprovalReview qr=QuestionRequest htr=HookTrustRequest */
+export type IdPrefix = "bs" | "ps" | "t" | "m" | "tc" | "pl" | "ar" | "arv" | "qr" | "htr";
 
 export function newId(prefix: IdPrefix, now?: number): string {
   return `${prefix}_${ulid(now)}`;

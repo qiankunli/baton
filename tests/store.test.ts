@@ -187,9 +187,8 @@ describe("event append / read", () => {
     expect(reopened.readEvents()).toHaveLength(3);
   });
 
-  test("each open writes paired run jsonl and diagnostic log", () => {
+  test("session diagnostics are paired with session.jsonl without entering its event stream", () => {
     const h = store.createSession({ cwd: "/tmp/proj" });
-    expect(h.runId.startsWith("run_")).toBe(true);
 
     const event = h.append({
       kind: "_baton_error_update",
@@ -206,20 +205,14 @@ describe("event append / read", () => {
       error: { name: "Error", message: "boom", stack: "stack" },
     });
 
-    const runEvents = readFileSync(join(h.dir, `${h.runId}.jsonl`), "utf8")
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line));
-    expect(runEvents).toEqual([event]);
+    expect(h.readEvents()).toEqual([event]);
 
-    const log = JSON.parse(readFileSync(join(h.dir, `${h.runId}.log`), "utf8").trim());
-    expect(log.runId).toBe(h.runId);
+    const log = JSON.parse(readFileSync(join(h.dir, "session.log"), "utf8").trim());
     expect(log.batonSessionId).toBe(h.id);
     expect(log.component).toBe("codex.jsonrpc");
     expect(log.error.message).toBe("boom");
 
-    const reopened = store.openSession(h.id);
-    expect(reopened.runId).not.toBe(h.runId);
+    expect(readFileSync(join(h.dir, "session.jsonl"), "utf8").trim().split("\n")).toHaveLength(1);
   });
 
   test("raw is preserved verbatim (细节保真)", () => {

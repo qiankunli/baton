@@ -1,5 +1,4 @@
-// 会话存储：~/.baton/projects/<cwd 转义>/<id>/session.jsonl + meta.json，并按每次打开
-// 生成 <runId>.jsonl / <runId>.log 事件镜像与诊断配对。
+// 会话存储：~/.baton/projects/<cwd 转义>/<id>/session.jsonl + session.log + meta.json。
 // 与 Claude Code 一样按项目目录分组，方便按项目浏览与清理；项目目录名不可逆，
 // 真相源仍是 meta.json 里的 cwd。session.jsonl 承载 BatonSession 的统一逻辑历史；
 // ProviderSession 元数据只用于优先恢复 provider 私有状态，缺失时仍可从 BatonSession 重建上下文。
@@ -320,8 +319,6 @@ function writeMetaAtomic(dir: string, meta: SessionMeta): void {
 export class SessionHandle {
   readonly id: string;
   readonly dir: string;
-  /** 每次打开 SessionHandle 都新建一个 run；同 basename 的 jsonl/log 便于对照。 */
-  readonly runId = newId("run");
   meta: SessionMeta;
   private nextSeq: number | undefined;
   private listeners = new Set<(ev: AnyEventEnvelope) => void>();
@@ -346,12 +343,8 @@ export class SessionHandle {
     return join(this.dir, "session.jsonl");
   }
 
-  private runJsonlPath(): string {
-    return join(this.dir, `${this.runId}.jsonl`);
-  }
-
-  private runLogPath(): string {
-    return join(this.dir, `${this.runId}.log`);
+  private logPath(): string {
+    return join(this.dir, "session.log");
   }
 
   /**
@@ -360,10 +353,9 @@ export class SessionHandle {
   diagnostic(entry: DiagnosticEntry): void {
     try {
       appendFileSync(
-        this.runLogPath(),
+        this.logPath(),
         `${JSON.stringify({
           ts: new Date().toISOString(),
-          runId: this.runId,
           batonSessionId: this.id,
           ...entry,
         })}\n`,
@@ -470,16 +462,6 @@ export class SessionHandle {
         error: diagnosticError(error),
       });
       throw error;
-    }
-    try {
-      appendFileSync(this.runJsonlPath(), line);
-    } catch (error) {
-      this.diagnostic({
-        level: "error",
-        component: "store.run",
-        message: `failed to append ${this.runId}.jsonl`,
-        error: diagnosticError(error),
-      });
     }
     for (const listener of this.listeners) {
       try {
