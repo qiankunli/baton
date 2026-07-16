@@ -36,6 +36,21 @@ async function askRequest(req: InteractionRequest): Promise<InteractionResponse>
       stdout.write("Enter an option number or optionId\n");
     }
   }
+  if (req.kind === "hook_trust") {
+    stdout.write(`\n⚠ Trust ${req.hooks.length} ${req.providerName} hook${req.hooks.length === 1 ? "" : "s"}?\n`);
+    req.hooks.forEach((hook) => {
+      stdout.write(`  - ${hook.pluginId ?? hook.source}: ${hook.sourcePath} [${hook.trustStatus}]\n`);
+    });
+    for (;;) {
+      const answer = (await rl.question("trust current definitions? [y/N] ")).trim().toLowerCase();
+      if (answer === "y" || answer === "yes") {
+        return { kind: "hook_trust", requestId: req.requestId, decision: "trust" };
+      }
+      if (!answer || answer === "n" || answer === "no") {
+        return { kind: "hook_trust", requestId: req.requestId, decision: "skip" };
+      }
+    }
+  }
   const answers: Record<string, string[]> = {};
   for (const question of req.questions) {
     stdout.write(`\n? ${question.header}: ${question.question}\n`);
@@ -72,6 +87,7 @@ async function main(): Promise<void> {
   const adapter = createProviderAdapter(agentName, {
     requestHandler: askRequest,
     config,
+    rootDir: store.rootDir,
   });
 
   // open 时绑定 session 级 sink；turn 完成以 idle 终态事件为准（design §4.1）

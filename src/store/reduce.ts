@@ -12,6 +12,7 @@ import type {
   MessageRole,
   Notice,
   PermissionRequest,
+  HookTrustRequest,
   QuestionRequest,
   PlanUpdate,
   SessionConfigOption,
@@ -101,6 +102,7 @@ export interface SessionState {
   /** 附带 envelope turnId（payload 本身不含）：request → 所属 turn 的 requires_action 派生需要归属关系 */
   pendingPermissions: Map<string, PermissionRequest & { turnId?: string }>;
   pendingQuestions: Map<string, QuestionRequest & { turnId?: string }>;
+  pendingHookTrusts: Map<string, HookTrustRequest & { turnId?: string }>;
   /**
    * auto-review 回执，按回执自身的 `reviewId` 归档（kernel.md §6）。与 pendingPermissions
    * 正交：这是“已被 reviewer 决策”的留痕，不是待决，不派生 requires_action。每条回执是
@@ -138,6 +140,7 @@ export function emptySessionState(): SessionState {
     plans: new Map(),
     pendingPermissions: new Map(),
     pendingQuestions: new Map(),
+    pendingHookTrusts: new Map(),
     approvalReviews: new Map(),
     usage: {
       inputTokens: 0,
@@ -232,21 +235,24 @@ function applyToolCallUpdate(state: SessionState, ev: EventEnvelope<"tool_call_u
   if (p.rawOutput !== undefined) tc.rawOutput = p.rawOutput;
 }
 
-/** 该 turn 是否还有未决的 blocking request（审批/提问）——per-turn requires_action 的派生依据 */
+/** 该 turn 是否还有未决的 blocking request——per-turn requires_action 的派生依据 */
 function hasPendingBlocking(state: SessionState, turnId: string): boolean {
   for (const req of state.pendingPermissions.values()) if (req.turnId === turnId) return true;
   for (const req of state.pendingQuestions.values()) if (req.turnId === turnId) return true;
+  for (const req of state.pendingHookTrusts.values()) if (req.turnId === turnId) return true;
   return false;
 }
 
 /**
  * 会话级 runState 派生（provider-interaction-design：存在 pending blocking request 时
  * projection 必须产出 requires_action）。requires_action 比 running 优先上浮——它意味着
- * "没有用户动作会话无法完整推进"；直接看两个 pending 集合，未能归属到 turn 的 request
+ * "没有用户动作会话无法完整推进"；直接看各 pending request 集合，未能归属到 turn 的 request
  * （缺 turnId 的旧事件）也不会漏。每个事件后重算：派生纯函数，正确性不依赖事件顺序。
  */
 function deriveRunState(state: SessionState): SessionRunState {
-  if (state.pendingPermissions.size > 0 || state.pendingQuestions.size > 0) return "requires_action";
+  if (state.pendingPermissions.size > 0 || state.pendingQuestions.size > 0 || state.pendingHookTrusts.size > 0) {
+    return "requires_action";
+  }
   if (state.activeTurns.size === 0) return "idle";
   return [...state.activeTurns.values()].some((turn) => turn.state === "requires_action")
     ? "requires_action"
@@ -353,6 +359,18 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
     case "question_resolved": {
       const turnId = state.pendingQuestions.get(ev.payload.requestId)?.turnId;
       state.pendingQuestions.delete(ev.payload.requestId);
+      unflagRequiresAction(state, turnId);
+      break;
+    }
+    case "hook_trust_request": {
+      const p = ev.payload;
+      state.pendingHookTrusts.set(p.requestId, { ...p, turnId: ev.turnId });
+      flagRequiresAction(state, ev.turnId);
+      break;
+    }
+    case "hook_trust_resolved": {
+      const turnId = state.pendingHookTrusts.get(ev.payload.requestId)?.turnId;
+      state.pendingHookTrusts.delete(ev.payload.requestId);
       unflagRequiresAction(state, turnId);
       break;
     }

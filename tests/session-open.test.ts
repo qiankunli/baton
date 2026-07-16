@@ -196,6 +196,34 @@ describe("crash recovery on open", () => {
     expect(result.session.loadState().pendingQuestions.size).toBe(0);
   });
 
+  test("dangling hook trust requests are cancelled", () => {
+    const h = store.createSession({ cwd: "/repo" });
+    h.append({ kind: "state_update", payload: { state: "running" }, provider: "codex", turnId: "t1" });
+    h.append({
+      kind: "hook_trust_request",
+      payload: {
+        kind: "hook_trust",
+        requestId: "htr1",
+        providerName: "Codex",
+        hooks: [
+          {
+            key: "hook1",
+            source: "plugin",
+            sourcePath: "/plugins/devloop/hooks.json",
+            trustStatus: "modified",
+            command: "python hook.py",
+          },
+        ],
+      },
+      provider: "codex",
+      turnId: "t1",
+    });
+
+    const result = openBatonSession(store, { cwd: "/repo", sessionId: h.id });
+    expect(result.recovered).toBe(true);
+    expect(result.session.loadState().pendingHookTrusts.size).toBe(0);
+  });
+
   test("clean session is untouched", () => {
     const h = store.createSession({ cwd: "/repo" });
     h.append({ kind: "state_update", payload: { state: "running" }, provider: "codex", turnId: "t1" });

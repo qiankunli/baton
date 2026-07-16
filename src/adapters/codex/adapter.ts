@@ -4,11 +4,14 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
+import { FileHookTrustStore, type HookTrustStore } from "../../config/hook.ts";
 import { newId } from "../../events/ids.ts";
 import { closedTerminal } from "../normalize.ts";
 import type {
   ContentBlock,
   DiffBlock,
+  HookTrustCandidate,
+  HookTrustRequest,
   PermissionOption,
   PermissionRequest,
   QuestionPrompt,
@@ -422,6 +425,53 @@ export function codexLaunchCommand(command?: string[]): string[] {
   return command && command.length > 0 ? [...command] : ["codex", "app-server"];
 }
 
+const HOOK_TRUST_BYPASS_FLAG = "--dangerously-bypass-hook-trust";
+
+/** 只有可识别的 app-server argv 才能安全做 hook trust preflight / 重启。 */
+export function codexSupportsHookTrustPreflight(command: string[]): boolean {
+  return command.includes("app-server") && !command.includes(HOOK_TRUST_BYPASS_FLAG);
+}
+
+/** Codex 的 bypass 是全局 flag，必须放在 app-server 子命令之前。 */
+export function codexCommandWithHookTrustBypass(command: string[]): string[] {
+  const index = command.indexOf("app-server");
+  if (index < 0) throw new Error("Codex hook trust requires an app-server command");
+  if (command.includes(HOOK_TRUST_BYPASS_FLAG)) return [...command];
+  return [...command.slice(0, index), HOOK_TRUST_BYPASS_FLAG, ...command.slice(index)];
+}
+
+/** hooks/list wire DTO 只停留在 adapter 边界，向内归一成稳定的 trust candidate。 */
+export function codexHooksRequiringTrust(result: unknown): HookTrustCandidate[] {
+  const rows = (result as { data?: unknown[] })?.data;
+  if (!Array.isArray(rows)) return [];
+  const candidates = new Map<string, HookTrustCandidate>();
+  for (const rawRow of rows) {
+    const hooks = (rawRow as { hooks?: unknown[] })?.hooks;
+    if (!Array.isArray(hooks)) continue;
+    for (const rawHook of hooks) {
+      const hook = (rawHook ?? {}) as Record<string, unknown>;
+      const trustStatus = hook.trustStatus;
+      if (hook.enabled === false || (trustStatus !== "untrusted" && trustStatus !== "modified")) continue;
+      const key = String(hook.key ?? "").trim();
+      if (!key || candidates.has(key)) continue;
+      candidates.set(key, {
+        key,
+        source: String(hook.source ?? "unknown"),
+        sourcePath: String(hook.sourcePath ?? ""),
+        trustStatus,
+        command: String(hook.command ?? ""),
+        matcher: hook.matcher == null ? undefined : String(hook.matcher),
+        pluginId: hook.pluginId == null ? undefined : String(hook.pluginId),
+        currentHash: hook.currentHash == null ? undefined : String(hook.currentHash),
+        handlerType: hook.handlerType == null ? undefined : String(hook.handlerType),
+        timeoutSec: typeof hook.timeoutSec === "number" ? hook.timeoutSec : undefined,
+        statusMessage: hook.statusMessage == null ? undefined : String(hook.statusMessage),
+      });
+    }
+  }
+  return [...candidates.values()];
+}
+
 /** codex 方言 → 归一路由。未知取值不猜（不变量 #2）。 */
 function approvalRouteOf(reviewer: unknown): ApprovalRoute | null {
   if (reviewer === "user") return "user";
@@ -447,6 +497,8 @@ export interface CodexAdapterOptions {
   approvalReviewer?: "user" | "auto_review";
   /** 覆盖二进制，测试用 */
   command?: string[];
+  /** 用户审过的精确 hook 指纹；缺省落 ~/.baton/state/hook.json 的 trust 区。 */
+  hookTrustStore?: HookTrustStore;
 }
 
 /**
@@ -548,11 +600,14 @@ export class CodexAdapter implements AgentAdapter {
     approvalRouting: { supported: true },
   };
   private threads = new Map<string, ThreadRuntime>();
+  private readonly hookTrustStore: HookTrustStore;
 
-  constructor(private options: CodexAdapterOptions) {}
+  constructor(private options: CodexAdapterOptions) {
+    this.hookTrustStore = options.hookTrustStore ?? new FileHookTrustStore();
+  }
 
-  async open(opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
-    const [cmd, ...args] = codexLaunchCommand(this.options.command);
+  private launch(command: string[], opts: OpenOptions, sink: EventSink): ThreadRuntime {
+    const [cmd, ...args] = command;
     const child = spawn(cmd as string, args, {
       cwd: opts.cwd,
       // 继承 HOME 等本机环境：凭证零持有，复用 ~/.codex 登录态（design §5.1）
@@ -576,8 +631,11 @@ export class CodexAdapter implements AgentAdapter {
     });
     peer.onNotification((method, params) => this.handleNotification(rt, method, params));
     peer.onServerRequest((method, params) => this.handleServerRequest(rt, method, params));
+    return rt;
+  }
 
-    await peer.request(
+  private async initialize(rt: ThreadRuntime): Promise<void> {
+    await rt.peer.request(
       "initialize",
       {
         clientInfo: { name: "baton", version: "0.0.1", title: "baton" },
@@ -585,9 +643,67 @@ export class CodexAdapter implements AgentAdapter {
       },
       { timeoutMs: STARTUP_REQUEST_TIMEOUT_MS },
     );
-    peer.notify("initialized", {});
+    rt.peer.notify("initialized", {});
+  }
 
-    const opened = await openCodexThread(peer, { ...opts, approvalReviewer: this.options.approvalReviewer });
+  async open(opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+    const command = codexLaunchCommand(this.options.command);
+    let rt = this.launch(command, opts, sink);
+    await this.initialize(rt);
+
+    if (codexSupportsHookTrustPreflight(command)) {
+      const hooksResult = await rt.peer.request("hooks/list", {});
+      const hooks = codexHooksRequiringTrust(hooksResult);
+      const hooksNeedingUserTrust = hooks.filter((hook) => !this.hookTrustStore.isTrusted(this.provider, hook));
+      let trustAll = hooks.length > 0 && hooksNeedingUserTrust.length === 0;
+      if (trustAll) {
+        this.emit(rt, {
+          kind: "_baton_notice",
+          provider: this.provider,
+          payload: {
+            level: "info",
+            title: "Enabled previously trusted Codex hooks",
+            detail: hooks.map((hook) => hook.pluginId ?? hook.sourcePath ?? hook.key).join("\n"),
+          },
+        });
+      }
+      if (hooksNeedingUserTrust.length > 0) {
+        const request: HookTrustRequest = {
+          kind: "hook_trust",
+          requestId: newId("htr"),
+          providerName: "Codex",
+          hooks: hooksNeedingUserTrust,
+        };
+        this.emit(rt, { kind: "hook_trust_request", provider: this.provider, payload: request }, hooksResult);
+        const response = await this.options.requestHandler(request);
+        if (response.kind === "cancelled") {
+          this.emit(rt, {
+            kind: "hook_trust_resolved",
+            provider: this.provider,
+            payload: { requestId: request.requestId, outcome: "cancelled" },
+          });
+          rt.child.kill();
+          throw new Error("Codex hook trust request was cancelled");
+        }
+        const trust = response.kind === "hook_trust" && response.decision === "trust";
+        if (trust) this.hookTrustStore.trust(this.provider, hooksNeedingUserTrust);
+        trustAll = trust;
+        this.emit(rt, {
+          kind: "hook_trust_resolved",
+          provider: this.provider,
+          payload: { requestId: request.requestId, outcome: trust ? "trusted" : "skipped" },
+        });
+      }
+      if (trustAll) {
+        // app-server 没有写 trust 的 RPC。Baton 已持久校验精确 hash 后，用官方 bypass 参数
+        // 重启；旧进程尚未创建 thread/turn，退出不会丢 provider 状态。
+        rt.child.kill();
+        rt = this.launch(codexCommandWithHookTrustBypass(command), opts, sink);
+        await this.initialize(rt);
+      }
+    }
+
+    const opened = await openCodexThread(rt.peer, { ...opts, approvalReviewer: this.options.approvalReviewer });
     const threadId = opened.threadId;
     rt.threadId = threadId;
     rt.approvalRoute = opened.route;

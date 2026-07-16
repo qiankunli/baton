@@ -297,8 +297,15 @@ export interface QuestionResponse {
   answers: Record<string, string[]>;
 }
 
+/** 信任当前 hook 精确定义；定义 hash 不变时后续 provider 进程自动放行。 */
+export interface HookTrustResponse {
+  kind: "hook_trust";
+  requestId: string;
+  decision: "trust" | "skip";
+}
+
 /** InteractionResponse：用户答复的判别联合（按 `kind` 收窄）。elicitation 待接入 */
-export type InteractionResponse = PermissionResponse | QuestionResponse;
+export type InteractionResponse = PermissionResponse | QuestionResponse | HookTrustResponse;
 
 /**
  * 所属 turn 被打断/收口时，runtime 用它级联解开仍挂起的 request（cancel-cascade）：不是用户
@@ -315,7 +322,7 @@ export interface InteractionCancelled {
 export type RequestOutcome = InteractionResponse | InteractionCancelled;
 
 /**
- * 宿主提供的统一 request 回调：adapter 收到 provider 的 permission / question 请求时，
+ * 宿主提供的统一 request 回调：adapter 收到 provider 的 permission / question / hook trust 请求时，
  * 构造对应 kind 的 InteractionRequest 调用并等待 `RequestOutcome`（用户答复，或 turn 收口时
  * 的 cancelled）。adapter 负责把 *_request / *_resolved 事件发给 sink 留痕。取代旧的
  * approvalHandler / questionHandler 双回调——只保留一条 request→response 通道（design §4.7）。

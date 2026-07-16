@@ -25,6 +25,8 @@ interface ProviderSlot {
   adapter: AgentAdapter;
   ref?: ProviderSessionRef;
   starting?: Promise<void>;
+  /** 冷启动由哪个 driven turn 触发；open-time request 用它归属，不依赖 adapter 首个 await 时序。 */
+  startingTurnId?: string;
   freshNative: boolean;
 }
 
@@ -206,7 +208,7 @@ export class BatonSessionRuntime {
   /** 队列策略指针：当前唯一 driven turn（本轮 driven ≤ 1；见类 docstring） */
   private activeDrivenTurnId?: string;
   /**
-   * 未决 request 的应答通道：requestId → resolver（permission / question 统一路由）。
+   * 未决 request 的应答通道：requestId → resolver（各类 provider request 统一路由）。
    * **只有应答通道，没有状态**——pending request 的真相源是事件流（adapter 先 emit
    * *_request 再 await 回调，UI 从 reduced state 投影），内存只保留唤醒 adapter 的 resolve。
    * 崩溃后新进程没有 resolver，open 时的 crash recovery 会对 reduced pending 一律补
@@ -232,7 +234,7 @@ export class BatonSessionRuntime {
     });
 
   /**
-   * 宿主应答一个未决 request（permission / question 统一入口，response 自带 `requestId` 与
+   * 宿主应答一个未决 request（统一入口，response 自带 `requestId` 与
    * `kind` 路由）。false = requestId 不在挂起集合（已被应答、或事件流里的 pending 来自已死
    * 进程且无 resolver）——UI 据此提示 stale 而不是静默吞掉。事件留痕（*_resolved）由被唤醒
    * 的 adapter 负责，这里不落事件。
@@ -599,7 +601,7 @@ export class BatonSessionRuntime {
     // 不等 provider 冷启动（codex 首启要 spawn → initialize → thread resume/start，
     // 可达数秒，期间 Transcript 必须已能看到这条输入）。落盘的是**原始输入** turn.blocks：
     // <baton-sync> 注入只进 provider transport（syncContext / prepend），不进正典历史。
-    const slot = this.slotFor(turn.provider);
+    const slot = this.slotFor(turn.provider, turn.turnId);
     const providerKey = slot.adapter.provider;
     let release!: () => void;
     const released = new Promise<void>((resolve) => {
@@ -747,6 +749,14 @@ export class BatonSessionRuntime {
    * 单通道保证，不依赖"是否有活跃 turn"。
    */
   private onAdapterEvent(slot: ProviderSlot, ev: AnyNewEvent): void {
+    // provider 冷启动阶段也可能阻塞询问（当前是 Codex hook trust）。此时 adapter 尚无
+    // ProviderSessionRef，但它仍属于触发冷启动的 driven turn；在唯一事件入口补归属，
+    // 让 requires_action、cancel-cascade 与普通 turn 内 request 走同一条生命周期。
+    if (ev.kind === "hook_trust_request" && !ev.turnId) {
+      const active = this.activeDriven();
+      const turnId = active?.slot === slot ? active.turnId : slot.startingTurnId;
+      if (turnId) ev = { ...ev, turnId };
+    }
     const envelope = this.options.session.append(ev) as AnyEventEnvelope;
     if (envelope.kind === "state_update") {
       const p = envelope.payload;
@@ -769,7 +779,9 @@ export class BatonSessionRuntime {
         if (envelope.turnId) this.finalize(envelope.turnId, p.stopReason);
       }
     } else if (
-      (envelope.kind === "permission_request" || envelope.kind === "question_request") &&
+      (envelope.kind === "permission_request" ||
+        envelope.kind === "question_request" ||
+        envelope.kind === "hook_trust_request") &&
       envelope.turnId
     ) {
       // 记 request→turn 归属：requestHandler 随后（同步 await 前）消费，供 cancel-cascade
@@ -896,41 +908,45 @@ export class BatonSessionRuntime {
    * 与事件 sink 在这里就绪——runTurn 依赖这一点在 open() 完成**之前**落 user_message。
    * 启动完成的等待在 ensureProvider。
    */
-  private slotFor(provider: string): ProviderSlot {
+  private slotFor(provider: string, startingTurnId?: string): ProviderSlot {
     let slot = this.slots.get(provider);
     if (!slot) {
       const adapter = this.options.createAdapter(provider, {
         requestHandler: this.requestHandler,
       });
-      const created: ProviderSlot = { adapter, freshNative: true };
+      const created: ProviderSlot = { adapter, freshNative: true, startingTurnId };
       slot = created;
       this.slots.set(provider, created);
       created.starting = (async () => {
-        const existing = this.options.session.meta.providerSessions[adapter.provider];
-        const model = this.preferredModel(provider, adapter.provider);
-        const effort = this.preferredEffort(provider, adapter.provider);
-        created.ref = await adapter.open(
-          {
-            cwd: this.options.session.meta.cwd,
-            resumeSessionId: existing?.providerSessionId,
-          },
-          (ev) => this.onAdapterEvent(created, ev),
-        );
-        created.freshNative = !created.ref.resumed;
-        if (model && isModelConfigurable(adapter)) {
-          await adapter.setModel(created.ref, model);
+        try {
+          const existing = this.options.session.meta.providerSessions[adapter.provider];
+          const model = this.preferredModel(provider, adapter.provider);
+          const effort = this.preferredEffort(provider, adapter.provider);
+          created.ref = await adapter.open(
+            {
+              cwd: this.options.session.meta.cwd,
+              resumeSessionId: existing?.providerSessionId,
+            },
+            (ev) => this.onAdapterEvent(created, ev),
+          );
+          created.freshNative = !created.ref.resumed;
+          if (model && isModelConfigurable(adapter)) {
+            await adapter.setModel(created.ref, model);
+          }
+          if (effort && isEffortConfigurable(adapter)) {
+            await adapter.setEffort(created.ref, effort);
+          }
+          this.options.session.setProviderSession(adapter.provider, {
+            ...existing,
+            provider: adapter.provider,
+            providerSessionId: this.nativeSessionId(created),
+            syncedSeq: created.ref.resumed ? existing?.syncedSeq : 0,
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
+          });
+        } finally {
+          created.startingTurnId = undefined;
         }
-        if (effort && isEffortConfigurable(adapter)) {
-          await adapter.setEffort(created.ref, effort);
-        }
-        this.options.session.setProviderSession(adapter.provider, {
-          ...existing,
-          provider: adapter.provider,
-          providerSessionId: this.nativeSessionId(created),
-          syncedSeq: created.ref.resumed ? existing?.syncedSeq : 0,
-          ...(model ? { model } : {}),
-          ...(effort ? { effort } : {}),
-        });
       })();
       // starting 的消费方（ensureProvider）可能晚一拍才 await：先挂空 handler 防
       // "unhandled rejection"误报；真实错误仍由 await 侧感知并删除 slot

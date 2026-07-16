@@ -202,7 +202,7 @@ export interface PermissionOption {
 }
 
 // Request ↔ Response 交互轴（provider 询问用户 ↔ 用户答复，见 provider-interaction-design.md
-// §3.5）：permission / question / (elicitation) 是同轴不同 `kind`。三种 request contract 各自
+// §3.5）：permission / question / hook_trust / (elicitation) 是同轴不同 `kind`。各 request contract 各自
 // 独立（payload/终态不复用），只共享 requestId 路由与统一 respond()——不合成万能字段。
 // `kind` 是 InteractionRequest 联合的判别式（与 envelope kind 冗余但让 request 可独立传递）。
 export interface PermissionRequest {
@@ -276,13 +276,44 @@ export interface QuestionRequest {
   questions: QuestionPrompt[];
 }
 
+export interface HookTrustCandidate {
+  key: string;
+  source: string;
+  sourcePath: string;
+  trustStatus: "untrusted" | "modified";
+  command: string;
+  matcher?: string;
+  pluginId?: string;
+  currentHash?: string;
+  handlerType?: string;
+  timeoutSec?: number;
+  statusMessage?: string;
+}
+
+/**
+ * provider 启动前发现 hooks 尚未被信任：询问用户是否信任当前精确定义。Baton 按
+ * definition hash 持久化，定义不变时后续进程自动放行；这是启动信任，不是单次
+ * 工具执行权限，故不复用 PermissionRequest。
+ */
+export interface HookTrustRequest {
+  kind: "hook_trust";
+  requestId: string;
+  providerName: string;
+  hooks: HookTrustCandidate[];
+}
+
 /** InteractionRequest：provider→用户 request 的判别联合（按 `kind` 收窄）。elicitation 待接入 */
-export type InteractionRequest = PermissionRequest | QuestionRequest;
+export type InteractionRequest = PermissionRequest | QuestionRequest | HookTrustRequest;
 
 export interface QuestionResolved {
   requestId: string;
   outcome: "answered" | "cancelled" | (string & {});
   answers?: Record<string, string[]>;
+}
+
+export interface HookTrustResolved {
+  requestId: string;
+  outcome: "trusted" | "skipped" | "cancelled" | (string & {});
 }
 
 /** provider 声明的可用 slash command（形状对齐 ACP available command） */
@@ -414,6 +445,8 @@ export type EventPayloadMap = {
   approval_review_update: ApprovalReviewUpdate;
   question_request: QuestionRequest;
   question_resolved: QuestionResolved;
+  hook_trust_request: HookTrustRequest;
+  hook_trust_resolved: HookTrustResolved;
   usage_update: UsageUpdate;
   available_commands_update: AvailableCommandsUpdate;
   config_option_update: ConfigOptionUpdate;
