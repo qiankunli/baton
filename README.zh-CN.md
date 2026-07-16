@@ -4,7 +4,7 @@
 
 > 像传递接力棒一样，在 coding agents 之间传递上下文。
 
-baton 是一个 terminal-native 的统一 coding agent 会话，受 [tutti](https://github.com/tutti-os/tutti) 启发。你可以用 `/codex` 或 `/claude` 直接切换 coding agent，而 BatonSession 始终是同一段持久对话；关闭 baton 后重新打开，也可以换一个 provider 自然续聊。Claude Code 和 Codex 是首批内置 provider，不是封闭支持列表。
+baton 是一个以持久、provider-independent 会话为内核的 terminal-native coding-agent workspace，受 [tutti](https://github.com/tutti-os/tutti) 启发。当前，你可以在同一个 TUI 中使用 Claude Code 和 Codex，并在切换 agent 时自然延续上下文。由于 BatonSession 由 baton 而不是任何 provider 持有，这套基础能力可以从 agent 接力进一步演进到多 agent 协作与编排。Claude Code 和 Codex 是首批内置 provider，不是封闭支持列表。
 
 各家的原生会话只是恢复加速；即使原生会话无法恢复，BatonSession 历史仍然存在。
 
