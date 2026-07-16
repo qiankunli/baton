@@ -49,7 +49,7 @@ import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from
 import { sessionDisplayTitle, type SessionHandle, type SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
 import { sessionPickerOptions, type SessionPickerMode } from "./session-picker.tsx";
-import { setTerminalTabTitle } from "./terminal-title.ts";
+import { formatTerminalTabTitle, setTerminalTabTitle } from "./terminal-title.ts";
 
 // OpenTUI 以 30 FPS 绘制；逐 token 同步发布完整 view 只会让 React 重复重建 transcript，
 // 还会挤占 composer 的终端光标刷新。只合并高频、可安全追加的流式事件；请求、终态和
@@ -588,7 +588,9 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   private syncTerminalTitle(): void {
-    setTerminalTabTitle(sessionDisplayTitle(this.session.meta));
+    setTerminalTabTitle(
+      formatTerminalTabTitle(sessionDisplayTitle(this.session.meta), this.session.meta.forkedFrom !== undefined),
+    );
   }
 
   /**
