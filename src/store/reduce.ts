@@ -56,6 +56,19 @@ export interface PlanState extends PlanUpdate {
   provider?: string;
 }
 
+/**
+ * provider-scoped 会话状态的统一槽位，键 = 事件信封 `provider`（即 registry 的
+ * sessionKey / wire key，不是 canonical id——两套词汇混用曾让投影查空）。
+ * 约定：新增"每个 provider 各有一份"的状态时，在这里加字段，不要在 SessionState
+ * 再长平行的 Map<provider, X>（plan/contextUsage 都曾各自长过一个，事后才收敛）。
+ */
+export interface ProviderScopedState {
+  /** 最近 context 占用快照（整体替换）。带 model 标签：切 model 后旧快照按标签判失效 */
+  contextUsage?: ContextUsageUpdate;
+  /** 该 provider 最近一次 plan 的 id（pinned plan 的归属查询键；plan 本体在 plans） */
+  lastPlanId?: string;
+}
+
 /** TUI 时间线条目：message / tool_call / plan / notice 按首次出现排序 */
 export interface TimelineItem {
   type: "message" | "tool_call" | "plan" | "notice" | "approval_review";
@@ -114,10 +127,8 @@ export interface SessionState {
   availableCommands: AvailableCommand[];
   /** session config 完整快照：config_option_update 整体替换（model 变化可联动其他选项） */
   configOptions: SessionConfigOption[];
-  /** 当前 context 占用快照。与 usage（增量累加）语义不同：快照替换 */
-  contextUsage?: ContextUsageUpdate;
-  /** 多 provider 各有自己的原生上下文；按事件信封 provider 保存最近快照。 */
-  contextUsageByProvider: Map<string, ContextUsageUpdate>;
+  /** provider-scoped 状态统一入口（contextUsage / lastPlanId…），键 = 信封 provider（sessionKey） */
+  perProvider: Map<string, ProviderScopedState>;
   /** 最近一次结构化错误；willRetry 时 runState 仍应为 running（由事件源保证） */
   lastError?: ErrorUpdate & { seq: number };
   /**
@@ -152,7 +163,7 @@ export function emptySessionState(): SessionState {
     },
     availableCommands: [],
     configOptions: [],
-    contextUsageByProvider: new Map(),
+    perProvider: new Map(),
     notices: [],
     turnSummaries: [],
     lastSeq: 0,
@@ -316,11 +327,14 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       const p = ev.payload;
       if (!state.plans.has(p.planId)) state.timeline.push({ type: "plan", id: p.planId });
       const existing = state.plans.get(p.planId);
+      const provider = ev.provider ?? existing?.provider;
       state.plans.set(p.planId, {
         planId: p.planId,
         entries: [...p.entries],
-        provider: ev.provider ?? existing?.provider,
+        provider,
       });
+      // 归属查询键落统一槽位：投影按 provider 取"最近 plan"不再全表扫描
+      if (provider) providerScoped(state, provider).lastPlanId = p.planId;
       break;
     }
     // request/resolved 驱动 per-turn requires_action ↔ running：不变量收在 reducer，
@@ -384,8 +398,8 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       state.configOptions = [...ev.payload.options];
       break;
     case "context_usage_update":
-      state.contextUsage = { ...ev.payload };
-      state.contextUsageByProvider.set(ev.provider, { ...ev.payload });
+      // 快照替换语义（与 usage 的增量累加不同）；多 provider 各有自己的原生上下文
+      providerScoped(state, ev.provider).contextUsage = { ...ev.payload };
       break;
     case "_baton_error_update":
       state.lastError = { ...ev.payload, seq: ev.seq };
@@ -414,6 +428,16 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
   // 不用每个 case 记得更新
   state.runState = deriveRunState(state);
   return state;
+}
+
+/** 取或建 provider 状态槽；键必须是信封 provider（sessionKey），调用方不要自行换算 id */
+function providerScoped(state: SessionState, provider: string): ProviderScopedState {
+  let scoped = state.perProvider.get(provider);
+  if (!scoped) {
+    scoped = {};
+    state.perProvider.set(provider, scoped);
+  }
+  return scoped;
 }
 
 /** request 到场：所属 turn 派生为 requires_action（blocking request 挂起该 turn） */

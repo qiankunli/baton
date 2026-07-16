@@ -90,6 +90,33 @@ describe("BatonChatProtocol status command", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("context lookup keys by wire sessionKey, not canonical id (claude vs claude-code)", async () => {
+    // 回归：事件信封 provider 是 sessionKey（"claude-code"），曾用 canonical id（"claude"）
+    // 查 per-provider 槽，导致 claude 的 /status context 永远 unavailable。codex 两键相同，
+    // 只有 claude 能暴露这个错位。
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-status-claude-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      session.append({
+        kind: "context_usage_update",
+        provider: "claude-code",
+        payload: { model: "default", contextUsed: 40_000, contextSize: 200_000 },
+      });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+      await protocol.command("claude", "");
+      await protocol.command("status", "");
+      const status = protocol.getView().transcript.at(-1);
+      expect(status).toMatchObject({
+        id: "_baton_status",
+        text: expect.stringContaining("Context: 40,000 / 200,000 tokens (20%)"),
+      });
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("BatonChatProtocol provider commands", () => {
@@ -156,6 +183,7 @@ describe("BatonChatProtocol view projection", () => {
   type ViewInternals = {
     state: {
       plans: Map<string, { planId: string; provider?: string; entries: Array<{ content: string; status: string }> }>;
+      perProvider: Map<string, { lastPlanId?: string }>;
       timeline: Array<{ type: string; id: string }>;
       activeTurns: Map<
         string,
@@ -213,6 +241,8 @@ describe("BatonChatProtocol view projection", () => {
         ],
       });
       internals.state.timeline.push({ type: "plan", id: "p1" });
+      // 归属查询键在统一 per-provider 槽（reduce 里由 plan_update 维护；这里直接摆内部状态）
+      internals.state.perProvider.set("codex", { lastPlanId: "p1" });
       // pin 是"现在时"层：需有回合在运行（observed run 也算）
       internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "codex", origin: "provider", state: "running" });
       internals.changed();

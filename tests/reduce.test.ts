@@ -257,7 +257,7 @@ describe("snapshot vs delta semantics", () => {
     ]);
     expect(state.usage.inputTokens).toBe(13);
     expect(state.usage.outputTokens).toBe(7);
-    expect(state.contextUsage).toEqual({ contextUsed: 1500, contextSize: 200000 });
+    expect(state.perProvider.get("test")?.contextUsage).toEqual({ contextUsed: 1500, contextSize: 200000 });
   });
 
   test("context_usage_update snapshot replaces omitted fields too — no field-level merge", () => {
@@ -265,7 +265,7 @@ describe("snapshot vs delta semantics", () => {
       ev("context_usage_update", { contextUsed: 1000, cost: { amount: 1.5, currency: "USD" } }),
       ev("context_usage_update", { contextUsed: 1200 }),
     ]);
-    expect(state.contextUsage?.cost).toBeUndefined();
+    expect(state.perProvider.get("test")?.contextUsage?.cost).toBeUndefined();
   });
 
   test("context snapshots remain independently addressable per provider", () => {
@@ -273,8 +273,19 @@ describe("snapshot vs delta semantics", () => {
       { ...ev("context_usage_update", { contextSize: 200_000 }), provider: "codex" },
       { ...ev("context_usage_update", { contextSize: 1_000_000 }), provider: "claude-code" },
     ]);
-    expect(state.contextUsageByProvider.get("codex")?.contextSize).toBe(200_000);
-    expect(state.contextUsageByProvider.get("claude-code")?.contextSize).toBe(1_000_000);
+    expect(state.perProvider.get("codex")?.contextUsage?.contextSize).toBe(200_000);
+    expect(state.perProvider.get("claude-code")?.contextUsage?.contextSize).toBe(1_000_000);
+  });
+
+  test("plan_update records the provider's latest plan id in the per-provider slot", () => {
+    // pinned plan 的归属查询键：投影按 perProvider.lastPlanId 直取，不再全表扫描
+    const state = reduceEvents([
+      { ...ev("plan_update", { planId: "p1", entries: [{ content: "a", status: "pending", priority: "medium" }] }), provider: "codex" },
+      { ...ev("plan_update", { planId: "p2", entries: [{ content: "b", status: "pending", priority: "medium" }] }), provider: "claude-code" },
+      { ...ev("plan_update", { planId: "p3", entries: [{ content: "c", status: "pending", priority: "medium" }] }), provider: "codex" },
+    ]);
+    expect(state.perProvider.get("codex")?.lastPlanId).toBe("p3");
+    expect(state.perProvider.get("claude-code")?.lastPlanId).toBe("p2");
   });
 });
 
