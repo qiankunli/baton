@@ -1,0 +1,27 @@
+docs/kernel.md
+  s_3251ac38e2c962::t_2830137d5626af 60
+src/events/types.ts
+  s_3251ac38e2c962::t_6deaa95d012d45 462-474
+src/session/runtime.ts
+  s_3251ac38e2c962::t_73ea19517b70ff 21-27,34-40,487,491,493,589-598,603,605,611,615-625,629-630,633-650,765-770,772,796-801,924,930,961
+tests/session-runtime.test.ts
+  s_3251ac38e2c962::t_9fbaba0ee5017e 569-630
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c664e178fb43ca55546426fb421683f5443f3299",
+  "prompts": {},
+  "sessions": {
+    "s_3251ac38e2c962": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "11720e4f-ff0d-46cd-b601-c1243c70624f",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
