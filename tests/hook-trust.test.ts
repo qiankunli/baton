@@ -185,6 +185,10 @@ describe("Codex hook trust provider interaction", () => {
           key: "devloop:pre_tool_use:0", source: "plugin", sourcePath: "/plugins/devloop/hooks.codex.json",
           trustStatus: "modified", enabled: true, command: "/plugins/devloop/pretool.py", matcher: "Bash",
           pluginId: "devloop@devloop", currentHash: "sha256:one"
+        }, {
+          key: "devloop:post_tool_use:0", source: "plugin", sourcePath: "/plugins/devloop/hooks.codex.json",
+          trustStatus: "modified", enabled: true, command: "/plugins/devloop/posttool.py",
+          pluginId: "devloop@devloop", currentHash: "sha256:two"
         }] }] } });
         else if (msg.method === "thread/start") send({ id: msg.id, result: { thread: { id: "thread" } } });
       });
@@ -222,8 +226,8 @@ describe("Codex hook trust provider interaction", () => {
     expect(readFileSync(launches, "utf8").trim().split("\n")).toHaveLength(4);
     expect(secondEvents.some((event) => event.kind === "hook_trust_request")).toBe(false);
     expect(secondEvents.find((event) => event.kind === "_baton_notice")?.payload).toMatchObject({
-      title: "Enabled previously trusted Codex hooks",
-      detail: "devloop@devloop",
+      title: "Enabled 2 previously trusted Codex hooks",
+      detail: "devloop@devloop (2 hooks)",
     });
     await second.close(secondRef);
   });

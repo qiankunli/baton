@@ -228,7 +228,7 @@ type ActionRequestView = PermissionRequestView | QuestionRequestView | Elicitati
 
 - provider 启动时发现 hook 定义尚未信任或已变化，发独立 `hook_trust` request；它不是某次工具调用的 permission。
 - Baton 按 hook `key + currentHash` 把用户决定持久到 `~/.baton/state/hook.json` 的 `trust.providers` 区；hash 不变时后续启动自动启用，hash 改变时重新询问。该文件为后续 hook 级配置保留其他平级字段。
-- 自动命中持久信任也必须写 timeline notice，不能静默 bypass。
+- 这是 provider setup behavior：首次/变化时以 request 阻塞询问，自动命中持久信任时以 timeline notice 留痕，不能静默 bypass。信任始终逐 hook 校验；notice 可按 plugin/source 聚合，避免同一 owner 的多条 hook 刷屏。
 - Codex app-server 当前只有 `hooks/list`、没有 trust 写 RPC；adapter 在 Baton 精确 hash 校验通过后，以官方一次性 bypass flag 重启 provider 进程。这个 wire 细节不进入 core request 类型。
 
 chat-tui 可以复用 select、editor、settings 等 primitive，但 request contract 不互相复用。OpenCode 的独立 Question/Permission service 与 Codex 的独立 overlay 都证明这种分离更稳。
