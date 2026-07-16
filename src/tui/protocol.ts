@@ -158,6 +158,23 @@ function contextUsageText(
   return `${context.contextUsed.toLocaleString("en-US")} / ${size} tokens (${percent}%)`;
 }
 
+function contextUsageStatusText(
+  context: { model?: string; contextUsed?: number; contextSize?: number } | undefined,
+  selectedModel: string,
+): string | undefined {
+  if (
+    !context ||
+    (context.model && context.model !== selectedModel) ||
+    context.contextUsed === undefined ||
+    !context.contextSize ||
+    context.contextSize < 0
+  ) {
+    return undefined;
+  }
+  const percent = Math.round((context.contextUsed / context.contextSize) * 100);
+  return `context ${context.contextUsed.toLocaleString("en-US")}/${context.contextSize.toLocaleString("en-US")} (${percent}%)`;
+}
+
 export interface ThoughtDisplayBlock {
   title: string;
   content?: string;
@@ -706,8 +723,12 @@ export class BatonChatProtocol implements ChatProtocol {
     // 不应提前把同一 provider 画成 idle + background 两行。
     const activeTurnId = this.runtime.activeTurnId;
     const statusProvider = active ?? observedRun?.provider ?? this.agent;
-    const statusProviderId = providerDefinitionFor(statusProvider)?.id;
+    const statusProviderDefinition = providerDefinitionFor(statusProvider);
+    const statusProviderId = statusProviderDefinition?.id;
     const statusModel = statusProviderId ? (this.runtime.currentModel(statusProviderId) ?? "default") : "default";
+    const statusProviderKey = statusProviderDefinition?.sessionKey ?? statusProvider;
+    const contextStatus = contextUsageStatusText(v.perProvider.get(statusProviderKey)?.contextUsage, statusModel);
+    const contextMode = contextStatus ? ` · ${contextStatus}` : "";
     // 审批路由问 adapter 要（provider 自己报的生效值），不读 config——config 是意图，
     // 且投影层不得按 provider 分支（不变量 #3）。曾经这里硬编码 codexApprovalReviewer，
     // 于是跟 claude 对话时 footer 照样显示 codex 的委托状态。
@@ -720,7 +741,7 @@ export class BatonChatProtocol implements ChatProtocol {
           {
             id: `run:${active}`,
             author: providerAuthor(active),
-            label: `${statusModel} · ${runStatusLabel(v, activeTurnId)}${approvalMode}`,
+            label: `${statusModel} · ${runStatusLabel(v, activeTurnId)}${contextMode}${approvalMode}`,
             startedAt: this.runtime.activeStartedAt,
             hint: "Esc to interrupt",
           },
@@ -730,7 +751,7 @@ export class BatonChatProtocol implements ChatProtocol {
             {
               id: `run:observed:${observedRun.turnId}`,
               author: providerAuthor(statusProvider),
-              label: `${statusModel} · ${runStatusLabel(v, observedRun.turnId)} · background${approvalMode}`,
+              label: `${statusModel} · ${runStatusLabel(v, observedRun.turnId)} · background${contextMode}${approvalMode}`,
               startedAt: observedRun.startedAt,
             },
           ]
@@ -738,7 +759,7 @@ export class BatonChatProtocol implements ChatProtocol {
             {
               id: `agent:${this.agent}`,
               author: providerAuthor(this.agent),
-              label: `${statusModel} · idle${approvalMode}`,
+              label: `${statusModel} · idle${contextMode}${approvalMode}`,
             },
           ];
     const busy = active !== undefined || observedRuns.length > 0;

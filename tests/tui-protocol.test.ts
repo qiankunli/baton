@@ -294,6 +294,55 @@ describe("BatonChatProtocol view projection", () => {
     }
   });
 
+  test("agent status shows context usage for its provider and model", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-context-status-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      session.append({
+        kind: "context_usage_update",
+        provider: "codex",
+        payload: { model: "default", contextUsed: 12_500, contextSize: 200_000 },
+      });
+      session.append({
+        kind: "context_usage_update",
+        provider: "claude-code",
+        payload: { model: "default", contextUsed: 80_000, contextSize: 200_000 },
+      });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+
+      expect(protocol.getView().runStatus?.[0]?.label).toBe("default · idle · context 12,500/200,000 (6%)");
+      expect(protocol.getView().footer).not.toContain("context");
+      await protocol.command("claude", "");
+      expect(protocol.getView().runStatus?.[0]?.label).toBe("default · idle · context 80,000/200,000 (40%)");
+      expect(protocol.getView().footer).not.toContain("context");
+
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("agent status omits context usage reported for an old model", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-stale-context-status-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      session.append({
+        kind: "context_usage_update",
+        provider: "codex",
+        payload: { model: "gpt-old", contextUsed: 190_000, contextSize: 200_000 },
+      });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+
+      expect(protocol.getView().runStatus?.[0]?.label).toBe("default · idle");
+
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("plan shows in exactly one place: pin while unfinished, transcript once done", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-plan-"));
     try {
