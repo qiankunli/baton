@@ -67,6 +67,10 @@ export interface SessionMeta {
   title?: string;
   /** 第一条真实用户输入的紧凑预览，只写一次；供 resume/list/@ 发现会话。 */
   preview?: string;
+  /** 会话名称；fork session 由 fork 后第一次 queue 写入。 */
+  name?: string;
+  /** 会话名称之外的补充说明；fork session 用它快照来源会话。 */
+  description?: string;
   cwd: string;
   createdAt: string;
   updatedAt?: string;
@@ -115,7 +119,11 @@ function explicitSessionTitle(meta: SessionMeta): string | undefined {
 }
 
 export function sessionDisplayTitle(meta: SessionMeta): string {
-  return explicitSessionTitle(meta) ?? meta.preview?.trim() ?? `chat @ ${meta.cwd}`;
+  const explicitTitle = explicitSessionTitle(meta);
+  if (meta.forkedFrom) {
+    return explicitTitle ?? meta.name?.trim() ?? meta.description?.trim() ?? `fork: chat @ ${meta.cwd}`;
+  }
+  return explicitTitle ?? meta.preview?.trim() ?? `chat @ ${meta.cwd}`;
 }
 
 function previewFromSessionLog(dir: string): string | undefined {
@@ -288,11 +296,11 @@ export class SessionStore {
       };
     }
     const now = new Date().toISOString();
-    const sourceTitle = explicitSessionTitle(source.meta);
+    const sourceName = source.meta.name?.trim() ?? source.meta.preview?.trim() ?? sessionDisplayTitle(source.meta);
     const meta: SessionMeta = {
       batonSessionId: id,
-      title: opts.title ?? (sourceTitle ? `${sourceTitle} (fork)` : undefined),
-      preview: source.meta.preview,
+      title: opts.title,
+      description: `fork: ${sourceName}`,
       cwd,
       createdAt: now,
       updatedAt: now,
@@ -516,6 +524,12 @@ export class SessionHandle {
     if (this.meta.preview?.trim()) return;
     const preview = sessionPreview(text);
     if (preview) this.updateMeta({ preview });
+  }
+
+  setNameIfEmpty(text: string): void {
+    if (this.meta.name?.trim()) return;
+    const name = sessionPreview(text);
+    if (name) this.updateMeta({ name });
   }
 
   setProviderSession(key: string, ps: ProviderSessionMeta): void {

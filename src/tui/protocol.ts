@@ -49,7 +49,7 @@ import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from
 import { sessionDisplayTitle, type SessionHandle, type SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
 import { sessionPickerOptions, type SessionPickerMode } from "./session-picker.tsx";
-import { formatTerminalTabTitle, setTerminalTabTitle } from "./terminal-title.ts";
+import { setTerminalTabTitle } from "./terminal-title.ts";
 
 // OpenTUI 以 30 FPS 绘制；逐 token 同步发布完整 view 只会让 React 重复重建 transcript，
 // 还会挤占 composer 的终端光标刷新。只合并高频、可安全追加的流式事件；请求、终态和
@@ -303,7 +303,8 @@ export class BatonChatProtocol implements ChatProtocol {
     this.status = null;
     this.commandOutput = null;
     const previousTitle = sessionDisplayTitle(this.session.meta);
-    this.session.setPreviewIfEmpty(text);
+    if (this.session.meta.forkedFrom) this.session.setNameIfEmpty(text);
+    else this.session.setPreviewIfEmpty(text);
     if (sessionDisplayTitle(this.session.meta) !== previousTitle) this.syncTerminalTitle();
     const { prompt } = expandMentions(this.store, text, this.config.mentionBudgetChars);
     const blocks: PromptBlock[] = [{ type: "text", text: prompt }];
@@ -588,9 +589,7 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   private syncTerminalTitle(): void {
-    setTerminalTabTitle(
-      formatTerminalTabTitle(sessionDisplayTitle(this.session.meta), this.session.meta.forkedFrom !== undefined),
-    );
+    setTerminalTabTitle(sessionDisplayTitle(this.session.meta));
   }
 
   /**
@@ -650,10 +649,10 @@ export class BatonChatProtocol implements ChatProtocol {
     const context = this.state.perProvider.get(providerKey)?.contextUsage;
     const contextText = contextUsageText(context, selectedModel);
     const providers = Object.keys(meta.providerSessions).join(", ") || "-";
-    const preview = meta.preview ?? meta.title ?? "(empty session)";
     const text = [
       `Session: ${meta.batonSessionId}`,
-      `Preview: ${preview}`,
+      `Name: ${sessionDisplayTitle(meta)}`,
+      ...(meta.description ? [`Description: ${meta.description}`] : []),
       `Directory: ${meta.cwd}`,
       `Current: ${this.agent} - model ${selectedModel} - effort ${selectedEffort}`,
       `Context: ${contextText}`,

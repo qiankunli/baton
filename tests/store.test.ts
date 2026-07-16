@@ -412,7 +412,10 @@ describe("forkSession", () => {
     const child = store.forkSession(source.id);
     expect(child.id).not.toBe(source.id);
     expect(child.meta.cwd).toBe("/tmp/proj");
-    expect(child.meta.title).toBe("demo (fork)");
+    expect(child.meta.title).toBeUndefined();
+    expect(child.meta.name).toBeUndefined();
+    expect(child.meta.description).toBe("fork: do the thing");
+    expect(sessionDisplayTitle(child.meta)).toBe("fork: do the thing");
     expect(child.meta.forkedFrom).toEqual({
       batonSessionId: source.id,
       throughSeq: sourceEvents.at(-1)!.seq,
