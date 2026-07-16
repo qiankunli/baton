@@ -1,0 +1,33 @@
+src/session/open.ts
+  s_3251ac38e2c962::t_1a5a117ec7c828 91,95-101,103
+src/store/reduce.ts
+  s_3251ac38e2c962::t_83fcc17f120a28 59-87,144-145,179,276,280-295,303,383-384,386-387,399-400,402-403,405-406,408-409
+src/tui/protocol.ts
+  s_3251ac38e2c962::t_33cb5ac6fb75ee 47-53,451-455,678,680-682
+tests/cancel-cascade.test.ts
+  s_3251ac38e2c962::t_2b66731fd9160b 99,111
+tests/reduce.test.ts
+  s_3251ac38e2c962::t_bc204c588ec6e0 122,127,137,142,161,167
+tests/session-open.test.ts
+  s_3251ac38e2c962::t_29eb7d0ed6a3c9 177,196,224
+tests/session-runtime.test.ts
+  s_3251ac38e2c962::t_7b5c637772d9a1 501,566
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "593abad619ee8975676fca7c3a143dc0b01e9a58",
+  "prompts": {},
+  "sessions": {
+    "s_3251ac38e2c962": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "11720e4f-ff0d-46cd-b601-c1243c70624f",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
