@@ -17,6 +17,8 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 
 import { newId } from "../../events/ids.ts";
+import type { DiagnosticSink } from "../../diagnostics.ts";
+import { diagnosticError } from "../../diagnostics.ts";
 import type {
   ContentBlock,
   DiffBlock,
@@ -421,6 +423,7 @@ function claudeContextUsage(
 
 export interface ClaudeAdapterOptions {
   requestHandler: RequestHandler;
+  diagnostic?: DiagnosticSink;
   /** claude 可执行文件路径；默认 BATON_CLAUDE_BIN 环境变量，再默认交给 SDK 自己找 */
   executablePath?: string;
   /** 测试注入点；生产始终使用 Agent SDK 的 query。 */
@@ -609,7 +612,16 @@ export class ClaudeAdapter implements AgentAdapter {
           rt.modelInfos = result.models;
           rt.models = claudeModels(result.models);
         })
-        .catch(() => {});
+        .catch((error) => {
+          this.options.diagnostic?.({
+            level: "warn",
+            component: "claude.initialization",
+            provider: this.provider,
+            turnId: current.turnId,
+            message: "Claude SDK initialization result failed",
+            error: diagnosticError(error),
+          });
+        });
       for await (const msg of q) {
         if (startsObservedTurn(msg.type, current)) current = this.mintObservedTurn(rt);
         this.handleMessage(rt, emit, msg, current);
@@ -617,6 +629,14 @@ export class ClaudeAdapter implements AgentAdapter {
       // 流正常耗尽但没有 result 消息（SDK 异常路径）：仍要保证恰好一次终态
       this.finishTurn(rt, emit, current, current.cancelRequested ? "cancelled" : "end_turn");
     } catch (error) {
+      this.options.diagnostic?.({
+        level: current.cancelRequested ? "info" : "error",
+        component: "claude.query",
+        provider: this.provider,
+        turnId: current.turnId,
+        message: current.cancelRequested ? "Claude SDK query stopped after cancellation" : "Claude SDK query failed",
+        error: diagnosticError(error),
+      });
       if (current.cancelRequested) {
         this.finishTurn(rt, emit, current, "cancelled");
       } else {
@@ -679,7 +699,16 @@ export class ClaudeAdapter implements AgentAdapter {
     if (!rt?.activeQuery) return;
     if (rt.activeTurn) rt.activeTurn.cancelRequested = true;
     // interrupt 与消息流会被 SDK 同时结束；最终 idle/cancelled 由 runQuery 的消费路径收口。
-    await rt.activeQuery.interrupt().catch(() => {});
+    await rt.activeQuery.interrupt().catch((error) => {
+      this.options.diagnostic?.({
+        level: "warn",
+        component: "claude.cancel",
+        provider: this.provider,
+        turnId: rt.activeTurn?.turnId,
+        message: "Claude SDK interrupt failed",
+        error: diagnosticError(error),
+      });
+    });
   }
 
   async close(ref: ProviderSessionRef): Promise<void> {

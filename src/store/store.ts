@@ -1,4 +1,5 @@
-// 会话存储：~/.baton/projects/<cwd 转义>/<id>/session.jsonl + meta.json。
+// 会话存储：~/.baton/projects/<cwd 转义>/<id>/session.jsonl + meta.json，并按每次打开
+// 生成 <runId>.jsonl / <runId>.log 事件镜像与诊断配对。
 // 与 Claude Code 一样按项目目录分组，方便按项目浏览与清理；项目目录名不可逆，
 // 真相源仍是 meta.json 里的 cwd。session.jsonl 承载 BatonSession 的统一逻辑历史；
 // ProviderSession 元数据只用于优先恢复 provider 私有状态，缺失时仍可从 BatonSession 重建上下文。
@@ -22,6 +23,8 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import type { DiagnosticEntry } from "../diagnostics.ts";
+import { diagnosticError } from "../diagnostics.ts";
 import { newId } from "../events/ids.ts";
 import {
   ENVELOPE_VERSION,
@@ -317,6 +320,8 @@ function writeMetaAtomic(dir: string, meta: SessionMeta): void {
 export class SessionHandle {
   readonly id: string;
   readonly dir: string;
+  /** 每次打开 SessionHandle 都新建一个 run；同 basename 的 jsonl/log 便于对照。 */
+  readonly runId = newId("run");
   meta: SessionMeta;
   private nextSeq: number | undefined;
   private listeners = new Set<(ev: AnyEventEnvelope) => void>();
@@ -339,6 +344,33 @@ export class SessionHandle {
 
   private jsonlPath(): string {
     return join(this.dir, "session.jsonl");
+  }
+
+  private runJsonlPath(): string {
+    return join(this.dir, `${this.runId}.jsonl`);
+  }
+
+  private runLogPath(): string {
+    return join(this.dir, `${this.runId}.log`);
+  }
+
+  /**
+   * 本 run 的旁路诊断日志。日志失败必须静默：它服务排障，不能反向影响正典会话。
+   */
+  diagnostic(entry: DiagnosticEntry): void {
+    try {
+      appendFileSync(
+        this.runLogPath(),
+        `${JSON.stringify({
+          ts: new Date().toISOString(),
+          runId: this.runId,
+          batonSessionId: this.id,
+          ...entry,
+        })}\n`,
+      );
+    } catch {
+      // session 目录本身不可写时只能放弃；调用方仍按自己的错误语义继续或失败。
+    }
   }
 
   private lockPath(): string {
@@ -427,12 +459,40 @@ export class SessionHandle {
       batonSessionId: this.id,
       ...ev,
     };
-    appendFileSync(this.jsonlPath(), `${JSON.stringify(envelope)}\n`);
+    const line = `${JSON.stringify(envelope)}\n`;
+    try {
+      appendFileSync(this.jsonlPath(), line);
+    } catch (error) {
+      this.diagnostic({
+        level: "error",
+        component: "store.session",
+        message: "failed to append session.jsonl",
+        error: diagnosticError(error),
+      });
+      throw error;
+    }
+    try {
+      appendFileSync(this.runJsonlPath(), line);
+    } catch (error) {
+      this.diagnostic({
+        level: "error",
+        component: "store.run",
+        message: `failed to append ${this.runId}.jsonl`,
+        error: diagnosticError(error),
+      });
+    }
     for (const listener of this.listeners) {
       try {
         listener(envelope as AnyEventEnvelope);
-      } catch {
+      } catch (error) {
         // 投影侧异常不能污染写入路径：事件已落盘，订阅者自己负责健壮性
+        this.diagnostic({
+          level: "error",
+          component: "store.listener",
+          message: "session event listener threw",
+          error: diagnosticError(error),
+          details: { seq: envelope.seq, kind: envelope.kind },
+        });
       }
     }
     return envelope;

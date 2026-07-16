@@ -187,6 +187,41 @@ describe("event append / read", () => {
     expect(reopened.readEvents()).toHaveLength(3);
   });
 
+  test("each open writes paired run jsonl and diagnostic log", () => {
+    const h = store.createSession({ cwd: "/tmp/proj" });
+    expect(h.runId.startsWith("run_")).toBe(true);
+
+    const event = h.append({
+      kind: "_baton_error_update",
+      provider: "codex",
+      turnId: "t_1",
+      payload: { message: "provider failed" },
+    });
+    h.diagnostic({
+      level: "error",
+      component: "codex.jsonrpc",
+      provider: "codex",
+      turnId: "t_1",
+      message: "mapping failed",
+      error: { name: "Error", message: "boom", stack: "stack" },
+    });
+
+    const runEvents = readFileSync(join(h.dir, `${h.runId}.jsonl`), "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(runEvents).toEqual([event]);
+
+    const log = JSON.parse(readFileSync(join(h.dir, `${h.runId}.log`), "utf8").trim());
+    expect(log.runId).toBe(h.runId);
+    expect(log.batonSessionId).toBe(h.id);
+    expect(log.component).toBe("codex.jsonrpc");
+    expect(log.error.message).toBe("boom");
+
+    const reopened = store.openSession(h.id);
+    expect(reopened.runId).not.toBe(h.runId);
+  });
+
   test("raw is preserved verbatim (细节保真)", () => {
     const h = store.createSession({ cwd: "/tmp/proj" });
     const raw = { method: "item/agentMessage/delta", params: { weird: [1, { deep: true }] } };

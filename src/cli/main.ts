@@ -86,6 +86,7 @@ async function main(): Promise<void> {
 
   const adapter = createProviderAdapter(agentName, {
     requestHandler: askRequest,
+    diagnostic: (entry) => session.diagnostic(entry),
     config,
     rootDir: store.rootDir,
   });

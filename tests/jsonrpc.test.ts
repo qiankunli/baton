@@ -1,11 +1,16 @@
 import { describe, expect, test } from "bun:test";
 
 import { JsonRpcPeer } from "../src/adapters/codex/jsonrpc.ts";
+import type { DiagnosticEntry } from "../src/diagnostics.ts";
 
-function pair(): { peer: JsonRpcPeer; sent: string[] } {
+function pair(): { peer: JsonRpcPeer; sent: string[]; diagnostics: DiagnosticEntry[] } {
   const sent: string[] = [];
-  const peer = new JsonRpcPeer((line) => sent.push(line));
-  return { peer, sent };
+  const diagnostics: DiagnosticEntry[] = [];
+  const peer = new JsonRpcPeer(
+    (line) => sent.push(line),
+    (entry) => diagnostics.push(entry),
+  );
+  return { peer, sent, diagnostics };
 }
 
 describe("JsonRpcPeer", () => {
@@ -50,9 +55,24 @@ describe("JsonRpcPeer", () => {
     expect(resp.result).toEqual({ decision: "accept" });
   });
 
-  test("non-JSON lines are ignored", () => {
-    const { peer } = pair();
+  test("non-JSON lines are ignored and diagnosed", () => {
+    const { peer, diagnostics } = pair();
     expect(() => peer.feed("warning: something\n")).not.toThrow();
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]!.component).toBe("codex.jsonrpc");
+    expect(diagnostics[0]!.details?.line).toBe("warning: something");
+  });
+
+  test("notification handler failures are diagnosed without closing the peer", () => {
+    const { peer, diagnostics } = pair();
+    peer.onNotification(() => {
+      throw new Error("bad mapping");
+    });
+    expect(() =>
+      peer.feed(`${JSON.stringify({ jsonrpc: "2.0", method: "future/event", params: {} })}\n`),
+    ).not.toThrow();
+    expect(diagnostics[0]!.component).toBe("codex.notification");
+    expect(diagnostics[0]!.error?.message).toBe("bad mapping");
   });
 
   test("close rejects all pending requests", async () => {
