@@ -195,10 +195,12 @@ Composer          输入框（现在时）
   ├ Agent Status  单行：driven turn > background turn > 当前输入目标 idle
   ├ placeholder   空输入提示（/ commands、@ mentions）
   └ 浮层           命令 / 引用 / 审批，锚定输入框
+[Feedback]        短寿命操作回执 / 错误提示（有内容才渲染；不替换 Footer）
 Footer            常驻状态栏（usage、队列计数、plan 进度摘要、cwd）
 ```
 
 - **Agent Status 是输入框的单行状态，不是独立层**：优先显示当前 driven turn；没有 driven turn 时显示 provider 自发的 background turn；完全空闲才回落到当前输入目标。运行相位是秒级现在时、只有当下有意义，只出现在这里、不落 transcript。多运行者并发尚未进入当前产品范围，不提前用多行表达；plan 寿命不同（turn 级、值得回看），盖棺后落 transcript 终态卡。
+- **Feedback 与 Footer 寿命不同，不互相替换**：Feedback 只承载当前操作的短寿命回执或错误（如 steer 降级、命令结果、过期请求），状态变化后即可消失；Footer 是用户随时可查的常驻会话状态，即使 Feedback 出现也必须保留。需要跨操作回看的 warning / error 不放 Feedback，应作为 notice 进入 Transcript。
 - **pin 的判断尺：只有"当前 provider 的未完成 plan + 该 provider 有回合在运行"才 pin，且 pin 带消失规则**：`[Plan]` 层仅在当前输入目标的 plan 有未完成项、且同一 provider 处于运行态时渲染（对齐 opencode sidebar / pi-mono widget 的业界惯例）。切换 provider 后，上一家未完成的 plan 卸下 pin 归 transcript；全部完成或 idle 后也同样卸下——pin 是"现在时"层，搁置即过去时，否则 provider 状态更新缺失或中途放弃时 pin 永驻，别家 provider 的回合也会误将它重新激活。切回且该 provider 重新开跑时可重新上 pin。超长 plan 窗口对准第一个未完成项，保证"现在进行到哪一步"始终可见。plan 信息**不进 Agent Status 行**——相位行要求稳定短小、每秒重绘，塞可变长步骤文本会抖动（codex / opencode / pi-mono 三家也均未这么做）；进度摘要（`plan:2/4`）归 Footer。
 - **plan 互补显示：同一时刻只出现在一个地方**。进行中归 pin（现在时），transcript 不渲染该 plan 卡——pin 已完整承担"进行到哪"，同屏两份是冗余，且"过去时区域里有块在实时改写"本身违背时态分层（pin 出现前它是不得已，之后失去存在理由）。全部完成 pin 停发，终态卡在 timeline 原位出现（过去时），回看长 turn 时它就是目录，@ 引用与 resume 也靠它。数据（plan_update 事件与 reduce 状态）始终全量保留，互补只是显隐规则，全部在 baton projection，chat-tui 无感知。
 - **语义合成在 baton projection，chat-tui 只收展示结构**：projection 的合成规则是——active provider 默认 thinking；`_baton_run_status` 的 phase 覆盖之（如 compacting，来源见 `docs/provider-output-lifecycle.md` §2 归一表）；`willRetry` 错误合成 retrying；idle 回落为目标标识主行。chat-tui 侧的 `runStatus` 只有 author / label / startedAt / hint（model 由 projection 拼进 label，chat-tui 不理解 model 概念），elapsed 跳秒由 TUI 自理，baton 只在状态变化时发快照（避免为跳秒每秒重建整个 view）。着色也走展示结构：不在协议里传颜色，author 沿用 transcript 的 `agentColorFor` 约定，同一 provider 在历史与状态行天然同色，颜色决策始终归 Theme。同理，`[Plan]` 的显隐规则（有未完成项才下发）在 projection，chat-tui 只按"非空即渲染"处理。
