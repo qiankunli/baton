@@ -303,7 +303,7 @@ export class BatonChatProtocol implements ChatProtocol {
     this.status = null;
     this.commandOutput = null;
     const previousTitle = sessionDisplayTitle(this.session.meta);
-    if (this.session.meta.forkedFrom) this.session.setNameIfEmpty(text);
+    if (this.session.meta.forkedFrom) this.session.setTitleIfEmpty(text);
     else this.session.setPreviewIfEmpty(text);
     if (sessionDisplayTitle(this.session.meta) !== previousTitle) this.syncTerminalTitle();
     const { prompt } = expandMentions(this.store, text, this.config.mentionBudgetChars);

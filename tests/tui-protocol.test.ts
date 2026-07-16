@@ -77,7 +77,7 @@ describe("BatonChatProtocol session preview", () => {
       await protocol.submit("Do not replace the fork name");
 
       const reopened = store.openSession(session.id);
-      expect(reopened.meta.name).toBe("Implement fork session labels");
+      expect(reopened.meta.title).toBe("Implement fork session labels");
       expect(reopened.meta.description).toBe("fork: Design session labels");
       expect(sessionDisplayTitle(reopened.meta)).toBe("Implement fork session labels");
       await protocol.exit();

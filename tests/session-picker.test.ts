@@ -54,7 +54,7 @@ describe("sessionPickerOptions", () => {
     const fork: SessionMeta = {
       ...sessions[1]!,
       batonSessionId: "bs_fork",
-      name: "Inspect provider logs",
+      title: "Inspect provider logs",
       description: "fork: Implement resume titles",
       updatedAt: "2026-07-04T00:00:00Z",
       forkedFrom: { batonSessionId: "bs_titled", throughSeq: 3 },
