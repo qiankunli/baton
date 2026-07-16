@@ -57,6 +57,7 @@ ProviderSession 不在此表——它是某 provider 的私有执行状态、内
 - `admit`（runtime，driven turn）：出队即由 runtime 落 `user_message` + `state_update(running)`——用户输入是 BatonSession 的事实，不等 provider 冷启动；driven turn 全局串行、finalize 推进队列。
 - `observe`（adapter，observed turn）：provider 自发。adapter 在终态后的同一消息流上检测到新活动，铸新 turnId、以 `state_update(running, origin:"provider")` 开界、idle 收界；runtime 只划界记账、投影，**不进队列**（它已在跑，调度它无意义、阻塞用户输入更是倒置）。全局串行约定据此收窄为：**driven turn 全局串行，observed turn 与其正交**。
 - `terminal`（恰好一次）：adapter 在任何退出路径（正常 / wire error / 子进程退出 / transport close）都必须报告或合成一次 `state_update(idle)`；错误路径先发 `_baton_error_update`。重复 / 迟到的物理终态允许存在，runtime 按 baton turn id 幂等 finalize。
+- `setup`（provider 冷启动，turn 之外的活动窗口）：slot 创建 → open 完成之间，adapter 可能阻塞征询用户（hook trust / 登录确认）、拉模型目录、失败退出。setup 不自成 turn——其间的 request 事件一律归属**触发冷启动的 driven turn**（唯一事件入口按"是不是 request"补归属，不按 kind 特判）；setup 期间 adapter 自行启动的资源（子进程、探测 query）由 **adapter 负责清理**——open 未返回 ref 前 runtime 无从 close，失败路径不清理即泄漏。
 - `finalize`：落 turn-summary、推进队列（仅 driven）。
 
 **自愈旁支**（provider 静默悬挂时）：stall 在事件流上被观测（L1，`_baton_stall_notice`）→ 若 adapter 声明 `Reconcilable` 则探权威快照（L2）→ 用修复事件结算被丢的 item 级终态 → 合成终态重新进同一条流水线。silence 是观察不是判决，权威探测应能 clear / refine 而非直接判死。
