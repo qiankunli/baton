@@ -338,10 +338,14 @@ describe("BatonChatProtocol view projection", () => {
       });
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
 
-      expect(protocol.getView().runStatus?.[0]?.label).toBe("default · idle · context 12,500/200,000 (6%)");
+      expect(protocol.getView().runStatus).toHaveLength(2);
+      expect(protocol.getView().runStatus?.[0]?.label).toBe("default · idle");
+      expect(protocol.getView().runStatus?.[1]?.label).toBe("context 12,500/200,000 (6%)");
       expect(protocol.getView().footer).not.toContain("context");
       await protocol.command("claude", "");
-      expect(protocol.getView().runStatus?.[0]?.label).toBe("default · idle · context 80,000/200,000 (40%)");
+      expect(protocol.getView().runStatus).toHaveLength(2);
+      expect(protocol.getView().runStatus?.[0]?.label).toBe("default · idle");
+      expect(protocol.getView().runStatus?.[1]?.label).toBe("context 80,000/200,000 (40%)");
       expect(protocol.getView().footer).not.toContain("context");
 
       await protocol.exit();
