@@ -661,6 +661,30 @@ describe("toolTranscriptItem", () => {
 // 启动时的 resume/fork 会话选择已移到 session picker（src/tui/session-picker.tsx，
 // 不经过 BatonChatProtocol）；/sessions 的会话内切换浮层仍由 protocol 承载。
 
+describe("BatonChatProtocol sessions picker", () => {
+  test("only shows sessions from the current project", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-project-sessions-"));
+    try {
+      const store = new SessionStore(root);
+      const current = store.createSession({ cwd: "/repo" });
+      const sibling = store.createSession({ cwd: "/repo" });
+      const other = store.createSession({ cwd: "/other" });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session: current, resumed: false }, () => undefined);
+
+      await protocol.command("sessions", "");
+
+      const values = protocol.getView().picker?.options.map((option) => option.value) ?? [];
+      expect(values).toHaveLength(2);
+      expect(values).toContain(current.id);
+      expect(values).toContain(sibling.id);
+      expect(values).not.toContain(other.id);
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("runStatusLabel", () => {
   const base = { activeTurns: new Map(), toolCalls: new Map(), lastError: undefined, lastSeq: 5 };
   const withPhase = (turnId: string, phase: { phase: string; title?: string }) => ({

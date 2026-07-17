@@ -672,7 +672,7 @@ export class BatonChatProtocol implements ChatProtocol {
   private openSessionsPicker(mode: SessionPickerMode = "list"): void {
     this.openPicker({
       title: `Select BatonSession${mode === "tree" ? " (tree)" : ""}`,
-      options: sessionPickerOptions(this.store.listSessions(), {
+      options: sessionPickerOptions(this.store.listSessions({ cwd: this.session.meta.cwd }), {
         currentSessionId: this.session.id,
         mode,
       }),

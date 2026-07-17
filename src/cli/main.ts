@@ -117,7 +117,7 @@ async function main(): Promise<void> {
     if (!line) continue;
     if (line === "/exit") break;
     if (line === "/sessions") {
-      for (const m of store.listSessions()) {
+      for (const m of store.listSessions({ cwd })) {
         stdout.write(`  @${m.batonSessionId}  ${sessionDisplayTitle(m)}\n`);
       }
       continue;

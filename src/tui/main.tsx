@@ -42,6 +42,7 @@ ensureConfigFile(rootArg);
 const config = loadConfig(rootArg);
 const store = new SessionStore(rootArg);
 const requestedCwd = argValue("--cwd") ?? process.cwd();
+const projectSessions = store.listSessions({ cwd: requestedCwd });
 
 if (!process.stdout.isTTY) {
   console.error("baton tui requires a real terminal (TTY)");
@@ -51,8 +52,8 @@ if (!process.stdout.isTTY) {
 const pickArg = argValue("--pick-session");
 const pickIntent = pickArg === "resume" || pickArg === "fork" ? pickArg : undefined;
 // fork 无源可选是硬错误（对齐直通路径的提示），在 renderer 起来前干净地退出
-if (pickIntent === "fork" && store.listSessions().length === 0) {
-  console.error(`no baton session to fork (run baton first, or pass a session id)`);
+if (pickIntent === "fork" && projectSessions.length === 0) {
+  console.error(`no baton session to fork in ${requestedCwd} (run baton first, or pass a session id)`);
   process.exit(1);
 }
 
@@ -101,7 +102,7 @@ function startFresh(): void {
 
 if (openedAtStartup) {
   startChat(openedAtStartup);
-} else if (store.listSessions().length === 0) {
+} else if (projectSessions.length === 0) {
   startFresh(); // resume 无历史会话：与老的 --continue 语义一致，直接新开
 } else {
   // session picker：Enter 打开 / fork，Esc/Ctrl+C 取消退出；打开失败回显错误并停留在列表。
@@ -112,14 +113,14 @@ if (openedAtStartup) {
       <SessionPickerScreen
         title={intent === "fork" ? "Fork a previous session" : "Resume a previous session"}
         actionLabel={intent}
-        sessions={store.listSessions()}
+        sessions={projectSessions}
         theme={batonTheme}
         error={error}
         onPick={(batonSessionId) => {
           try {
             if (intent === "fork") {
               // fork 落盘发生在选中之后：选错 / Esc 不产生副本。
-              // cwd 用启动 baton 时的目录（跨 project fork）：源可以来自任意 project
+              // cwd 用启动 baton 时的目录，picker 也只展示该 project 的源会话。
               const child = store.forkSession(batonSessionId, { cwd: requestedCwd });
               startChat(openBatonSession(store, { cwd: requestedCwd, sessionId: child.id }));
             } else {
