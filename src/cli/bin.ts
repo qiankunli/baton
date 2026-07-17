@@ -5,7 +5,7 @@
 //   baton repl       headless REPL（--agent codex|cx|claude|cc）
 //   baton resume     继续 BatonSession（无参 = cwd 最近一个，同 -c）
 //   baton fork       fork BatonSession 并进入新会话
-//   baton sessions   列出本机 baton 会话
+//   baton sessions   列出当前项目的 baton 会话
 //   baton version    显示版本
 //   baton help       帮助
 
@@ -23,18 +23,18 @@ Usage:
                         specific session; /codex (/cx) and /claude (/cc) switch provider
   baton repl [--agent codex|cx|claude|cc] [--cwd <dir>]   headless REPL
   baton resume [bs_xxx] resume a BatonSession in the TUI; without an id shows a
-                        session list first (enter resume · esc cancel ·
+                        session list for the current project first (enter resume · esc cancel ·
                         ctrl+c quit; starts fresh if there is no session yet)
   baton fork [bs_xxx|--last]
                         fork a BatonSession (full-history copy, fresh provider
                         sessions) and open the fork; the fork lives in the
-                        current project (cwd or --cwd) even when the source
-                        belongs to another one; without an id shows the
-                        session list to pick the source (--last forks the
-                        latest in cwd)
-  baton sessions [--tree]
-                        list sessions (--tree shows fork lineage; reference
-                        with @<id> in the input)
+                        current project (cwd or --cwd) even when an explicitly
+                        named source belongs to another one; without an id shows
+                        current-project sessions to pick the source (--last
+                        forks the latest in cwd)
+  baton sessions [--tree] [--cwd <dir>]
+                        list current-project sessions (--tree shows fork
+                        lineage; reference with @<id> in the input)
   baton version         show version (also --version / -V)
   baton help            this help
 
@@ -137,10 +137,11 @@ async function run(command: string): Promise<void> {
       break;
     }
     case "sessions": {
-      const store = new SessionStore();
-      const sessions = store.listSessions();
+      const store = new SessionStore(argValue("--root"));
+      const cwd = argValue("--cwd") ?? process.cwd();
+      const sessions = store.listSessions({ cwd });
       if (sessions.length === 0) {
-        console.log("(no sessions yet — run baton or baton repl first)");
+        console.log(`(no sessions in ${cwd} yet — run baton or baton repl first)`);
         break;
       }
       // --tree：fork 谱系视图，与 TUI picker 的 tree mode 共用同一投影
