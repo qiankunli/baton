@@ -1,6 +1,6 @@
 {
   "name": "@qiankun01/baton",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "A terminal-native workspace for coding agents, built on durable sessions.",
   "type": "module",
   "license": "Apache-2.0",
