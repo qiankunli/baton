@@ -46,7 +46,7 @@ Adapter emit `permission_request` → runtime 的 `approvalHandler` 注册 resol
 
 `thread/start` 原生收 `approvalsReviewer`。**baton 缺省不下发**——codex 自己的解析链（`~/.codex/config.toml`、profile、云端下发的企业 requirements）照常生效；codex 自身默认是 `user`，且 guardian feature 开着也不变。baton 没有比上游更激进的理由，也没有立场替用户的 codex 配置做主。配置 `codexApprovalReviewer: auto_review | user` 是一次 opt-in 覆盖，仅在显式设置时作为 thread 参数下发。
 
-**生效值只认 codex 回吐**（`thread/start|resume` 响应的 `approvalsReviewer`），不由 baton 从配置或启动参数反推。反推必错：企业 requirements（`allowed_approvals_reviewers`）能把用户 config.toml 里写死的值、也能把 baton 请求的值打回。曾经的做法是往 argv 注入 `-c approvals_reviewer=...` 并在 config 层复刻一遍解析来喂 Agent Status——既盖掉了用户的 codex 配置，footer 又会在托管机器上撒谎。问不出来时 `approvalRoute` 返回 null，投影静默而不是编一个（不变量 #2）。
+**生效值只认 codex 回吐**（`thread/start|resume` 响应的 `approvalsReviewer`），不由 baton 从配置或启动参数反推。反推必错：企业 requirements（`allowed_approvals_reviewers`）能把用户 config.toml 里写死的值、也能把 baton 请求的值打回。曾经的做法是往 argv 注入 `-c approvals_reviewer=...` 并在 config 层复刻一遍解析来喂 Provider Status——既盖掉了用户的 codex 配置，footer 又会在托管机器上撒谎。问不出来时 `approvalRoute` 返回 null，投影静默而不是编一个（不变量 #2）。
 
 人工审批时，adapter 优先按 app-server 的 `availableDecisions` 生成选项并把结构化 decision 原样回传；老版本未提供该字段、**或一项都认不出**时退回稳定四选项——非空但全不可映射会得到零选项审批卡，用户无从作答、turn 永久挂起。
 
@@ -82,7 +82,7 @@ Adapter emit `permission_request` → runtime 的 `approvalHandler` 注册 resol
 
 ### 3.4 全局可见
 
-codex 报告生效 reviewer 为委托时，Agent Status 常驻 `approvals:auto-review`——让用户**随时**知道审批权已委托，而不是只在逐条回执里被动发现。该状态取自 adapter 的 `approvalRoute()`（provider 自报的生效值），不读 baton config：config 是意图，且投影层不得按 provider 分支（不变量 #3）。曾经这里硬编码 `config.codexApprovalReviewer`，于是跟 claude 对话时 footer 也显示 codex 的委托状态。
+codex 报告生效 reviewer 为委托时，Provider Status 常驻 `approvals:auto-review`——让用户**随时**知道审批权已委托，而不是只在逐条回执里被动发现。该状态取自 adapter 的 `approvalRoute()`（provider 自报的生效值），不读 baton config：config 是意图，且投影层不得按 provider 分支（不变量 #3）。曾经这里硬编码 `config.codexApprovalReviewer`，于是跟 claude 对话时 footer 也显示 codex 的委托状态。
 
 ### 3.5 chat-tui 呈现
 
@@ -105,6 +105,6 @@ codex 报告生效 reviewer 为委托时，Agent Status 常驻 `approvals:auto-r
 - `src/adapters/types.ts`：`ApprovalHandler` / `PermissionRequest` 交互审批契约。
 - `src/session/runtime.ts`：`approvalHandler` resolver 注册、pending 事件流真相源。
 - `src/events/types.ts`：`permission_request` / `permission_resolved` / `approval_review_update`。
-- `src/tui/protocol.ts`：审批卡、review 回执与 Agent Status 委托提示投影。
+- `src/tui/protocol.ts`：审批卡、review 回执与 Provider Status 委托提示投影。
 - chat-tui `src/types/index.ts`：`TranscriptBlockStatus.warning`；`components/transcript.tsx` 的状态图标/配色。
 - `tests/approval-contract.test.ts` 等：审批契约与回执归一。
