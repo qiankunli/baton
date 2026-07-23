@@ -6,19 +6,27 @@
 
 ## 1. 核心概念
 
-内核由五个概念承重。每个概念绑定一条不能被 harness 差异侵蚀的不变量。
+内核由六个概念承重。每个概念绑定一条不能被 harness 差异侵蚀的不变量。
 
 | 概念 | 语义 | 绑定的不变量 |
 |---|---|---|
 | **BatonSession** | 用户拥有的持久逻辑历史，跨 harness 的唯一时间线 | 身份锚点：历史跟随 session，项目归属跟随发起 cwd（跨项目 fork = 同一段逻辑历史落到另一 cwd + 全新 HarnessSession）|
 | **Event（信封）** | 最小 append-only 记录：归一字段 `payload` + 原始 wire `raw` | 事件流是**感知的唯一真相源**；UI / 崩溃恢复 / resume 全是它的 reduce/投影，无旁路通道 |
 | **Turn** | 一段有始有终的 harness 活动（带 stopReason）| "谁发起"是属性（driven / observed），不是存在条件；**每个被 admit 的 turn 恰好收口一次** |
+| **HarnessTarget** | Baton 配置与调度侧的一份具体 Harness 目标 | 执行位置与协议类型分离：runtime slot、原生 session 和同步水位按 target 隔离，不按 Harness 名称混用 |
 | **Adapter + Capability** | harness 方言的**唯一**居所：小核心 `HarnessAdapter` + 可选能力 descriptor | 差异表达为"能力有无"，type-guard 发现、契约测试钉住；**内核永不 `if harness===`** |
 | **Projection** | 纯函数：event reduce → 视图快照 | 只产展示形状；chat-tui 消费形状不消费语义；未变返回同引用（快照一致）|
 
-HarnessSession 不在此表——它是某 harness 的私有执行状态、内核的实现细节：baton 优先用 `harnessSessionId` 加速恢复，但它缺失只降级、不能阻止 BatonSession 续聊。
+HarnessSession 不在此表——它是某 HarnessTarget 启动出的原生执行状态、内核的实现细节：
+baton 优先用 `harnessSessionId` 加速恢复，但它缺失只降级、不能阻止 BatonSession 续聊。
+每次 create/resume 使用不可变 `HarnessLaunchSnapshot` 记录当时的 target、cwd、model 和 effort；
+快照解释既有执行，后续配置变化不能回写它。
 
-**ID 规则**：全部带前缀 ULID（`bs_` / `hs_` / `t_` / `m_` / `tc_`），从第一天起稳定、可外部引用——这是 @、resume/fork、将来委派的共同前提。fork 复制的对象与源**共享对象 ID**（git-branch 语义），跨会话引用以 `bs_ + 对象 ID` 消歧（why 见 `resume-fork.md`）。
+**ID 规则**：Baton 签发的 session / turn / message / tool call 等对象使用带前缀 ULID
+（`bs_` / `hs_` / `t_` / `m_` / `tc_`），从第一天起稳定、可外部引用；HarnessTarget、
+PluginInstance 等配置对象使用各自作用域内的稳定配置 ID。fork 复制的历史对象与源
+**共享对象 ID**（git-branch 语义），跨会话引用以 `bs_ + 对象 ID` 消歧（why 见
+`resume-fork.md`）。
 
 ## 2. 三条不变量
 

@@ -27,9 +27,14 @@ import {
   type PromptBlock,
   type StopReason,
 } from "../events/types.ts";
+import {
+  createHarnessLaunchSnapshot,
+  type HarnessTarget,
+} from "../harnesses/target.ts";
 import type { SessionHandle } from "../store/store.ts";
 
 interface HarnessSlot {
+  target: HarnessTarget;
   adapter: HarnessAdapter;
   ref?: HarnessSessionRef;
   starting?: Promise<void>;
@@ -70,9 +75,8 @@ export type InputStatus =
  * fire-and-forget 注入当前 turn 的记录，无独立回执。
  *
  * 刻意叫 Input 而非 UserInput：input 有**来源**维度（对称于 Turn 的 origin）。当前只有
- * `user`（composer 键入），将来会补 `monitor`（事件驱动，如监听到 PR merged 唤醒会话——
- * 见 design.md "事件驱动的长期 loop"）。名字保持来源中立，`user_message` 只是当前唯一
- * 来源的 durable 形态。monitor input 落地时按 §5 演进规则加 `source` 字段，勿把它改窄成 UserInput。
+ * `user`（composer 键入）。未来自动工作先形成持久 HarnessWorkIntent，经过 policy 与路由
+ * admit 后才物化为 Input/Turn；不能把可召回队列复用成易失的 monitor work queue。
  */
 interface InputRecord {
   /** 身份：用户消息的 baton message id（`m_`）。user_message 由 runtime 出队时落盘（见 runTurn） */
@@ -81,7 +85,7 @@ interface InputRecord {
   id: number;
   /** baton turn id：入队时即分配（steer 的 expectedTurnId 引用它，design §4.3） */
   turnId: string;
-  harness: string;
+  target: HarnessTarget;
   blocks: PromptBlock[];
   status: InputStatus;
   /** 实际投递方式（accepted_steer→steer；queued/admitted→prompt） */
@@ -114,6 +118,7 @@ interface TurnRecord {
   slot: HarnessSlot;
   /** 事件 harness 字段同源（slot.adapter.harness，wire key） */
   harness: string;
+  harnessTargetId: string;
   status: "active" | "finalized";
   startedAt: number;
   stopReason?: StopReason;
@@ -129,6 +134,7 @@ interface TurnRecord {
 export interface QueuedTurnSnapshot {
   id: number;
   turnId: string;
+  harnessTargetId: string;
   harness: string;
   blocks: PromptBlock[];
 }
@@ -137,6 +143,7 @@ export interface QueuedTurnSnapshot {
 export interface InputSnapshot {
   messageId: string;
   turnId: string;
+  harnessTargetId: string;
   harness: string;
   status: InputStatus;
   delivery: "prompt" | "steer";
@@ -176,6 +183,8 @@ export interface BatonSessionRuntimeOptions {
   /** 新 session 未选过 effort 时使用的 harness 级持久偏好。 */
   effortPreferences?: Readonly<Record<string, string>>;
   createAdapter(harness: string, handlers: InteractionHandlers): HarnessAdapter;
+  /** target 是 Baton 控制面概念；Adapter 工厂只接收 target.harness。 */
+  resolveTarget?(harnessTargetId: string): HarnessTarget;
   harnessSessionKey?(harness: string): string;
   onStateChange?: () => void;
   /**
@@ -310,13 +319,14 @@ export class BatonSessionRuntime {
     return this.draining;
   }
 
-  submit(harness: string, blocks: PromptBlock[]): Promise<SubmitOutcome> {
+  submit(harnessTargetId: string, blocks: PromptBlock[]): Promise<SubmitOutcome> {
+    const target = this.targetFor(harnessTargetId);
     return new Promise((resolve, reject) => {
       this.queue.push({
         id: this.nextQueueId++,
         turnId: newId("t"),
         messageId: newId("m"),
-        harness,
+        target,
         blocks,
         status: "queued",
         delivery: "prompt",
@@ -333,10 +343,10 @@ export class BatonSessionRuntime {
    * adapter 声明并实现了 steer。UI 据此决定 busy 时的默认 delivery 与选项展示。
    * observed turn（harness 自发）不接受 steer——baton 不拥有其生命周期。
    */
-  canSteer(harness: string): boolean {
+  canSteer(harnessTargetId: string): boolean {
     const active = this.activeDriven();
     if (!active?.turn) return false;
-    if (active.turn.harness !== harness) return false;
+    if (active.turn.target.id !== harnessTargetId) return false;
     if (!active.slot.ref) return false;
     return Boolean(active.slot.adapter.capabilities.steer) && isSteerable(active.slot.adapter);
   }
@@ -346,15 +356,20 @@ export class BatonSessionRuntime {
    * （expectedTurnId 过期 / review turn）或 wire 故障时，一律显式降级为 follow-up
    * 入队——永不静默丢失输入，也不把降级结果伪装成 steer（effective 如实上报）。
    */
-  async steer(harness: string, blocks: PromptBlock[]): Promise<SteerOutcome> {
+  async steer(harnessTargetId: string, blocks: PromptBlock[]): Promise<SteerOutcome> {
     const active = this.activeDriven();
-    if (!active || !this.canSteer(harness) || !active.slot.ref) {
-      return { effective: "follow_up", outcome: this.submit(harness, blocks) };
+    if (!active || !this.canSteer(harnessTargetId) || !active.slot.ref) {
+      return { effective: "follow_up", outcome: this.submit(harnessTargetId, blocks) };
+    }
+    const activeInput = active.turn;
+    if (!activeInput) {
+      return { effective: "follow_up", outcome: this.submit(harnessTargetId, blocks) };
     }
     const adapter = active.slot.adapter;
     if (!isSteerable(adapter)) {
-      return { effective: "follow_up", outcome: this.submit(harness, blocks) };
+      return { effective: "follow_up", outcome: this.submit(harnessTargetId, blocks) };
     }
+    const target = activeInput.target;
     const messageId = newId("m");
     let receipt: SteerReceipt;
     try {
@@ -370,7 +385,7 @@ export class BatonSessionRuntime {
       receipt = { effective: "rejected" };
     }
     if (receipt.effective !== "steer") {
-      return { effective: "follow_up", outcome: this.submit(harness, blocks) };
+      return { effective: "follow_up", outcome: this.submit(harnessTargetId, blocks) };
     }
     // 已接受的 steer 是一等 Input（不再"无独立队列实体"）：挂到当前 turn，供 cancel 时
     // 统一迁移 interrupted（S3：不静默丢、不自动重发）。fire-and-forget，无独立回执。
@@ -379,7 +394,7 @@ export class BatonSessionRuntime {
       id: this.nextQueueId++,
       turnId: active.turnId,
       messageId,
-      harness,
+      target,
       blocks,
       status: "accepted_steer",
       delivery: "steer",
@@ -398,62 +413,80 @@ export class BatonSessionRuntime {
     return this.snapshot(turn);
   }
 
-  async listModels(harness: string): Promise<ModelOption[]> {
-    const slot = await this.ensureHarness(harness);
-    if (!slot.ref || !isModelConfigurable(slot.adapter)) throw new Error(`${harness} does not support /model`);
+  async listModels(harnessTargetId: string): Promise<ModelOption[]> {
+    const slot = await this.ensureHarness(harnessTargetId);
+    if (!slot.ref || !isModelConfigurable(slot.adapter)) {
+      throw new Error(`${harnessTargetId} does not support /model`);
+    }
     return slot.adapter.listModels(slot.ref);
   }
 
-  async setModel(harness: string, modelId: string | null): Promise<void> {
-    const slot = await this.ensureHarness(harness);
-    if (!slot.ref || !isModelConfigurable(slot.adapter)) throw new Error(`${harness} does not support /model`);
+  async setModel(harnessTargetId: string, modelId: string | null): Promise<void> {
+    const slot = await this.ensureHarness(harnessTargetId);
+    if (!slot.ref || !isModelConfigurable(slot.adapter)) {
+      throw new Error(`${harnessTargetId} does not support /model`);
+    }
     await slot.adapter.setModel(slot.ref, modelId);
-    const key = slot.adapter.harness;
-    const existing = this.options.session.meta.harnessSessions[key] ?? { harness: key };
+    const key = slot.target.id;
+    const existing = this.options.session.meta.harnessSessions[key] ?? {
+      harnessTargetId: key,
+      harness: slot.adapter.harness,
+    };
     this.options.session.setHarnessSession(key, {
       ...existing,
-      harness: key,
+      harnessTargetId: key,
+      harness: slot.adapter.harness,
       harnessSessionId: existing.harnessSessionId ?? this.nativeSessionId(slot),
       model: !modelId || modelId === "default" ? undefined : modelId,
     });
     this.changed();
   }
 
-  currentModel(harness: string): string | null {
-    const slot = this.slots.get(harness);
+  currentModel(harnessTargetId: string): string | null {
+    const slot = this.slots.get(harnessTargetId);
     if (!slot?.ref || !isModelConfigurable(slot.adapter)) {
-      const key = this.options.harnessSessionKey?.(harness) ?? harness;
-      return this.preferredModel(harness, key) ?? null;
+      const target = this.targetFor(harnessTargetId);
+      const sessionKey = this.options.harnessSessionKey?.(target.harness) ?? target.harness;
+      return this.preferredModel(target, sessionKey) ?? null;
     }
     return slot.adapter.currentModel(slot.ref);
   }
 
-  async listEfforts(harness: string): Promise<EffortOption[]> {
-    const slot = await this.ensureHarness(harness);
-    if (!slot.ref || !isEffortConfigurable(slot.adapter)) throw new Error(`${harness} does not support /effort`);
+  async listEfforts(harnessTargetId: string): Promise<EffortOption[]> {
+    const slot = await this.ensureHarness(harnessTargetId);
+    if (!slot.ref || !isEffortConfigurable(slot.adapter)) {
+      throw new Error(`${harnessTargetId} does not support /effort`);
+    }
     return slot.adapter.listEfforts(slot.ref);
   }
 
-  async setEffort(harness: string, effortId: string | null): Promise<void> {
-    const slot = await this.ensureHarness(harness);
-    if (!slot.ref || !isEffortConfigurable(slot.adapter)) throw new Error(`${harness} does not support /effort`);
+  async setEffort(harnessTargetId: string, effortId: string | null): Promise<void> {
+    const slot = await this.ensureHarness(harnessTargetId);
+    if (!slot.ref || !isEffortConfigurable(slot.adapter)) {
+      throw new Error(`${harnessTargetId} does not support /effort`);
+    }
     await slot.adapter.setEffort(slot.ref, effortId);
-    const key = slot.adapter.harness;
-    const existing = this.options.session.meta.harnessSessions[key] ?? { harness: key };
+    const key = slot.target.id;
+    const existing = this.options.session.meta.harnessSessions[key] ?? {
+      harnessTargetId: key,
+      harness: slot.adapter.harness,
+    };
     this.options.session.setHarnessSession(key, {
       ...existing,
-      harness: key,
+      harnessTargetId: key,
+      harness: slot.adapter.harness,
       harnessSessionId: existing.harnessSessionId ?? this.nativeSessionId(slot),
       effort: !effortId || effortId === "default" ? undefined : effortId,
     });
     this.changed();
   }
 
-  currentEffort(harness: string): string | null {
-    const slot = this.slots.get(harness);
+  currentEffort(harnessTargetId: string): string | null {
+    const slot = this.slots.get(harnessTargetId);
     if (!slot?.ref || !isEffortConfigurable(slot.adapter)) {
-      const key = this.options.harnessSessionKey?.(harness) ?? harness;
-      return this.preferredEffort(harness, key) ?? null;
+      const target = this.targetFor(harnessTargetId);
+      const sessionKey = this.options.harnessSessionKey?.(target.harness) ?? target.harness;
+      return this.preferredEffort(target, sessionKey) ?? null;
     }
     return slot.adapter.currentEffort(slot.ref);
   }
@@ -462,13 +495,13 @@ export class BatonSessionRuntime {
    * 用 harness 原生机制压缩当前上下文。它是一个没有 user_message 的 driven control turn：
    * 仍走统一 running → harness events → idle 流水线，因此 TUI、持久化与崩溃恢复不会旁路。
    */
-  async compactContext(harness: string): Promise<void> {
+  async compactContext(harnessTargetId: string): Promise<void> {
     if (this.draining || this.queue.length > 0) {
       throw new Error("/compact requires an idle session");
     }
     this.draining = true;
     try {
-      await this.runContextCompaction(harness);
+      await this.runContextCompaction(harnessTargetId);
     } finally {
       this.draining = false;
       this.changed();
@@ -476,14 +509,15 @@ export class BatonSessionRuntime {
     }
   }
 
-  private async runContextCompaction(harness: string): Promise<void> {
-    this.processingHarness = harness;
+  private async runContextCompaction(harnessTargetId: string): Promise<void> {
+    const target = this.targetFor(harnessTargetId);
+    this.processingHarness = target.harness;
     this.processingStartedAt = Date.now();
     let record: TurnRecord | undefined;
     try {
-      const slot = await this.ensureHarness(harness);
+      const slot = await this.ensureHarness(harnessTargetId);
       if (!slot.ref || !slot.adapter.capabilities.compact?.supported || !isContextCompactable(slot.adapter)) {
-        throw new Error(`${harness} does not support /compact`);
+        throw new Error(`${harnessTargetId} does not support /compact`);
       }
 
       const turnId = newId("t");
@@ -498,7 +532,8 @@ export class BatonSessionRuntime {
       this.options.session.diagnostic({
         level: "error",
         component: "runtime.compact",
-        harness,
+        harness: target.harness,
+        harnessTargetId,
         turnId: record?.turnId,
         message: "harness context compaction failed",
         error: diagnosticError(error),
@@ -520,8 +555,8 @@ export class BatonSessionRuntime {
    * 该 harness 当前生效的审批路由；不支持该能力、或 harness 没报出来 → null，
    * 投影据此静默。不读 config：config 是意图，只有 harness 自己报的才是事实。
    */
-  approvalRoute(harness: string): ApprovalRoute | null {
-    const slot = this.slots.get(harness);
+  approvalRoute(harnessTargetId: string): ApprovalRoute | null {
+    const slot = this.slots.get(harnessTargetId);
     if (!slot?.ref || !isApprovalRoutable(slot.adapter)) return null;
     return slot.adapter.approvalRoute(slot.ref);
   }
@@ -564,6 +599,7 @@ export class BatonSessionRuntime {
         level: "error",
         component: "runtime.cancel",
         harness: active.harness,
+        harnessTargetId: active.harnessTargetId,
         turnId: active.turnId,
         message: "harness cancel request failed",
         error: diagnosticError(error),
@@ -586,6 +622,7 @@ export class BatonSessionRuntime {
               level: "warn",
               component: "runtime.close",
               harness: slot.adapter.harness,
+              harnessTargetId: slot.target.id,
               message: "harness close failed",
               error: diagnosticError(error),
             });
@@ -637,6 +674,7 @@ export class BatonSessionRuntime {
       role: "driven",
       slot,
       harness: harnessKey,
+      harnessTargetId: slot.target.id,
       status: "active",
       startedAt: Date.now(),
       turn: opts.input,
@@ -665,19 +703,20 @@ export class BatonSessionRuntime {
   }
 
   private async runTurn(turn: InputRecord): Promise<void> {
-    this.processingHarness = turn.harness;
+    this.processingHarness = turn.target.harness;
     this.processingStartedAt = Date.now();
 
     // 出队即入账、即落盘：用户输入是 BatonSession 的事实，owner 是 runtime——
     // 不等 harness 冷启动（codex 首启要 spawn → initialize → thread resume/start，
     // 可达数秒，期间 Transcript 必须已能看到这条输入）。落盘的是**原始输入** turn.blocks：
     // <baton-sync> 注入只进 harness transport（syncContext / prepend），不进正典历史。
-    const slot = this.slotFor(turn.harness, turn.turnId);
+    const slot = this.slotFor(turn.target.id, turn.turnId);
     const harnessKey = slot.adapter.harness;
+    const targetKey = slot.target.id;
     const { record, released } = this.admitDrivenTurn(slot, {
       turnId: turn.turnId,
       input: turn,
-      harnessSessionId: this.options.session.meta.harnessSessions[harnessKey]?.harnessSessionId,
+      harnessSessionId: this.options.session.meta.harnessSessions[targetKey]?.harnessSessionId,
     });
     const coldStart = !slot.ref;
     if (coldStart) {
@@ -687,15 +726,15 @@ export class BatonSessionRuntime {
         kind: "_baton_run_status",
         harness: harnessKey,
         turnId: turn.turnId,
-        payload: { phase: "starting", title: `Starting ${turn.harness}…` },
+        payload: { phase: "starting", title: `Starting ${turn.target.harness}…` },
       });
     }
 
     try {
-      await this.ensureHarness(turn.harness);
+      await this.ensureHarness(targetKey);
       // preparing 期间被取消：终态已合成、summary 已落，不再向 harness 提交
       if (record.status === "finalized") return;
-      if (!slot.ref) throw new Error(`${turn.harness} failed to start`);
+      if (!slot.ref) throw new Error(`${targetKey} failed to start`);
       if (coldStart) {
         this.onAdapterEvent(slot, {
           kind: "_baton_run_status",
@@ -706,10 +745,10 @@ export class BatonSessionRuntime {
       }
 
       const session = this.options.session;
-      const key = slot.adapter.harness;
-      const meta = session.meta.harnessSessions[key];
+      const meta = session.meta.harnessSessions[targetKey];
       const catchUp = buildHarnessCatchUpContext(session, {
-        harness: key,
+        harness: harnessKey,
+        harnessTargetId: targetKey,
         sinceSeq: meta?.syncedSeq ?? 0,
         includeHarnessTurns: slot.freshNative,
         budgetChars: this.options.mentionBudgetChars,
@@ -727,9 +766,10 @@ export class BatonSessionRuntime {
         };
         if (isContextSynchronizable(slot.adapter)) {
           await slot.adapter.syncContext(slot.ref, [syncBlock]);
-          session.setHarnessSession(key, {
+          session.setHarnessSession(targetKey, {
             ...meta,
-            harness: key,
+            harnessTargetId: targetKey,
+            harness: harnessKey,
             harnessSessionId: meta?.harnessSessionId ?? this.nativeSessionId(slot),
             syncedSeq: catchUp.throughSeq,
           });
@@ -757,11 +797,12 @@ export class BatonSessionRuntime {
         // admission 通过 ⇒ 随 submit 送达的 sync 块（syncBlocks 或 prepend）已进入 harness
         // 输入：视为同步到 throughSeq。
         // admission 失败走 catch 上抛，水位不动，下次重新注入。
-        session.setHarnessSession(key, {
-          ...session.meta.harnessSessions[key],
-          harness: key,
+        session.setHarnessSession(targetKey, {
+          ...session.meta.harnessSessions[targetKey],
+          harnessTargetId: targetKey,
+          harness: harnessKey,
           harnessSessionId:
-            session.meta.harnessSessions[key]?.harnessSessionId ?? this.nativeSessionId(slot),
+            session.meta.harnessSessions[targetKey]?.harnessSessionId ?? this.nativeSessionId(slot),
           syncedSeq: submitCatchUp.throughSeq,
         });
         slot.freshNative = false;
@@ -775,7 +816,8 @@ export class BatonSessionRuntime {
       this.options.session.diagnostic({
         level: "error",
         component: "runtime.turn",
-        harness: turn.harness,
+        harness: turn.target.harness,
+        harnessTargetId: targetKey,
         turnId: turn.turnId,
         message: "harness startup or prompt admission failed",
         error: diagnosticError(error),
@@ -783,7 +825,7 @@ export class BatonSessionRuntime {
       // 启动/admission 失败：合成结构化终态（error + idle + summary）——user_message 已
       // 落盘，必须有结局，不允许"输入消失且无历史"的半状态；随后仍上抛给 submit 调用方。
       this.synthesizeTerminal(record, { message: detail, stopReason: "error" });
-      throw new Error(`BatonSession ${this.options.session.id} · ${turn.harness}: ${detail}`, {
+      throw new Error(`BatonSession ${this.options.session.id} · ${targetKey}: ${detail}`, {
         cause: error,
       });
     } finally {
@@ -811,7 +853,10 @@ export class BatonSessionRuntime {
       const turnId = active?.slot === slot ? active.turnId : slot.setupTurnId;
       if (turnId) ev = { ...ev, turnId };
     }
-    const envelope = this.options.session.append(ev) as AnyEventEnvelope;
+    const envelope = this.options.session.append({
+      ...ev,
+      harnessTargetId: slot.target.id,
+    }) as AnyEventEnvelope;
     if (envelope.kind === "state_update") {
       const p = envelope.payload;
       if (p.state === "running" && p.origin === "harness" && envelope.turnId) {
@@ -822,6 +867,7 @@ export class BatonSessionRuntime {
             role: "observed",
             slot,
             harness: slot.adapter.harness,
+            harnessTargetId: slot.target.id,
             status: "active",
             startedAt: Date.now(),
           });
@@ -883,6 +929,7 @@ export class BatonSessionRuntime {
       session.append({
         kind: "_baton_notice",
         harness: record.harness,
+        harnessTargetId: record.harnessTargetId,
         turnId,
         payload: { level: "warning", title: INTERRUPTED_NOTICE_TITLE },
       });
@@ -921,13 +968,14 @@ export class BatonSessionRuntime {
    */
   private backfillHarnessSessionId(slot: HarnessSlot): void {
     const session = this.options.session;
-    const key = slot.adapter.harness;
+    const key = slot.target.id;
     const existing = session.meta.harnessSessions[key];
     const nativeId = this.nativeSessionId(slot) ?? existing?.harnessSessionId;
     if (nativeId === existing?.harnessSessionId) return; // 无变化不写盘
     session.setHarnessSession(key, {
       ...existing,
-      harness: key,
+      harnessTargetId: key,
+      harness: slot.adapter.harness,
       harnessSessionId: nativeId,
     });
   }
@@ -960,21 +1008,45 @@ export class BatonSessionRuntime {
    * 与事件 sink 在这里就绪——runTurn 依赖这一点在 open() 完成**之前**落 user_message。
    * 启动完成的等待在 ensureHarness。
    */
-  private slotFor(harness: string, setupTurnId?: string): HarnessSlot {
-    let slot = this.slots.get(harness);
+  private slotFor(harnessTargetId: string, setupTurnId?: string): HarnessSlot {
+    let slot = this.slots.get(harnessTargetId);
     if (!slot) {
-      const adapter = this.options.createAdapter(harness, {
+      const target = this.targetFor(harnessTargetId);
+      const adapter = this.options.createAdapter(target.harness, {
         requestHandler: this.requestHandler,
-        diagnostic: (entry) => this.options.session.diagnostic(entry),
+        diagnostic: (entry) =>
+          this.options.session.diagnostic({ ...entry, harnessTargetId: target.id }),
       });
-      const created: HarnessSlot = { adapter, freshNative: true, setupTurnId };
+      const created: HarnessSlot = { target, adapter, freshNative: true, setupTurnId };
       slot = created;
-      this.slots.set(harness, created);
+      this.slots.set(target.id, created);
       created.starting = (async () => {
         try {
-          const existing = this.options.session.meta.harnessSessions[adapter.harness];
-          const model = this.preferredModel(harness, adapter.harness);
-          const effort = this.preferredEffort(harness, adapter.harness);
+          const existing = this.options.session.meta.harnessSessions[target.id];
+          const modelAdapter = isModelConfigurable(adapter) ? adapter : undefined;
+          const effortAdapter = isEffortConfigurable(adapter) ? adapter : undefined;
+          const model = modelAdapter
+            ? this.preferredModel(target, adapter.harness)
+            : undefined;
+          const effort = effortAdapter
+            ? this.preferredEffort(target, adapter.harness)
+            : undefined;
+          const launchSnapshot = createHarnessLaunchSnapshot({
+            target,
+            harnessSessionKey: adapter.harness,
+            cwd: this.options.session.meta.cwd,
+            model,
+            effort,
+          });
+          // open 前落下实际配置：即使进程在 spawn/initialize 期间崩溃，也能解释这次启动。
+          this.options.session.setHarnessSession(target.id, {
+            ...existing,
+            harnessTargetId: target.id,
+            harness: adapter.harness,
+            launchSnapshot,
+            ...(model ? { model } : {}),
+            ...(effort ? { effort } : {}),
+          });
           created.ref = await adapter.open(
             {
               cwd: this.options.session.meta.cwd,
@@ -983,15 +1055,13 @@ export class BatonSessionRuntime {
             (ev) => this.onAdapterEvent(created, ev),
           );
           created.freshNative = !created.ref.resumed;
-          if (model && isModelConfigurable(adapter)) {
-            await adapter.setModel(created.ref, model);
-          }
-          if (effort && isEffortConfigurable(adapter)) {
-            await adapter.setEffort(created.ref, effort);
-          }
-          this.options.session.setHarnessSession(adapter.harness, {
-            ...existing,
+          if (model) await modelAdapter?.setModel(created.ref, model);
+          if (effort) await effortAdapter?.setEffort(created.ref, effort);
+          this.options.session.setHarnessSession(target.id, {
+            ...this.options.session.meta.harnessSessions[target.id],
+            harnessTargetId: target.id,
             harness: adapter.harness,
+            launchSnapshot,
             harnessSessionId: this.nativeSessionId(created),
             syncedSeq: created.ref.resumed ? existing?.syncedSeq : 0,
             ...(model ? { model } : {}),
@@ -1008,29 +1078,31 @@ export class BatonSessionRuntime {
     return slot;
   }
 
-  private preferredModel(harness: string, sessionKey: string): string | undefined {
+  private preferredModel(target: HarnessTarget, sessionKey: string): string | undefined {
     return (
-      this.options.session.meta.harnessSessions[sessionKey]?.model ??
-      this.options.modelPreferences?.[harness] ??
+      this.options.session.meta.harnessSessions[target.id]?.model ??
+      this.options.modelPreferences?.[target.id] ??
+      this.options.modelPreferences?.[target.harness] ??
       this.options.modelPreferences?.[sessionKey]
     );
   }
 
-  private preferredEffort(harness: string, sessionKey: string): string | undefined {
+  private preferredEffort(target: HarnessTarget, sessionKey: string): string | undefined {
     return (
-      this.options.session.meta.harnessSessions[sessionKey]?.effort ??
-      this.options.effortPreferences?.[harness] ??
+      this.options.session.meta.harnessSessions[target.id]?.effort ??
+      this.options.effortPreferences?.[target.id] ??
+      this.options.effortPreferences?.[target.harness] ??
       this.options.effortPreferences?.[sessionKey]
     );
   }
 
-  private async ensureHarness(harness: string): Promise<HarnessSlot> {
-    const slot = this.slotFor(harness);
+  private async ensureHarness(harnessTargetId: string): Promise<HarnessSlot> {
+    const slot = this.slotFor(harnessTargetId);
     if (slot.starting) {
       try {
         await slot.starting;
       } catch (error) {
-        this.slots.delete(harness);
+        this.slots.delete(harnessTargetId);
         throw error;
       } finally {
         slot.starting = undefined;
@@ -1038,6 +1110,19 @@ export class BatonSessionRuntime {
       }
     }
     return slot;
+  }
+
+  private targetFor(harnessTargetId: string): HarnessTarget {
+    const resolved = this.options.resolveTarget?.(harnessTargetId) ?? {
+      id: harnessTargetId,
+      harness: harnessTargetId,
+    };
+    if (!resolved.id || resolved.id !== harnessTargetId || !resolved.harness) {
+      throw new Error(
+        `invalid HarnessTarget for ${harnessTargetId}: id=${resolved.id}, harness=${resolved.harness}`,
+      );
+    }
+    return Object.freeze({ id: resolved.id, harness: resolved.harness });
   }
 
   private nativeSessionId(slot: HarnessSlot): string | undefined {
@@ -1048,14 +1133,21 @@ export class BatonSessionRuntime {
   }
 
   private snapshot(turn: InputRecord): QueuedTurnSnapshot {
-    return { id: turn.id, turnId: turn.turnId, harness: turn.harness, blocks: [...turn.blocks] };
+    return {
+      id: turn.id,
+      turnId: turn.turnId,
+      harnessTargetId: turn.target.id,
+      harness: turn.target.harness,
+      blocks: [...turn.blocks],
+    };
   }
 
   private inputSnapshot(input: InputRecord): InputSnapshot {
     return {
       messageId: input.messageId,
       turnId: input.turnId,
-      harness: input.harness,
+      harnessTargetId: input.target.id,
+      harness: input.target.harness,
       status: input.status,
       delivery: input.delivery,
     };

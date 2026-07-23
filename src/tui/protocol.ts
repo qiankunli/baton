@@ -39,6 +39,7 @@ import {
 } from "../events/types.ts";
 import {
   createHarnessAdapter,
+  defaultHarnessTarget,
   harnessDefinitionFor,
   harnessSessionKey,
   harnessShortName,
@@ -583,6 +584,7 @@ export class BatonChatProtocol implements ChatProtocol {
           config: this.config,
           rootDir: this.store.rootDir,
         }),
+      resolveTarget: (targetId) => defaultHarnessTarget(targetId as HarnessName),
       harnessSessionKey: (name) => harnessSessionKey(name as HarnessName),
       onStateChange: () => this.changed(),
     });

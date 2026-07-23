@@ -11,6 +11,7 @@ export interface DiagnosticEntry {
   component: string;
   message: string;
   harness?: string;
+  harnessTargetId?: string;
   turnId?: string;
   error?: DiagnosticError;
   details?: Record<string, string | number | boolean | null>;

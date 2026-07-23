@@ -481,6 +481,8 @@ export interface EventEnvelope<K extends EventKind = EventKind> {
   seq: number;
   batonSessionId: string;
   harness: string;
+  /** 实际投递/产出事件的配置目标；Baton 自身事件或未进入 runtime 的外部事实可缺省。 */
+  harnessTargetId?: string;
   harnessSessionId?: string;
   turnId?: string;
   kind: K;
