@@ -36,10 +36,9 @@ import {
 } from "../event/types.ts";
 import {
   createHarnessAdapter,
-  defaultHarnessTarget,
   harnessDefinitionFor,
   harnessShortName,
-  type HarnessName,
+  resolveDefaultHarnessTarget,
 } from "../harness/registry.ts";
 import type {
   HookTrustInteraction,
@@ -589,7 +588,7 @@ export class BatonChatProtocol implements ChatProtocol {
           config: this.config,
           rootDir: this.store.rootDir,
         }),
-      resolveTarget: (targetId) => defaultHarnessTarget(targetId as HarnessName),
+      resolveTarget: resolveDefaultHarnessTarget,
       onChange: () => this.changed(),
     });
   }

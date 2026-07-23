@@ -13,7 +13,11 @@ import {
 import { ensureConfigFile, loadConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
 import { newId } from "../event/ids.ts";
-import { createHarnessAdapter, defaultHarnessTarget, parseHarness } from "../harness/registry.ts";
+import {
+  createHarnessAdapter,
+  parseHarness,
+  resolveDefaultHarnessTarget,
+} from "../harness/registry.ts";
 import { createHarnessLaunchSnapshot } from "../harness/target.ts";
 import type {
   InteractionDraft,
@@ -92,7 +96,8 @@ async function main(): Promise<void> {
   const session = store.createSession({ cwd });
   stdout.write(`baton session: ${session.id}\nlog: ${session.dir}/session.jsonl\n`);
 
-  const target = defaultHarnessTarget(agentName);
+  const target = resolveDefaultHarnessTarget(agentName);
+  if (!target) throw new Error(`No default HarnessTarget registered for Harness: ${agentName}`);
   let adapterHarness = target.harness;
   const interactionHandler: InteractionHandler = async (draft, context) => {
     const interaction = {

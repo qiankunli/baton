@@ -4,13 +4,13 @@ import { describe, expect, test } from "bun:test";
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
 import {
   createHarnessAdapter,
-  defaultHarnessTarget,
   parseHarness,
   HARNESS_REGISTRY,
   HARNESSES,
   harnessDefinitionFor,
   harnessSessionKey,
   harnessShortName,
+  resolveDefaultHarnessTarget,
 } from "../src/harness/registry.ts";
 import { agentColorFor } from "../src/tui/theme.ts";
 
@@ -35,8 +35,11 @@ describe("harness registry", () => {
   });
 
   test("maps current commands to explicit default HarnessTargets", () => {
-    expect(defaultHarnessTarget("codex")).toEqual({ id: "codex", harness: "codex" });
-    expect(defaultHarnessTarget("claude")).toEqual({ id: "claude", harness: "claude" });
+    expect(resolveDefaultHarnessTarget("codex")).toEqual({ id: "codex", harness: "codex" });
+    expect(resolveDefaultHarnessTarget("claude")).toEqual({ id: "claude", harness: "claude" });
+    expect(resolveDefaultHarnessTarget("missing")).toBeUndefined();
+    expect(resolveDefaultHarnessTarget("cc")).toBeUndefined();
+    expect(resolveDefaultHarnessTarget("claude-code")).toBeUndefined();
   });
 
   test("normalizes canonical id and wire key to one definition (三套命名空间的唯一汇合点)", () => {

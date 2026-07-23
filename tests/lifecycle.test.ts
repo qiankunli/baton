@@ -20,6 +20,7 @@ import type {
 import type { AnyEventEnvelope, AnyEventDraft, StopReason } from "../src/event/types.ts";
 import { Controller, INTERRUPTED_NOTICE_TITLE } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
+import { resolveTestTarget } from "./harness-target.ts";
 
 /** 事件完全由测试脚本控制的 adapter：submit 只回执，终态由测试显式注入 */
 class ScriptedAdapter implements HarnessAdapter {
@@ -87,6 +88,7 @@ function makeController(adapter: ScriptedAdapter, cancelGraceMs?: number) {
   return new Controller({
     session,
     mentionBudgetChars: 4096,
+    resolveTarget: resolveTestTarget,
     createAdapter: () => adapter,
     cancelGraceMs,
   });

@@ -20,6 +20,7 @@ import type {
 import { textOf } from "../src/event/types.ts";
 import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
+import { resolveTestTarget } from "./harness-target.ts";
 
 /** open() 被外部 gate 控制的 adapter：制造稳定的"harness 冷启动中"窗口 */
 class GatedOpenAdapter implements HarnessAdapter {
@@ -78,7 +79,12 @@ afterEach(() => {
 });
 
 function controllerWith(adapter: HarnessAdapter): Controller {
-  return new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+  return new Controller({
+    session,
+    mentionBudgetChars: 4096,
+    resolveTarget: resolveTestTarget,
+    createAdapter: () => adapter,
+  });
 }
 
 /** 直接写入一个已收口、带 summary 的 turn（另一 harness 的既有历史） */

@@ -18,6 +18,7 @@ import type { AnyEventEnvelope, PromptBlock } from "../src/event/types.ts";
 import { textOf } from "../src/event/types.ts";
 import { Controller, type InteractionHandlers } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
+import { resolveTestTarget } from "./harness-target.ts";
 
 class FakeAdapter implements HarnessAdapter {
   readonly capabilities: AdapterCapabilities = { prompt: {} };
@@ -197,6 +198,7 @@ describe("Controller", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       createAdapter: () => adapter,
       onChange: () => controllerChanges++,
     });
@@ -222,11 +224,12 @@ describe("Controller", () => {
     await turn;
   });
 
-  test("accepts harness IDs outside the initially bundled registry", async () => {
+  test("accepts an explicitly resolved Target outside the bundled registry", async () => {
     const adapter = new FakeAdapter("example-harness");
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       createAdapter: (target) => {
         expect(target).toEqual({ id: "example", harness: "example" });
         return adapter;
@@ -246,11 +249,15 @@ describe("Controller", () => {
   test("isolates two targets backed by the same Harness and preserves launch provenance", async () => {
     const adapters: TargetedFakeAdapter[] = [];
     const createdTargets: Array<{ id: string; harness: string }> = [];
+    const targets = new Map([
+      ["codex-a", { id: "codex-a", harness: "codex" }],
+      ["codex-b", { id: "codex-b", harness: "codex" }],
+    ]);
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       modelPreferences: { "codex-a": "fast" },
-      resolveTarget: (harnessTargetId) => ({ id: harnessTargetId, harness: "codex" }),
+      resolveTarget: (harnessTargetId) => targets.get(harnessTargetId),
       createAdapter: (target) => {
         createdTargets.push(target);
         const adapter = new TargetedFakeAdapter(`instance-${adapters.length + 1}`);
@@ -317,6 +324,40 @@ describe("Controller", () => {
     expect(session.meta.harnessSessions["codex-a"]?.launchSnapshot).toEqual(launchSnapshot);
   });
 
+  test("rejects unknown or mismatched Target identities before creating an Adapter", () => {
+    let adapterCreations = 0;
+    const createAdapter = () => {
+      adapterCreations++;
+      return new FakeAdapter("codex");
+    };
+    const unknown = new Controller({
+      session,
+      mentionBudgetChars: 4096,
+      resolveTarget: () => undefined,
+      createAdapter,
+    });
+    expect(() =>
+      unknown.submit("missing", [{ type: "text", text: "hello" }]),
+    ).toThrow("HarnessTarget not registered: missing");
+    expect(() => unknown.currentModel("missing")).toThrow(
+      "HarnessTarget not registered: missing",
+    );
+    expect(() => unknown.currentEffort("missing")).toThrow(
+      "HarnessTarget not registered: missing",
+    );
+
+    const mismatched = new Controller({
+      session,
+      mentionBudgetChars: 4096,
+      resolveTarget: () => ({ id: "codex", harness: "codex" }),
+      createAdapter,
+    });
+    expect(() =>
+      mismatched.submit("codex-a", [{ type: "text", text: "hello" }]),
+    ).toThrow("invalid HarnessTarget for codex-a: id=codex, harness=codex");
+    expect(adapterCreations).toBe(0);
+  });
+
   test("publishes the persisted turn summary to event-stream subscribers", async () => {
     const adapter = new FakeAdapter("codex");
     const events: AnyEventEnvelope[] = [];
@@ -325,6 +366,7 @@ describe("Controller", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       createAdapter: () => adapter,
     });
 
@@ -342,6 +384,7 @@ describe("Controller", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       createAdapter: (target) => {
         const adapter = new FakeAdapter(target.harness === "claude" ? "claude-code" : target.harness, {
           delayMs: 10,
@@ -376,6 +419,7 @@ describe("Controller", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       createAdapter: () => adapter,
     });
 
@@ -399,6 +443,7 @@ describe("Controller", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       createAdapter: () => claude,
     });
 
@@ -427,6 +472,7 @@ describe("Controller", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       modelPreferences: { codex: "remembered-global-model" },
       effortPreferences: { codex: "remembered-global-effort" },
       createAdapter: () => codex,
@@ -447,6 +493,7 @@ describe("Controller", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       modelPreferences: { codex: "fast" },
       createAdapter: () => codex,
     });
@@ -462,6 +509,7 @@ describe("Controller", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       effortPreferences: { codex: "high" },
       createAdapter: () => codex,
     });
@@ -477,6 +525,7 @@ describe("Controller", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       createAdapter: () => adapter,
     });
 
@@ -496,6 +545,7 @@ describe("Controller", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       createAdapter: () => new FakeAdapter("example"),
     });
 
@@ -553,6 +603,7 @@ describe("interaction resolver registry", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       createAdapter: (_target, handlers) => new InteractiveAdapter(handlers),
     });
 
@@ -652,6 +703,7 @@ describe("interaction resolver registry", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       createAdapter: (_target, handlers) => new StartupTrustAdapter(handlers),
     });
     const outcome = controller.submit("codex", [{ type: "text", text: "go" }]);
@@ -712,6 +764,7 @@ describe("interaction resolver registry", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       createAdapter: (_target, handlers) => new SetupPermissionAdapter(handlers),
     });
     const outcome = controller.submit("codex", [{ type: "text", text: "go" }]);
@@ -753,7 +806,12 @@ describe("controller.approvalRoute reports the harness's own effective route", (
   }
 
   const routeAfterOpen = async (adapter: HarnessAdapter, harness: string) => {
-    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({
+      session,
+      mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
+      createAdapter: () => adapter,
+    });
     await controller.submit(harness, [{ type: "text", text: "hi" }]);
     return controller.approvalRoute(harness);
   };

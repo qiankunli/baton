@@ -20,6 +20,7 @@ import type { PromptBlock } from "../src/event/types.ts";
 import { textOf } from "../src/event/types.ts";
 import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
+import { resolveTestTarget } from "./harness-target.ts";
 
 /** submit 只记账 + 报 running；终态由测试经 finish() 手动触发（确定性时序） */
 class ManualAdapter implements HarnessAdapter {
@@ -126,7 +127,12 @@ function lastSummarySeq(handle: SessionHandle): number {
 describe("watermark advances only at injection (bug#5 regression)", () => {
   test("finalize does not push syncedSeq past concurrent progress; next injection backfills it", async () => {
     const adapter = new SyncableManualAdapter("codex");
-    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({
+      session,
+      mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
+      createAdapter: () => adapter,
+    });
 
     // turn 1：无历史可注入
     const first = controller.submit("codex", [{ type: "text", text: "one" }]);
@@ -165,7 +171,12 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     const injectionTail = lastSummarySeq(session);
 
     const adapter = new ManualAdapter("codex");
-    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({
+      session,
+      mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
+      createAdapter: () => adapter,
+    });
 
     const first = controller.submit("codex", [{ type: "text", text: "hello" }]);
     await Bun.sleep(1);
@@ -192,7 +203,12 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     completedTurn(session, "claude-code", "t_claude", "earlier claude work");
 
     const adapter = new SyncBlocksManualAdapter("codex");
-    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({
+      session,
+      mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
+      createAdapter: () => adapter,
+    });
 
     // 第一次 submit admission 失败：sync 视为未送达，水位不动
     adapter.failNextSubmit = true;

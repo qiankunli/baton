@@ -102,8 +102,14 @@ export function createHarnessAdapter(
  * target identity 与 Harness identity 即使当前值相同也保持两个字段，后续增加第二个同类
  * target 时不再改动 BatonSession/controller 主链路。
  */
-export function defaultHarnessTarget(harness: HarnessName): HarnessTarget {
+function defaultHarnessTarget(harness: HarnessName): HarnessTarget {
   return Object.freeze({ id: harness, harness });
+}
+
+/** 当前 bundled Target 的唯一解析入口；未知 id 不从名称形状猜测 Harness。 */
+export function resolveDefaultHarnessTarget(harnessTargetId: string): HarnessTarget | undefined {
+  const definition = HARNESS_REGISTRY.find((candidate) => candidate.id === harnessTargetId);
+  return definition ? defaultHarnessTarget(definition.id) : undefined;
 }
 
 export function harnessSessionKey(harness: HarnessName): string {
