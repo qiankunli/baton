@@ -16,7 +16,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { PermissionRequest, PromptBlock } from "../src/events/types.ts";
-import { SessionController, type InteractionHandlers } from "../src/session/controller.ts";
+import { Controller, type InteractionHandlers } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** turn 阻塞在一个审批 request 上，直到 respond 或（cancel 时）级联取消；cancel() 合成 idle(cancelled) */
@@ -88,7 +88,7 @@ async function until(cond: () => boolean): Promise<void> {
 
 describe("cancel cascades to pending requests", () => {
   test("Esc while a permission is pending resolves it cancelled, no dangling requires_action", async () => {
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: (_name, handlers) => new ApprovalHoldingAdapter(handlers),

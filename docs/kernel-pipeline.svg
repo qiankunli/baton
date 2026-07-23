@@ -33,7 +33,7 @@
   <rect x="650" y="100" width="650" height="540" rx="12" fill="#eef3fb" class="box"/>
 
   <rect x="735" y="165" width="250" height="110" rx="12" fill="#e7edf8" class="box"/>
-  <text x="860" y="212" text-anchor="middle" class="label">SessionController</text>
+  <text x="860" y="212" text-anchor="middle" class="label">Controller</text>
   <text x="860" y="246" text-anchor="middle" class="label">+ queue</text>
   <line x1="580" y1="222" x2="720" y2="222" class="flow"/>
 

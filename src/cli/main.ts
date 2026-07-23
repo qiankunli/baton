@@ -152,7 +152,7 @@ async function main(): Promise<void> {
     const done = new Promise<void>((resolve) => {
       turnDone = resolve;
     });
-    // 用户输入的 owner 是驱动方（与 SessionController 同责，design §4.1）：
+    // 用户输入的 owner 是驱动方（与 Controller 同责，design §4.1）：
     // user_message/running 由 REPL 落盘，adapter 只报告执行过程与终态
     session.append({
       kind: "user_message",

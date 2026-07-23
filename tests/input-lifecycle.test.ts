@@ -17,7 +17,7 @@ import type {
   SteerReceipt,
 } from "../src/adapters/types.ts";
 import { textOf, type PromptBlock } from "../src/events/types.ts";
-import { SessionController } from "../src/session/controller.ts";
+import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** turn 停在进行中，直到 finish() 或 cancel()；cancel 模拟 harness 的 cancelled 终态 */
@@ -77,8 +77,8 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-function controllerWith(adapter: HarnessAdapter): SessionController {
-  return new SessionController({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+function controllerWith(adapter: HarnessAdapter): Controller {
+  return new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 }
 const text = (t: string): PromptBlock[] => [{ type: "text", text: t }];
 async function until(cond: () => boolean): Promise<void> {

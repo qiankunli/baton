@@ -22,7 +22,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
-import { SessionController } from "../src/session/controller.ts";
+import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 let root: string;
@@ -115,7 +115,7 @@ describe("single-channel view notification per streaming event", () => {
     test(`${c.name}: exactly one notification per event`, async () => {
       const adapter = new StreamingAdapter();
       let notifications = 0;
-      const controller = new SessionController({
+      const controller = new Controller({
         session,
         mentionBudgetChars: 4096,
         createAdapter: () => adapter,

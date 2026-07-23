@@ -20,7 +20,7 @@ import type {
 } from "../src/adapters/types.ts";
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
-import { SessionController } from "../src/session/controller.ts";
+import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 import { BatonChatProtocol } from "../src/tui/protocol.ts";
 
@@ -207,7 +207,7 @@ class WakingAdapter implements HarnessAdapter {
 describe("controller observed-turn accounting", () => {
   test("summarizes the observed turn and keeps the driven queue unaffected", async () => {
     const adapter = new WakingAdapter();
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => adapter,

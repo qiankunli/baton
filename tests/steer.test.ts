@@ -17,7 +17,7 @@ import type {
   SteerReceipt,
 } from "../src/adapters/types.ts";
 import { textOf, type PromptBlock } from "../src/events/types.ts";
-import { SessionController } from "../src/session/controller.ts";
+import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** turn 不自动终结：由测试显式 finish()，制造稳定的"turn 进行中"窗口 */
@@ -103,8 +103,8 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function controllerWith(adapter: HarnessAdapter): SessionController {
-  return new SessionController({
+function controllerWith(adapter: HarnessAdapter): Controller {
+  return new Controller({
     session,
     mentionBudgetChars: 4096,
     createAdapter: () => adapter,
@@ -119,7 +119,7 @@ async function until(cond: () => boolean): Promise<void> {
   expect(cond()).toBe(true);
 }
 
-describe("SessionController.steer", () => {
+describe("Controller.steer", () => {
   test("steers the active turn: no new turn, message lands in the steered turn", async () => {
     const adapter = new SteerableFakeAdapter("codex");
     const controller = controllerWith(adapter);
@@ -212,7 +212,7 @@ describe("SessionController.steer", () => {
     const codex = new SteerableFakeAdapter("codex");
     const claude = new SteerableFakeAdapter("claude-code");
     const adapters: Record<string, HarnessAdapter> = { codex, claude };
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: (harness) => adapters[harness] as HarnessAdapter,

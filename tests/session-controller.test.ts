@@ -16,7 +16,7 @@ import type {
 } from "../src/adapters/types.ts";
 import type { AnyEventEnvelope, PermissionRequest, PromptBlock, QuestionRequest } from "../src/events/types.ts";
 import { textOf } from "../src/events/types.ts";
-import { SessionController, type InteractionHandlers } from "../src/session/controller.ts";
+import { Controller, type InteractionHandlers } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 class FakeAdapter implements HarnessAdapter {
@@ -178,7 +178,7 @@ function completedTurn(handle: SessionHandle, harness: string, turnId: string, t
   handle.summarizeTurn(turnId);
 }
 
-describe("SessionController", () => {
+describe("Controller", () => {
   test("does not publish a second controller change for persisted streaming events", async () => {
     class ManualAdapter extends FakeAdapter {
       turnId?: string;
@@ -191,7 +191,7 @@ describe("SessionController", () => {
 
     const adapter = new ManualAdapter("codex");
     let controllerChanges = 0;
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => adapter,
@@ -221,7 +221,7 @@ describe("SessionController", () => {
 
   test("accepts harness IDs outside the initially bundled registry", async () => {
     const adapter = new FakeAdapter("example-harness");
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: (harness) => {
@@ -242,7 +242,7 @@ describe("SessionController", () => {
 
   test("isolates two targets backed by the same Harness and preserves launch provenance", async () => {
     const adapters: TargetedFakeAdapter[] = [];
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       modelPreferences: { "codex-a": "fast" },
@@ -304,7 +304,7 @@ describe("SessionController", () => {
     const events: AnyEventEnvelope[] = [];
     // 投影单通道：消费者订阅事件流（append 即广播），不从 submit 的回调取事件
     session.subscribe((event) => events.push(event));
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => adapter,
@@ -321,7 +321,7 @@ describe("SessionController", () => {
     let maxActive = 0;
     const order: string[] = [];
     const adapters = new Map<string, FakeAdapter>();
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: (harness) => {
@@ -355,7 +355,7 @@ describe("SessionController", () => {
 
   test("exposes queued turns and recalls the latest one before it starts", async () => {
     const adapter = new FakeAdapter("codex", { delayMs: 20 });
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => adapter,
@@ -378,7 +378,7 @@ describe("SessionController", () => {
   test("rebuilds full BatonSession history for a fresh harness before prompting", async () => {
     completedTurn(session, "codex", "t_old", "existing work");
     const claude = new FakeAdapter("claude-code");
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => claude,
@@ -406,7 +406,7 @@ describe("SessionController", () => {
     });
     completedTurn(session, "claude-code", "t_claude", "new claude work");
     const codex = new FakeAdapter("codex");
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       modelPreferences: { codex: "remembered-global-model" },
@@ -426,7 +426,7 @@ describe("SessionController", () => {
 
   test("uses the remembered harness model for a new BatonSession", async () => {
     const codex = new FakeAdapter("codex");
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       modelPreferences: { codex: "fast" },
@@ -441,7 +441,7 @@ describe("SessionController", () => {
 
   test("uses the remembered harness effort for a new BatonSession", async () => {
     const codex = new FakeAdapter("codex");
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       effortPreferences: { codex: "high" },
@@ -456,7 +456,7 @@ describe("SessionController", () => {
 
   test("compacts through a control turn without persisting a user message", async () => {
     const adapter = new CompactAdapter("codex");
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => adapter,
@@ -475,7 +475,7 @@ describe("SessionController", () => {
   });
 
   test("rejects /compact when the harness does not declare the capability", async () => {
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => new FakeAdapter("example"),
@@ -554,7 +554,7 @@ describe("interaction resolver registry", () => {
   }
 
   test("resolve wakes the adapter exactly once; unknown/stale ids report false", async () => {
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: (_name, handlers) => new InteractiveAdapter(handlers),
@@ -635,7 +635,7 @@ describe("interaction resolver registry", () => {
       async close(): Promise<void> {}
     }
 
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: (_name, handlers) => new StartupTrustAdapter(handlers),
@@ -697,7 +697,7 @@ describe("interaction resolver registry", () => {
       async close(): Promise<void> {}
     }
 
-    const controller = new SessionController({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: (_name, handlers) => new SetupPermissionAdapter(handlers),
@@ -730,7 +730,7 @@ describe("controller.approvalRoute reports the harness's own effective route", (
   }
 
   const routeAfterOpen = async (adapter: HarnessAdapter, harness: string) => {
-    const controller = new SessionController({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
     await controller.submit(harness, [{ type: "text", text: "hi" }]);
     return controller.approvalRoute(harness);
   };

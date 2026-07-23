@@ -13,7 +13,7 @@
 | **BatonSession** | 用户拥有的持久逻辑历史，跨 harness 的唯一时间线 | 身份锚点：历史跟随 session，项目归属跟随发起 cwd（跨项目 fork = 同一段逻辑历史落到另一 cwd + 全新 HarnessSession）|
 | **Event（信封）** | 最小 append-only 记录：归一字段 `payload` + 原始 wire `raw` | 事件流是**感知的唯一真相源**；UI / 崩溃恢复 / resume 全是它的 reduce/投影，无旁路通道 |
 | **Turn** | 一段有始有终的 harness 活动（带 stopReason）| "谁发起"是属性（driven / observed），不是存在条件；**每个被 admit 的 turn 恰好收口一次** |
-| **HarnessTarget** | Baton 配置与调度侧的一份具体 Harness 目标 | 执行位置与协议类型分离：`SessionController` slot、原生 session 和同步水位按 target 隔离，不按 Harness 名称混用 |
+| **HarnessTarget** | Baton 配置与调度侧的一份具体 Harness 目标 | 执行位置与协议类型分离：`Controller` slot、原生 session 和同步水位按 target 隔离，不按 Harness 名称混用 |
 | **Adapter + Capability** | harness 方言的**唯一**居所：小核心 `HarnessAdapter` + 可选能力 descriptor | 差异表达为"能力有无"，type-guard 发现、契约测试钉住；**内核永不 `if harness===`** |
 | **Projection** | 纯函数：event reduce → 视图快照 | 只产展示形状；chat-tui 消费形状不消费语义；未变返回同引用（快照一致）|
 
@@ -42,15 +42,15 @@ PluginInstance 等配置对象使用各自作用域内的稳定配置 ID。fork 
 
 内核只有一条流水线，双向流动。observed turn、stall 自愈、审批闭环都是它的特例，不是另起的机制。
 
-**开发次序：两个边界的形态先钉死，中间处理慢慢打磨。** 先定死用户侧的 I/O 形态（用户→baton：Input / Response / Control；baton→用户：render 投影——transcript / 浮层 / footer）和 harness 侧的 I/O 形态（harness→baton：归一 Event，含常规输出与 Request；baton→harness：capability 操作）。这两个边界一旦稳定，baton 的**中间处理**（SessionController 调度、queue、reduce、projection）就能渐进重构而不惊动边界契约——接入方（chat-tui）与 harness（adapter）不被中间打磨波及。这也是内核纪律钉在**边界**（§4 扩展契约、§2 不变量）、而演进（§5）主要作用于中间与概念提升的原因。
+**开发次序：两个边界的形态先钉死，中间处理慢慢打磨。** 先定死用户侧的 I/O 形态（用户→baton：Input / Response / Control；baton→用户：render 投影——transcript / 浮层 / footer）和 harness 侧的 I/O 形态（harness→baton：归一 Event，含常规输出与 Request；baton→harness：capability 操作）。这两个边界一旦稳定，baton 的**中间处理**（Controller 调度、queue、reduce、projection）就能渐进重构而不惊动边界契约——接入方（chat-tui）与 harness（adapter）不被中间打磨波及。这也是内核纪律钉在**边界**（§4 扩展契约、§2 不变量）、而演进（§5）主要作用于中间与概念提升的原因。
 
-![baton 内核：一条双向流水线（用户→baton 有 Input(composer+queue) 与 Response(浮层) 两种信号；baton→用户 render 分 tool/text/plan(transcript)、Request(浮层)、stats(footer)；中间 SessionController+queue、event/turn 单通道、Adapter 的 capability 出站与归一入站、session.jsonl 持久化）](kernel-pipeline.svg)
+![baton 内核：一条双向流水线（用户→baton 有 Input(composer+queue) 与 Response(浮层) 两种信号；baton→用户 render 分 tool/text/plan(transcript)、Request(浮层)、stats(footer)；中间 Controller+queue、event/turn 单通道、Adapter 的 capability 出站与归一入站、session.jsonl 持久化）](kernel-pipeline.svg)
 
 两点要害：入站归一箭头标注的 `driven + observed`——`Adapter → event` 路径同时承载用户驱动与 harness 自发两种 turn，独立于是否有待决 Input（单通道真相，不变量 #1）；用户侧两种出站信号——Input 经 composer+queue 被调度成 turn，Response 在浮层作答、`refersTo` 某个 harness Request（Request↔Response 交互轴，见 §6）。
 
 ```text
 控制（出站）  chat-tui intent
-             → SessionController（拥有 Input 生命周期，调度 driven turn）
+             → Controller（拥有 Input 生命周期，调度 driven turn）
              → Adapter（按 capability 映射 submit / steer / cancel / approve）
              → harness wire
 感知（入站）  harness wire
@@ -62,7 +62,7 @@ PluginInstance 等配置对象使用各自作用域内的稳定配置 ID。fork 
 
 **Turn 生命周期**（内核心跳）：
 
-- `admit`（SessionController，driven turn）：出队即由 controller 落 `user_message` + `state_update(running)`——用户输入是 BatonSession 的事实，不等 harness 冷启动；driven turn 全局串行、finalize 推进队列。
+- `admit`（Controller，driven turn）：出队即由 controller 落 `user_message` + `state_update(running)`——用户输入是 BatonSession 的事实，不等 harness 冷启动；driven turn 全局串行、finalize 推进队列。
 - `observe`（adapter，observed turn）：harness 自发。adapter 在终态后的同一消息流上检测到新活动，铸新 turnId、以 `state_update(running, origin:"harness")` 开界、idle 收界；controller 只划界记账、投影，**不进队列**（它已在跑，调度它无意义、阻塞用户输入更是倒置）。全局串行约定据此收窄为：**driven turn 全局串行，observed turn 与其正交**。
 - `terminal`（恰好一次）：adapter 在任何退出路径（正常 / wire error / 子进程退出 / transport close）都必须报告或合成一次 `state_update(idle)`；错误路径先发 `_baton_error_update`。重复 / 迟到的物理终态允许存在，controller 按 baton turn id 幂等 finalize。
 - `setup`（harness 冷启动，turn 之外的活动窗口）：slot 创建 → open 完成之间，adapter 可能阻塞征询用户（hook trust / 登录确认）、拉模型目录、失败退出。setup 不自成 turn——其间的 request 事件一律归属**触发冷启动的 driven turn**（唯一事件入口按"是不是 request"补归属，不按 kind 特判）；setup 期间 adapter 自行启动的资源（子进程、探测 query）由 **adapter 负责清理**——open 未返回 ref 前 controller 无从 close，失败路径不清理即泄漏。

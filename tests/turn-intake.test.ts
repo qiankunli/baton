@@ -18,7 +18,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import { textOf } from "../src/events/types.ts";
-import { SessionController } from "../src/session/controller.ts";
+import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** open() 被外部 gate 控制的 adapter：制造稳定的"harness 冷启动中"窗口 */
@@ -77,8 +77,8 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function controllerWith(adapter: HarnessAdapter): SessionController {
-  return new SessionController({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+function controllerWith(adapter: HarnessAdapter): Controller {
+  return new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 }
 
 /** 直接写入一个已收口、带 summary 的 turn（另一 harness 的既有历史） */

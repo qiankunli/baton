@@ -21,7 +21,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
-import { SessionController } from "../src/session/controller.ts";
+import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 const requestHandler: RequestHandler = async (req) =>
@@ -75,7 +75,7 @@ function summaryTurnIds(): string[] {
 describe("terminal routing by turnId (bug#2 regression)", () => {
   test("observed idle during a same-harness driven turn still closes the observed turn", async () => {
     const adapter = new OverlapAdapter();
-    const controller = new SessionController({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 
     const submitted = controller.submit("claude", [{ type: "text", text: "go" }]);
     await Bun.sleep(1); // driven turn admission + running 就位
@@ -116,7 +116,7 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
 
   test("driven idle does not close a still-running observed turn (reverse ordering)", async () => {
     const adapter = new OverlapAdapter();
-    const controller = new SessionController({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 
     const submitted = controller.submit("claude", [{ type: "text", text: "go" }]);
     await Bun.sleep(1);
@@ -149,7 +149,7 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
 
   test("an idle without turnId is persisted but drives no lifecycle", async () => {
     const adapter = new OverlapAdapter();
-    const controller = new SessionController({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 
     const submitted = controller.submit("claude", [{ type: "text", text: "go" }]);
     let done = false;
@@ -183,7 +183,7 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
 describe("finalized turn records are retired (memory retention regression)", () => {
   test("finalize drops the queued prompt and release closure but keeps idempotency", async () => {
     const adapter = new OverlapAdapter();
-    const controller = new SessionController({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
     const ledger = (
       controller as unknown as {
         turns: Map<string, { status: string; turn?: unknown; release?: unknown; cancelGraceTimer?: unknown }>;

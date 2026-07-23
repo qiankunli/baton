@@ -16,7 +16,7 @@
 | 阶段 | owner | 是否进入正典历史 | 当前语义 |
 |---|---|---|---|
 | draft | chat-tui Composer | 否 | 用户仍可编辑 |
-| queued follow-up | SessionController | 否 | 等待当前 driven turn 结束；可召回编辑 |
+| queued follow-up | Controller | 否 | 等待当前 driven turn 结束；可召回编辑 |
 | admitted prompt | controller + Store | 是 | 已从队列取走并形成 driven turn；当前只能 interrupt，不能 recall |
 | accepted steer | Adapter + Store | 是 | harness 已接受为当前 turn 的追加用户消息；由一等 InputRecord 承载、挂在当前 turn 上 |
 | finalized | Store | 是 | turn 已以明确 stop reason 收口 |
@@ -42,7 +42,7 @@ Turn 是一段有始有终的 harness 活动，不等于“一条用户消息”
 
 ### 2.1 普通提交
 
-普通输入先交给 SessionController。controller 以 driven turn 全局串行：输入留在队列时可召回；一旦出队，controller 立即把原始用户消息和 running 状态写入事件流，再准备或调用 harness。这样 harness 冷启动不会让输入在界面上消失，崩溃恢复也始终有一条完整历史。
+普通输入先交给 Controller。controller 以 driven turn 全局串行：输入留在队列时可召回；一旦出队，controller 立即把原始用户消息和 running 状态写入事件流，再准备或调用 harness。这样 harness 冷启动不会让输入在界面上消失，崩溃恢复也始终有一条完整历史。
 
 ### 2.2 harness 忙时的第二条输入
 

@@ -18,7 +18,7 @@ import type {
 } from "../src/adapters/types.ts";
 import type { PromptBlock } from "../src/events/types.ts";
 import { textOf } from "../src/events/types.ts";
-import { SessionController } from "../src/session/controller.ts";
+import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** submit 只记账 + 报 running；终态由测试经 finish() 手动触发（确定性时序） */
@@ -125,7 +125,7 @@ function lastSummarySeq(handle: SessionHandle): number {
 describe("watermark advances only at injection (bug#5 regression)", () => {
   test("finalize does not push syncedSeq past concurrent progress; next injection backfills it", async () => {
     const adapter = new SyncableManualAdapter("codex");
-    const controller = new SessionController({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 
     // turn 1：无历史可注入
     const first = controller.submit("codex", [{ type: "text", text: "one" }]);
@@ -164,7 +164,7 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     const injectionTail = lastSummarySeq(session);
 
     const adapter = new ManualAdapter("codex");
-    const controller = new SessionController({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 
     const first = controller.submit("codex", [{ type: "text", text: "hello" }]);
     await Bun.sleep(1);
@@ -191,7 +191,7 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     completedTurn(session, "claude-code", "t_claude", "earlier claude work");
 
     const adapter = new SyncBlocksManualAdapter("codex");
-    const controller = new SessionController({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 
     // 第一次 submit admission 失败：sync 视为未送达，水位不动
     adapter.failNextSubmit = true;

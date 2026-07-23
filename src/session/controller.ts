@@ -175,7 +175,7 @@ export interface InteractionHandlers {
   diagnostic: DiagnosticSink;
 }
 
-export interface SessionControllerOptions {
+export interface ControllerOptions {
   session: SessionHandle;
   mentionBudgetChars: number;
   /** 新 session 未选过 model 时使用的 harness 级持久偏好。 */
@@ -219,7 +219,7 @@ export const INTERRUPTED_NOTICE_TITLE = "Conversation interrupted — tell the a
  * 的终态）。driven ≤ 1 是**队列策略**（activeDrivenTurnId 指针 + drain 串行），不是
  * 台账模型假设；将来放开并行 driven 只改 drain 取件策略，台账与路由不动。
  */
-export class SessionController {
+export class Controller {
   private readonly slots = new Map<string, HarnessSlot>();
   private readonly queue: InputRecord[] = [];
   private nextQueueId = 1;
@@ -244,7 +244,7 @@ export class SessionController {
   /** requestId → turnId：onAdapterEvent 见 *_request 时记下，requestHandler 消费，供 cancel-cascade 按 turn 归属 */
   private readonly requestTurns = new Map<string, string>();
 
-  constructor(private readonly options: SessionControllerOptions) {}
+  constructor(private readonly options: ControllerOptions) {}
 
   /** 注入给 adapter 的统一 request 回调：注册 resolver 后挂起，等宿主经 respond() 应答或 turn 收口级联取消 */
   readonly requestHandler: RequestHandler = (request) =>
