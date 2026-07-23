@@ -14,7 +14,7 @@ import type {
   PromptReceipt,
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
-import type { AnyEventEnvelope, PromptBlock } from "../src/event/types.ts";
+import type { AnyEventDraft, AnyEventEnvelope, PromptBlock } from "../src/event/types.ts";
 import { textOf } from "../src/event/types.ts";
 import { Controller, type InteractionHandlers } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
@@ -84,14 +84,12 @@ class FakeAdapter implements HarnessAdapter {
       if (this.hooks.delayMs) await Bun.sleep(this.hooks.delayMs);
       this.sink?.({
         kind: "agent_message",
-        harness: this.harness,
         turnId: input.turnId,
         payload: { messageId: `${input.turnId}-agent`, content: [{ type: "text", text: "done" }] },
       });
       this.hooks.leave?.();
       this.sink?.({
         kind: "state_update",
-        harness: this.harness,
         turnId: input.turnId,
         payload: { state: "idle", stopReason: "end_turn" },
       });
@@ -131,13 +129,11 @@ class CompactAdapter extends FakeAdapter {
     this.compactCalls.push(turnId);
     this.sink?.({
       kind: "_baton_run_status",
-      harness: this.harness,
       turnId,
       payload: { phase: "compacting", title: "Compacting context…" },
     });
     this.sink?.({
       kind: "state_update",
-      harness: this.harness,
       turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -183,6 +179,46 @@ function completedTurn(handle: SessionHandle, harness: string, turnId: string, t
 }
 
 describe("Controller", () => {
+  test("overrides adapter-supplied event attribution at the trusted host boundary", async () => {
+    class SpoofingAdapter extends FakeAdapter {
+      override async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
+        this.sink?.({
+          kind: "agent_message",
+          turnId: input.turnId,
+          payload: { messageId: "forged", content: [{ type: "text", text: "done" }] },
+          source: { type: "plugin", pluginInstanceId: "forged-plugin" },
+          harness: "forged-harness",
+          harnessTargetId: "forged-target",
+        } as unknown as AnyEventDraft);
+        this.sink?.({
+          kind: "state_update",
+          turnId: input.turnId,
+          payload: { state: "idle", stopReason: "end_turn" },
+        });
+        return { accepted: true };
+      }
+    }
+
+    const adapter = new SpoofingAdapter("example-harness");
+    const controller = new Controller({
+      session,
+      mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
+      createAdapter: () => adapter,
+    });
+
+    await controller.submit("example", [{ type: "text", text: "hello" }]);
+
+    const event = session.readEvents().find(
+      (candidate) => candidate.kind === "agent_message" && candidate.payload.messageId === "forged",
+    );
+    expect(event).toMatchObject({
+      source: { type: "harness", harnessTargetId: "example" },
+      harness: "example-harness",
+      harnessTargetId: "example",
+    });
+  });
+
   test("does not publish a second controller change for persisted streaming events", async () => {
     class ManualAdapter extends FakeAdapter {
       turnId?: string;
@@ -209,7 +245,6 @@ describe("Controller", () => {
     const beforeChunk = controllerChanges;
     adapter.sink({
       kind: "agent_message_chunk",
-      harness: "codex",
       turnId: adapter.turnId,
       payload: { messageId: "m_stream", content: { type: "text", text: "a" } },
     });
@@ -217,7 +252,6 @@ describe("Controller", () => {
 
     adapter.sink({
       kind: "state_update",
-      harness: "codex",
       turnId: adapter.turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -573,7 +607,7 @@ describe("interaction resolver registry", () => {
 
     async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
       const emit = (ev: Parameters<EventSink>[0]) => this.sink?.({ ...ev, turnId: input.turnId });
-      emit({ kind: "state_update", harness: this.harness, payload: { state: "running" } });
+      emit({ kind: "state_update", payload: { state: "running" } });
       void (async () => {
         const decision = await this.handlers.interactionHandler({
           kind: "permission",
@@ -590,7 +624,7 @@ describe("interaction resolver registry", () => {
         }, { turnId: input.turnId });
         expect(answers).toMatchObject({ kind: "question", answers: { q1: ["prod"] } });
 
-        emit({ kind: "state_update", harness: this.harness, payload: { state: "idle", stopReason: "end_turn" } });
+        emit({ kind: "state_update", payload: { state: "idle", stopReason: "end_turn" } });
       })();
       return { accepted: true };
     }
@@ -689,7 +723,6 @@ describe("interaction resolver registry", () => {
       async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
         this.sink?.({
           kind: "state_update",
-          harness: this.harness,
           turnId: input.turnId,
           payload: { state: "idle", stopReason: "end_turn" },
         });
@@ -750,7 +783,6 @@ describe("interaction resolver registry", () => {
       async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
         this.sink?.({
           kind: "state_update",
-          harness: this.harness,
           turnId: input.turnId,
           payload: { state: "idle", stopReason: "end_turn" },
         });

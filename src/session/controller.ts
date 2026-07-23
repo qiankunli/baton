@@ -291,7 +291,6 @@ export class Controller {
           slot,
           {
             kind: "interaction.opened",
-            harness: slot.adapter.harness,
             ...(turnId ? { turnId } : {}),
             payload: interaction,
             ...(context?.raw !== undefined ? { raw: context.raw } : {}),
@@ -318,7 +317,6 @@ export class Controller {
       entry.slot,
       {
         kind: "interaction.resolved",
-        harness: entry.slot.adapter.harness,
         ...(entry.turnId ? { turnId: entry.turnId } : {}),
         payload: { interactionId, resolution },
       },
@@ -745,7 +743,6 @@ export class Controller {
         slot,
         {
           kind: "user_message",
-          harness: harnessKey,
           harnessSessionId: opts.harnessSessionId,
           turnId: opts.turnId,
           payload: { messageId: opts.input.messageId, content: opts.input.blocks },
@@ -757,7 +754,6 @@ export class Controller {
       slot,
       {
         kind: "state_update",
-        harness: harnessKey,
         harnessSessionId: opts.harnessSessionId,
         turnId: opts.turnId,
         payload: { state: "running" },
@@ -790,7 +786,6 @@ export class Controller {
         slot,
         {
           kind: "_baton_run_status",
-          harness: harnessKey,
           turnId: turn.turnId,
           payload: { phase: "starting", title: `Starting ${turn.target.harness}…` },
         },
@@ -808,7 +803,6 @@ export class Controller {
           slot,
           {
             kind: "_baton_run_status",
-            harness: harnessKey,
             turnId: turn.turnId,
             payload: { phase: null },
           },
@@ -916,6 +910,7 @@ export class Controller {
     const envelope = this.options.session.append({
       ...ev,
       source,
+      harness: slot.adapter.harness,
       harnessTargetId: slot.target.id,
     } as AnyNewEvent) as AnyEventEnvelope;
     if (envelope.kind === "state_update") {
@@ -1050,7 +1045,6 @@ export class Controller {
         record.slot,
         {
           kind: "_baton_error_update",
-          harness: record.harness,
           turnId: record.turnId,
           payload: { message: opts.message, retryable: false },
         },
@@ -1061,7 +1055,6 @@ export class Controller {
       record.slot,
       {
         kind: "state_update",
-        harness: record.harness,
         turnId: record.turnId,
         payload: { state: "idle", stopReason: opts.stopReason },
       },

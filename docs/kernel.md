@@ -11,7 +11,7 @@
 | 概念 | 语义 | 绑定的不变量 |
 |---|---|---|
 | **BatonSession** | 用户拥有的持久逻辑历史，跨 harness 的唯一时间线 | 身份锚点：历史跟随 session，项目归属跟随发起 cwd（跨项目 fork = 同一段逻辑历史落到另一 cwd + 全新 HarnessSession）|
-| **Event（信封）** | 最小 append-only 事实：稳定 `eventId` + 单一 `scope` + 必填 `source` + 归一 `payload` + 原始 wire `raw`；归属、来源与执行坐标正交 | 事件流是**感知的唯一真相源**；UI / 崩溃恢复 / resume 全是它的 reduce/投影，无旁路通道 |
+| **Event（信封）** | 最小 append-only 事实：稳定 `eventId` + 单一 `scope` + 必填 `source` + 归一 `payload` + 原始 wire `raw`；归属、来源与执行坐标正交，归因字段由可信宿主入口填写 | 事件流是**感知的唯一真相源**；UI / 崩溃恢复 / resume 全是它的 reduce/投影，无旁路通道 |
 | **Turn** | 一段有始有终的 harness 活动（带 stopReason）| "谁发起"是属性（driven / observed），不是存在条件；**每个被 admit 的 turn 恰好收口一次** |
 | **Interaction** | Baton 持有的持久待决交互；`kind` 区分 permission / question / hook trust，`requester` 指明谁在等待 | identity 与 opened/resolved 生命周期由 Controller 统一签发和收口；Adapter 只提交 kind-specific draft 并等待结果 |
 | **HarnessTarget** | Baton 配置、调度与状态查询侧的一份具体 Harness 目标 | 实例坐标与协议类型分离：Target ID 只经显式 resolver 解析，未知值 fail closed；Adapter 工厂接收完整 Target；`Controller` processing / queue / slot、原生 session、同步水位、偏好 / 授权和 Target-scoped 投影状态均按 `harnessTargetId` 隔离，不按 Harness 名称混用 |
@@ -57,7 +57,7 @@ message / tool call 等领域对象与源**共享对象 ID**（git-branch 语义
              → harness wire
 感知（入站）  harness wire
              → Adapter 归一（→ 封闭词表，未知 fail-closed，保留 raw）
-             → 宿主可信入口盖 source:harness
+             → 宿主可信入口盖 source:harness + Harness + HarnessTarget
              → Event append → broadcast
              → reduce → Projection 快照
              → chat-tui 渲染
@@ -92,7 +92,7 @@ interface HarnessAdapter {
 
 **MUST**：
 
-- 实现小核心 `HarnessAdapter`；把 wire 方言归一成 Event 草稿并保 `raw`；adapter 不能自填 `source`，宿主在接入边界统一标为 Harness 来源；未知终态按不变量 #2 保守收口。
+- 实现小核心 `HarnessAdapter`；把 wire 方言归一成 Event 草稿并保 `raw`；adapter 不能自填 `source`、Harness 或 HarnessTarget，宿主在接入边界按绑定关系统一补齐；未知终态按不变量 #2 保守收口。
 - 需要外部参与者时向宿主提交 typed `InteractionDraft` 并等待 resolution；不得自签 `interactionId`，也不得自行 emit `interaction.opened/resolved`。
 - 可选能力（`Steerable` / `Reconcilable` / `ModelConfigurable` / …）**声明即必须实现**，由契约测试保证；不声明 = 优雅降级，绝不是核心分支。
 - 经 `harness/registry`（Harness 定义 + adapter 工厂）+ `harness/ids`（无 SDK 身份目录：id + aliases）注册。

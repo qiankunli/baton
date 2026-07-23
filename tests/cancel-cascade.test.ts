@@ -51,7 +51,6 @@ class ApprovalHoldingAdapter implements HarnessAdapter {
     if (input) {
       this.sink?.({
         kind: "state_update",
-        harness: this.harness,
         turnId: input.turnId,
         payload: { state: "idle", stopReason: "cancelled" },
       });

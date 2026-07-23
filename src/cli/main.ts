@@ -150,6 +150,7 @@ async function main(): Promise<void> {
     session.append({
       ...ev,
       source: { type: "harness", harnessTargetId: target.id },
+      harness: adapter.harness,
       harnessTargetId: target.id,
     });
     if (ev.kind === "agent_message_chunk" && ev.payload.content.type === "text") {

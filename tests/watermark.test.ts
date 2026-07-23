@@ -49,13 +49,11 @@ class ManualAdapter implements HarnessAdapter {
     this.activeTurn = undefined;
     this.sink?.({
       kind: "agent_message",
-      harness: this.harness,
       turnId: turn.turnId,
       payload: { messageId: `${turn.turnId}-agent`, content: [{ type: "text", text: "done" }] },
     });
     this.sink?.({
       kind: "state_update",
-      harness: this.harness,
       turnId: turn.turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });

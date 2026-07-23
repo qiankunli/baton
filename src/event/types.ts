@@ -404,9 +404,12 @@ export type NewEvent<K extends EventKind = EventKind> = Omit<
 
 /**
  * 尚未由可信宿主入口归因的 Event 草稿。Harness Adapter 只能产出这种形状，
- * Controller / CLI 在接入边界补 source 后才允许写入 Store。
+ * Controller / CLI 在接入边界补 source、Harness 与 HarnessTarget 后才允许写入 Store。
  */
-export type EventDraft<K extends EventKind = EventKind> = Omit<NewEvent<K>, "source">;
+export type EventDraft<K extends EventKind = EventKind> = Omit<
+  NewEvent<K>,
+  "source" | "harness" | "harnessTargetId"
+>;
 
 /** EventDraft 的判别联合版本，供 adapter sink 按 kind 正确收窄 payload。 */
 export type AnyEventDraft = { [K in EventKind]: EventDraft<K> }[EventKind];
