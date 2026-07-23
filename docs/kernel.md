@@ -1,6 +1,6 @@
 # baton 内核（kernel）
 
-> 本文定义 baton 的**稳定内核**：少数核心概念 + 少数不变量 + 一条流水线 + 一份扩展契约。判据只有一条——**新增一个 harness 默认只改 `adapters/` + `harnesses/registry` + `harnesses/ids`（+ 或许一个新 capability 接口），不触碰 session / store-reduce / projection / chat-tui**。改动若渗进内核，通常说明"有个概念还没一等化"（见 §6）。内核并非冻结：当一个特性被多个 harness 共同印证，它也会演进——但改内核比改 adapter 贵一个量级，门槛见 §5。
+> 本文定义 baton 的**稳定内核**：少数核心概念 + 少数不变量 + 一条流水线 + 一份扩展契约。判据只有一条——**新增一个 harness 默认只改 `adapters/` + `harness/registry` + `harness/ids`（+ 或许一个新 capability 接口），不触碰 session / store-reduce / projection / chat-tui**。改动若渗进内核，通常说明"有个概念还没一等化"（见 §6）。内核并非冻结：当一个特性被多个 harness 共同印证，它也会演进——但改内核比改 adapter 贵一个量级，门槛见 §5。
 >
 > 内核之外的设计（产品定位、存储路径、外部会话纳管、@ 引用、里程碑）见 `design.md`；输入 / 输出 / 审批三轴的展开见 `user-input-lifecycle.md`、`harness-output-lifecycle.md`、`approval-lifecycle.md`；Adapter 契约的完整条款见 `harness-interaction-design.md`。
 
@@ -13,7 +13,7 @@
 | **BatonSession** | 用户拥有的持久逻辑历史，跨 harness 的唯一时间线 | 身份锚点：历史跟随 session，项目归属跟随发起 cwd（跨项目 fork = 同一段逻辑历史落到另一 cwd + 全新 HarnessSession）|
 | **Event（信封）** | 最小 append-only 记录：归一字段 `payload` + 原始 wire `raw` | 事件流是**感知的唯一真相源**；UI / 崩溃恢复 / resume 全是它的 reduce/投影，无旁路通道 |
 | **Turn** | 一段有始有终的 harness 活动（带 stopReason）| "谁发起"是属性（driven / observed），不是存在条件；**每个被 admit 的 turn 恰好收口一次** |
-| **HarnessTarget** | Baton 配置与调度侧的一份具体 Harness 目标 | 执行位置与协议类型分离：runtime slot、原生 session 和同步水位按 target 隔离，不按 Harness 名称混用 |
+| **HarnessTarget** | Baton 配置与调度侧的一份具体 Harness 目标 | 执行位置与协议类型分离：`Controller` slot、原生 session 和同步水位按 target 隔离，不按 Harness 名称混用 |
 | **Adapter + Capability** | harness 方言的**唯一**居所：小核心 `HarnessAdapter` + 可选能力 descriptor | 差异表达为"能力有无"，type-guard 发现、契约测试钉住；**内核永不 `if harness===`** |
 | **Projection** | 纯函数：event reduce → 视图快照 | 只产展示形状；chat-tui 消费形状不消费语义；未变返回同引用（快照一致）|
 
@@ -42,15 +42,15 @@ PluginInstance 等配置对象使用各自作用域内的稳定配置 ID。fork 
 
 内核只有一条流水线，双向流动。observed turn、stall 自愈、审批闭环都是它的特例，不是另起的机制。
 
-**开发次序：两个边界的形态先钉死，中间处理慢慢打磨。** 先定死用户侧的 I/O 形态（用户→baton：Input / Response / Control；baton→用户：render 投影——transcript / 浮层 / footer）和 harness 侧的 I/O 形态（harness→baton：归一 Event，含常规输出与 Request；baton→harness：capability 操作）。这两个边界一旦稳定，baton 的**中间处理**（runtime 调度、queue、reduce、projection）就能渐进重构而不惊动边界契约——接入方（chat-tui）与 harness（adapter）不被中间打磨波及。这也是内核纪律钉在**边界**（§4 扩展契约、§2 不变量）、而演进（§5）主要作用于中间与概念提升的原因。
+**开发次序：两个边界的形态先钉死，中间处理慢慢打磨。** 先定死用户侧的 I/O 形态（用户→baton：Input / Response / Control；baton→用户：render 投影——transcript / 浮层 / footer）和 harness 侧的 I/O 形态（harness→baton：归一 Event，含常规输出与 Request；baton→harness：capability 操作）。这两个边界一旦稳定，baton 的**中间处理**（Controller 调度、queue、reduce、projection）就能渐进重构而不惊动边界契约——接入方（chat-tui）与 harness（adapter）不被中间打磨波及。这也是内核纪律钉在**边界**（§4 扩展契约、§2 不变量）、而演进（§5）主要作用于中间与概念提升的原因。
 
-![baton 内核：一条双向流水线（用户→baton 有 Input(composer+queue) 与 Response(浮层) 两种信号；baton→用户 render 分 tool/text/plan(transcript)、Request(浮层)、stats(footer)；中间 runtime+queue、event/turn 单通道、Adapter 的 capability 出站与归一入站、session.jsonl 持久化）](kernel-pipeline.png)
+![baton 内核：一条双向流水线（用户→baton 有 Input(composer+queue) 与 Response(浮层) 两种信号；baton→用户 render 分 tool/text/plan(transcript)、Request(浮层)、stats(footer)；中间 Controller+queue、event/turn 单通道、Adapter 的 capability 出站与归一入站、session.jsonl 持久化）](kernel-pipeline.svg)
 
 两点要害：入站归一箭头标注的 `driven + observed`——`Adapter → event` 路径同时承载用户驱动与 harness 自发两种 turn，独立于是否有待决 Input（单通道真相，不变量 #1）；用户侧两种出站信号——Input 经 composer+queue 被调度成 turn，Response 在浮层作答、`refersTo` 某个 harness Request（Request↔Response 交互轴，见 §6）。
 
 ```text
 控制（出站）  chat-tui intent
-             → Runtime（拥有 Input 生命周期，调度 driven turn）
+             → Controller（拥有 Input 生命周期，调度 driven turn）
              → Adapter（按 capability 映射 submit / steer / cancel / approve）
              → harness wire
 感知（入站）  harness wire
@@ -62,10 +62,10 @@ PluginInstance 等配置对象使用各自作用域内的稳定配置 ID。fork 
 
 **Turn 生命周期**（内核心跳）：
 
-- `admit`（runtime，driven turn）：出队即由 runtime 落 `user_message` + `state_update(running)`——用户输入是 BatonSession 的事实，不等 harness 冷启动；driven turn 全局串行、finalize 推进队列。
-- `observe`（adapter，observed turn）：harness 自发。adapter 在终态后的同一消息流上检测到新活动，铸新 turnId、以 `state_update(running, origin:"harness")` 开界、idle 收界；runtime 只划界记账、投影，**不进队列**（它已在跑，调度它无意义、阻塞用户输入更是倒置）。全局串行约定据此收窄为：**driven turn 全局串行，observed turn 与其正交**。
-- `terminal`（恰好一次）：adapter 在任何退出路径（正常 / wire error / 子进程退出 / transport close）都必须报告或合成一次 `state_update(idle)`；错误路径先发 `_baton_error_update`。重复 / 迟到的物理终态允许存在，runtime 按 baton turn id 幂等 finalize。
-- `setup`（harness 冷启动，turn 之外的活动窗口）：slot 创建 → open 完成之间，adapter 可能阻塞征询用户（hook trust / 登录确认）、拉模型目录、失败退出。setup 不自成 turn——其间的 request 事件一律归属**触发冷启动的 driven turn**（唯一事件入口按"是不是 request"补归属，不按 kind 特判）；setup 期间 adapter 自行启动的资源（子进程、探测 query）由 **adapter 负责清理**——open 未返回 ref 前 runtime 无从 close，失败路径不清理即泄漏。
+- `admit`（Controller，driven turn）：出队即由 controller 落 `user_message` + `state_update(running)`——用户输入是 BatonSession 的事实，不等 harness 冷启动；driven turn 全局串行、finalize 推进队列。
+- `observe`（adapter，observed turn）：harness 自发。adapter 在终态后的同一消息流上检测到新活动，铸新 turnId、以 `state_update(running, origin:"harness")` 开界、idle 收界；controller 只划界记账、投影，**不进队列**（它已在跑，调度它无意义、阻塞用户输入更是倒置）。全局串行约定据此收窄为：**driven turn 全局串行，observed turn 与其正交**。
+- `terminal`（恰好一次）：adapter 在任何退出路径（正常 / wire error / 子进程退出 / transport close）都必须报告或合成一次 `state_update(idle)`；错误路径先发 `_baton_error_update`。重复 / 迟到的物理终态允许存在，controller 按 baton turn id 幂等 finalize。
+- `setup`（harness 冷启动，turn 之外的活动窗口）：slot 创建 → open 完成之间，adapter 可能阻塞征询用户（hook trust / 登录确认）、拉模型目录、失败退出。setup 不自成 turn——其间的 request 事件一律归属**触发冷启动的 driven turn**（唯一事件入口按"是不是 request"补归属，不按 kind 特判）；setup 期间 adapter 自行启动的资源（子进程、探测 query）由 **adapter 负责清理**——open 未返回 ref 前 controller 无从 close，失败路径不清理即泄漏。
 - `finalize`：落 turn-summary、推进队列（仅 driven）。
 
 **自愈旁支**（harness 静默悬挂时）：stall 在事件流上被观测（L1，`_baton_stall_notice`）→ 若 adapter 声明 `Reconcilable` 则探权威快照（L2）→ 用修复事件结算被丢的 item 级终态 → 合成终态重新进同一条流水线。silence 是观察不是判决，权威探测应能 clear / refine 而非直接判死。
@@ -91,7 +91,7 @@ interface HarnessAdapter {
 
 - 实现小核心 `HarnessAdapter`；把 wire 方言归一进 Event 信封并保 `raw`；未知终态按不变量 #2 保守收口。
 - 可选能力（`Steerable` / `Reconcilable` / `ModelConfigurable` / …）**声明即必须实现**，由契约测试保证；不声明 = 优雅降级，绝不是核心分支。
-- 经 `harnesses/registry`（运行时定义 + adapter 工厂）+ `harnesses/ids`（无 SDK 身份目录：id + aliases）注册。
+- 经 `harness/registry`（Harness 定义 + adapter 工厂）+ `harness/ids`（无 SDK 身份目录：id + aliases）注册。
 
 **MUST NOT**（默认边界；确需突破时走 §5 的演进门槛，不在此私自扩核心）：
 

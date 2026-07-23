@@ -16,7 +16,7 @@ import type {
 } from "../src/adapters/types.ts";
 import type { AnyEventEnvelope, PermissionRequest, PromptBlock, QuestionRequest } from "../src/events/types.ts";
 import { textOf } from "../src/events/types.ts";
-import { BatonSessionRuntime, type InteractionHandlers } from "../src/session/runtime.ts";
+import { Controller, type InteractionHandlers } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 class FakeAdapter implements HarnessAdapter {
@@ -38,7 +38,7 @@ class FakeAdapter implements HarnessAdapter {
     this.sink = sink;
     return {
       harness: this.harness,
-      harnessSessionId: `${this.harness}-runtime-ref`,
+      harnessSessionId: `${this.harness}-controller-ref`,
       resumed: Boolean(opts.resumeSessionId),
     };
   }
@@ -75,7 +75,7 @@ class FakeAdapter implements HarnessAdapter {
     return this.effort;
   }
 
-  /** submit 立即回执；事件（含终态）异步经 open 绑定的 sink 上报。user_message 由 runtime 落盘 */
+  /** submit 立即回执；事件（含终态）异步经 open 绑定的 sink 上报。user_message 由 controller 落盘 */
   async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.hooks.enter?.();
     this.prompts.push(textOf(input.blocks));
@@ -112,7 +112,7 @@ class TargetedFakeAdapter extends FakeAdapter {
     this.sink = sink;
     return {
       harness: this.harness,
-      harnessSessionId: `${this.instanceId}-runtime-ref`,
+      harnessSessionId: `${this.instanceId}-controller-ref`,
       resumed: Boolean(opts.resumeSessionId),
     };
   }
@@ -148,7 +148,7 @@ let root: string;
 let session: SessionHandle;
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "baton-runtime-"));
+  root = mkdtempSync(join(tmpdir(), "baton-controller-"));
   session = new SessionStore(root).createSession({ cwd: "/repo" });
 });
 
@@ -178,8 +178,8 @@ function completedTurn(handle: SessionHandle, harness: string, turnId: string, t
   handle.summarizeTurn(turnId);
 }
 
-describe("BatonSessionRuntime", () => {
-  test("does not publish a second runtime change for persisted streaming events", async () => {
+describe("Controller", () => {
+  test("does not publish a second controller change for persisted streaming events", async () => {
     class ManualAdapter extends FakeAdapter {
       turnId?: string;
 
@@ -190,25 +190,25 @@ describe("BatonSessionRuntime", () => {
     }
 
     const adapter = new ManualAdapter("codex");
-    let runtimeChanges = 0;
-    const runtime = new BatonSessionRuntime({
+    let controllerChanges = 0;
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => adapter,
-      onStateChange: () => runtimeChanges++,
+      onChange: () => controllerChanges++,
     });
 
-    const turn = runtime.submit("codex", [{ type: "text", text: "hello" }]);
+    const turn = controller.submit("codex", [{ type: "text", text: "hello" }]);
     while (!adapter.sink || !adapter.turnId) await Bun.sleep(0);
 
-    const beforeChunk = runtimeChanges;
+    const beforeChunk = controllerChanges;
     adapter.sink({
       kind: "agent_message_chunk",
       harness: "codex",
       turnId: adapter.turnId,
       payload: { messageId: "m_stream", content: { type: "text", text: "a" } },
     });
-    expect(runtimeChanges).toBe(beforeChunk);
+    expect(controllerChanges).toBe(beforeChunk);
 
     adapter.sink({
       kind: "state_update",
@@ -221,7 +221,7 @@ describe("BatonSessionRuntime", () => {
 
   test("accepts harness IDs outside the initially bundled registry", async () => {
     const adapter = new FakeAdapter("example-harness");
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: (harness) => {
@@ -230,7 +230,7 @@ describe("BatonSessionRuntime", () => {
       },
     });
 
-    await runtime.submit("example", [{ type: "text", text: "hello" }]);
+    await controller.submit("example", [{ type: "text", text: "hello" }]);
 
     expect(adapter.prompts).toEqual(["hello"]);
     expect(session.meta.harnessSessions.example).toMatchObject({
@@ -242,7 +242,7 @@ describe("BatonSessionRuntime", () => {
 
   test("isolates two targets backed by the same Harness and preserves launch provenance", async () => {
     const adapters: TargetedFakeAdapter[] = [];
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       modelPreferences: { "codex-a": "fast" },
@@ -261,8 +261,8 @@ describe("BatonSessionRuntime", () => {
       syncedSeq: 0,
     });
 
-    await runtime.submit("codex-a", [{ type: "text", text: "first target" }]);
-    await runtime.submit("codex-b", [{ type: "text", text: "second target" }]);
+    await controller.submit("codex-a", [{ type: "text", text: "first target" }]);
+    await controller.submit("codex-b", [{ type: "text", text: "second target" }]);
 
     expect(adapters).toHaveLength(2);
     expect(adapters[0]?.prompts).toEqual(["first target"]);
@@ -294,7 +294,7 @@ describe("BatonSessionRuntime", () => {
     expect(summaries.map((event) => event.harnessTargetId)).toEqual(["codex-a", "codex-b"]);
 
     const launchSnapshot = session.meta.harnessSessions["codex-a"]?.launchSnapshot;
-    await runtime.setModel("codex-a", null);
+    await controller.setModel("codex-a", null);
     expect(session.meta.harnessSessions["codex-a"]?.model).toBeUndefined();
     expect(session.meta.harnessSessions["codex-a"]?.launchSnapshot).toEqual(launchSnapshot);
   });
@@ -304,13 +304,13 @@ describe("BatonSessionRuntime", () => {
     const events: AnyEventEnvelope[] = [];
     // 投影单通道：消费者订阅事件流（append 即广播），不从 submit 的回调取事件
     session.subscribe((event) => events.push(event));
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => adapter,
     });
 
-    await runtime.submit("codex", [{ type: "text", text: "hello" }]);
+    await controller.submit("codex", [{ type: "text", text: "hello" }]);
 
     expect(events.filter((event) => event.kind === "_baton_turn_summary")).toHaveLength(1);
     expect(events.filter((event) => event.kind === "agent_message")).toHaveLength(1);
@@ -321,7 +321,7 @@ describe("BatonSessionRuntime", () => {
     let maxActive = 0;
     const order: string[] = [];
     const adapters = new Map<string, FakeAdapter>();
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: (harness) => {
@@ -343,8 +343,8 @@ describe("BatonSessionRuntime", () => {
     });
 
     await Promise.all([
-      runtime.submit("codex", [{ type: "text", text: "one" }]),
-      runtime.submit("claude", [{ type: "text", text: "two" }]),
+      controller.submit("codex", [{ type: "text", text: "one" }]),
+      controller.submit("claude", [{ type: "text", text: "two" }]),
     ]);
 
     expect(maxActive).toBe(1);
@@ -355,20 +355,20 @@ describe("BatonSessionRuntime", () => {
 
   test("exposes queued turns and recalls the latest one before it starts", async () => {
     const adapter = new FakeAdapter("codex", { delayMs: 20 });
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => adapter,
     });
 
-    const active = runtime.submit("codex", [{ type: "text", text: "one" }]);
-    const queued = runtime.submit("codex", [{ type: "text", text: "two" }]);
-    const latest = runtime.submit("claude", [{ type: "text", text: "three" }]);
+    const active = controller.submit("codex", [{ type: "text", text: "one" }]);
+    const queued = controller.submit("codex", [{ type: "text", text: "two" }]);
+    const latest = controller.submit("claude", [{ type: "text", text: "three" }]);
 
-    expect(runtime.queuedTurns.map((turn) => textOf(turn.blocks))).toEqual(["two", "three"]);
-    const recalled = runtime.recallLatestQueued();
+    expect(controller.queuedTurns.map((turn) => textOf(turn.blocks))).toEqual(["two", "three"]);
+    const recalled = controller.recallLatestQueued();
     expect(recalled && textOf(recalled.blocks)).toBe("three");
-    expect(runtime.queueLength).toBe(1);
+    expect(controller.queueLength).toBe(1);
     expect(await latest).toBe("recalled");
     expect(await active).toBe("completed");
     expect(await queued).toBe("completed");
@@ -378,13 +378,13 @@ describe("BatonSessionRuntime", () => {
   test("rebuilds full BatonSession history for a fresh harness before prompting", async () => {
     completedTurn(session, "codex", "t_old", "existing work");
     const claude = new FakeAdapter("claude-code");
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => claude,
     });
 
-    await runtime.submit("claude", [{ type: "text", text: "continue" }]);
+    await controller.submit("claude", [{ type: "text", text: "continue" }]);
 
     expect(claude.synced).toHaveLength(1);
     expect(claude.synced[0]).toContain("BatonSession history");
@@ -406,7 +406,7 @@ describe("BatonSessionRuntime", () => {
     });
     completedTurn(session, "claude-code", "t_claude", "new claude work");
     const codex = new FakeAdapter("codex");
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       modelPreferences: { codex: "remembered-global-model" },
@@ -414,7 +414,7 @@ describe("BatonSessionRuntime", () => {
       createAdapter: () => codex,
     });
 
-    await runtime.submit("codex", [{ type: "text", text: "next" }]);
+    await controller.submit("codex", [{ type: "text", text: "next" }]);
 
     expect(codex.openOptions?.resumeSessionId).toBe("thread-old");
     expect(codex.model).toBe("fast");
@@ -426,14 +426,14 @@ describe("BatonSessionRuntime", () => {
 
   test("uses the remembered harness model for a new BatonSession", async () => {
     const codex = new FakeAdapter("codex");
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       modelPreferences: { codex: "fast" },
       createAdapter: () => codex,
     });
 
-    await runtime.submit("codex", [{ type: "text", text: "next" }]);
+    await controller.submit("codex", [{ type: "text", text: "next" }]);
 
     expect(codex.model).toBe("fast");
     expect(session.meta.harnessSessions.codex?.model).toBe("fast");
@@ -441,14 +441,14 @@ describe("BatonSessionRuntime", () => {
 
   test("uses the remembered harness effort for a new BatonSession", async () => {
     const codex = new FakeAdapter("codex");
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       effortPreferences: { codex: "high" },
       createAdapter: () => codex,
     });
 
-    await runtime.submit("codex", [{ type: "text", text: "next" }]);
+    await controller.submit("codex", [{ type: "text", text: "next" }]);
 
     expect(codex.effort).toBe("high");
     expect(session.meta.harnessSessions.codex?.effort).toBe("high");
@@ -456,13 +456,13 @@ describe("BatonSessionRuntime", () => {
 
   test("compacts through a control turn without persisting a user message", async () => {
     const adapter = new CompactAdapter("codex");
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => adapter,
     });
 
-    await runtime.compactContext("codex");
+    await controller.compactContext("codex");
 
     expect(adapter.compactCalls).toHaveLength(1);
     const events = session.readEvents();
@@ -475,22 +475,22 @@ describe("BatonSessionRuntime", () => {
   });
 
   test("rejects /compact when the harness does not declare the capability", async () => {
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => new FakeAdapter("example"),
     });
 
-    await expect(runtime.compactContext("example")).rejects.toThrow("does not support /compact");
+    await expect(controller.compactContext("example")).rejects.toThrow("does not support /compact");
     expect(session.readEvents()).toHaveLength(0);
   });
 });
 
 // ---- 交互 resolver 注册表：adapter 的 await 点由统一 respond() 唤醒（permission/question 同路由）----
-// 事件留痕（*_request / *_resolved）由 adapter 负责；runtime 只持有 requestId → resolver 通道。
+// 事件留痕（*_request / *_resolved）由 adapter 负责；controller 只持有 requestId → resolver 通道。
 
 describe("interaction resolver registry", () => {
-  /** 先审批、后提问、再收口的交互式 fake adapter；handlers 由 runtime 经 createAdapter 注入 */
+  /** 先审批、后提问、再收口的交互式 fake adapter；handlers 由 controller 经 createAdapter 注入 */
   class InteractiveAdapter implements HarnessAdapter {
     readonly harness = "codex";
     readonly capabilities: AdapterCapabilities = { prompt: {} };
@@ -554,21 +554,21 @@ describe("interaction resolver registry", () => {
   }
 
   test("resolve wakes the adapter exactly once; unknown/stale ids report false", async () => {
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: (_name, handlers) => new InteractiveAdapter(handlers),
     });
 
-    const turn = runtime.submit("codex", [{ type: "text", text: "do it" }]);
+    const turn = controller.submit("codex", [{ type: "text", text: "do it" }]);
     await Bun.sleep(5); // permission_request 已落盘、resolver 已注册
 
-    expect(runtime.respond({ kind: "permission", requestId: "ar_unknown", optionId: "allow" })).toBe(false);
-    expect(runtime.respond({ kind: "permission", requestId: "ar_1", optionId: "allow" })).toBe(true);
-    expect(runtime.respond({ kind: "permission", requestId: "ar_1", optionId: "allow" })).toBe(false); // resolver 一次性
+    expect(controller.respond({ kind: "permission", requestId: "ar_unknown", optionId: "allow" })).toBe(false);
+    expect(controller.respond({ kind: "permission", requestId: "ar_1", optionId: "allow" })).toBe(true);
+    expect(controller.respond({ kind: "permission", requestId: "ar_1", optionId: "allow" })).toBe(false); // resolver 一次性
 
     await Bun.sleep(5); // question_request 已落盘
-    expect(runtime.respond({ kind: "question", requestId: "qr_1", answers: { q1: ["prod"] } })).toBe(true);
+    expect(controller.respond({ kind: "question", requestId: "qr_1", answers: { q1: ["prod"] } })).toBe(true);
     await turn;
 
     const events = session.readEvents();
@@ -635,23 +635,23 @@ describe("interaction resolver registry", () => {
       async close(): Promise<void> {}
     }
 
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: (_name, handlers) => new StartupTrustAdapter(handlers),
     });
-    const outcome = runtime.submit("codex", [{ type: "text", text: "go" }]);
+    const outcome = controller.submit("codex", [{ type: "text", text: "go" }]);
     await Bun.sleep(5);
     const request = session.readEvents().find((event) => event.kind === "hook_trust_request");
     expect(request?.turnId).toBeDefined();
-    expect(runtime.respond({ kind: "hook_trust", requestId: "htr_start", decision: "trust" })).toBe(true);
+    expect(controller.respond({ kind: "hook_trust", requestId: "htr_start", decision: "trust" })).toBe(true);
     await outcome;
     expect(session.loadState().pendingHookTrusts.size).toBe(0);
   });
 
   test("setup-phase attribution covers any request kind, not just hook trust", async () => {
     // setup 阶段（slot 创建 → open 完成）的归属规则按"是不是 request"判断：
-    // 新 harness 的冷启动若阻塞征询 permission / question，不需要再回 runtime 加 kind 特判。
+    // 新 harness 的冷启动若阻塞征询 permission / question，不需要再回 controller 加 kind 特判。
     class SetupPermissionAdapter implements HarnessAdapter {
       readonly harness = "codex";
       readonly capabilities: AdapterCapabilities = { prompt: {} };
@@ -697,16 +697,16 @@ describe("interaction resolver registry", () => {
       async close(): Promise<void> {}
     }
 
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: (_name, handlers) => new SetupPermissionAdapter(handlers),
     });
-    const outcome = runtime.submit("codex", [{ type: "text", text: "go" }]);
+    const outcome = controller.submit("codex", [{ type: "text", text: "go" }]);
     await Bun.sleep(5);
     const request = session.readEvents().find((event) => event.kind === "permission_request");
     expect(request?.turnId).toBeDefined();
-    expect(runtime.respond({ kind: "permission", requestId: "ar_setup", optionId: "allow" })).toBe(true);
+    expect(controller.respond({ kind: "permission", requestId: "ar_setup", optionId: "allow" })).toBe(true);
     await outcome;
     expect(session.loadState().pendingPermissions.size).toBe(0);
   });
@@ -715,7 +715,7 @@ describe("interaction resolver registry", () => {
 // 委托状态必须对当前活跃 harness 可见（kernel §3 审批闭环），但可见性的来源只能是
 // harness 自己报的生效路由——不是 baton 的配置意图。曾经投影层直接读
 // config.codexApprovalReviewer，于是跟 claude 对话时 footer 也显示 codex 的委托状态。
-describe("runtime.approvalRoute reports the harness's own effective route", () => {
+describe("controller.approvalRoute reports the harness's own effective route", () => {
   class RoutableAdapter extends FakeAdapter {
     readonly capabilities: AdapterCapabilities = { prompt: {}, approvalRouting: { supported: true } };
     constructor(
@@ -730,9 +730,9 @@ describe("runtime.approvalRoute reports the harness's own effective route", () =
   }
 
   const routeAfterOpen = async (adapter: HarnessAdapter, harness: string) => {
-    const runtime = new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
-    await runtime.submit(harness, [{ type: "text", text: "hi" }]);
-    return runtime.approvalRoute(harness);
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    await controller.submit(harness, [{ type: "text", text: "hi" }]);
+    return controller.approvalRoute(harness);
   };
 
   test("a delegated route is visible", async () => {

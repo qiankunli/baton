@@ -1,7 +1,7 @@
 // Baton 只实现自己承诺的命令，不透传各 harness TUI 的私有 slash command。
 // `/` 控制 baton/harness；`@` 只引用 baton session/turn/产物。
 
-import { harnessPrefixMatches, HARNESSES, parseHarness, type HarnessName } from "../harnesses/ids.ts";
+import { harnessPrefixMatches, HARNESSES, parseHarness, type HarnessName } from "../harness/ids.ts";
 
 export { HARNESSES, parseHarness, type HarnessName };
 
@@ -11,7 +11,7 @@ export interface CommandDefinition {
   name: CommandName;
   description: string;
   scope: "baton" | "harness";
-  /** 切换 BatonSession 会替换 runtime，只允许 idle；其它控制命令可随时执行。 */
+  /** 切换 BatonSession 会替换 controller，只允许 idle；其它控制命令可随时执行。 */
   runPolicy: "always" | "idle";
 }
 

@@ -12,8 +12,8 @@ import { ensureConfigFile, loadConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
 import { newId } from "../events/ids.ts";
 import type { InteractionRequest } from "../events/types.ts";
-import { createHarnessAdapter, defaultHarnessTarget, parseHarness } from "../harnesses/registry.ts";
-import { createHarnessLaunchSnapshot } from "../harnesses/target.ts";
+import { createHarnessAdapter, defaultHarnessTarget, parseHarness } from "../harness/registry.ts";
+import { createHarnessLaunchSnapshot } from "../harness/target.ts";
 import { SessionStore, sessionDisplayTitle } from "../store/store.ts";
 
 function argValue(flag: string): string | undefined {
@@ -152,7 +152,7 @@ async function main(): Promise<void> {
     const done = new Promise<void>((resolve) => {
       turnDone = resolve;
     });
-    // 用户输入的 owner 是驱动方（与 BatonSessionRuntime 同责，design §4.1）：
+    // 用户输入的 owner 是驱动方（与 Controller 同责，design §4.1）：
     // user_message/running 由 REPL 落盘，adapter 只报告执行过程与终态
     session.append({
       kind: "user_message",

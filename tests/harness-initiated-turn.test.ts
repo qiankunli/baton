@@ -20,7 +20,7 @@ import type {
 } from "../src/adapters/types.ts";
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
-import { BatonSessionRuntime } from "../src/session/runtime.ts";
+import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 import { BatonChatProtocol } from "../src/tui/protocol.ts";
 
@@ -40,7 +40,7 @@ afterEach(() => {
 
 // ---- 不变量：任何 append 进 store 的事件必然到达 UI 投影 ----
 // 参数化事件到达时机：无活跃 turn / driven turn 运行中（同 harness）/（异 harness）。
-// 投影正确性不允许依赖 runtime 的 turn 状态——这正是当年丢消息的机制。
+// 投影正确性不允许依赖 controller 的 turn 状态——这正是当年丢消息的机制。
 
 describe("projection invariant: every appended event reaches the view", () => {
   const arrivals: Array<{ name: string; before: AnyNewEvent[] }> = [
@@ -141,7 +141,7 @@ describe("observed turn presentation", () => {
   });
 });
 
-// ---- runtime：observed turn 只记账，不碰队列 ----
+// ---- controller：observed turn 只记账，不碰队列 ----
 
 /** driven turn 正常完成后，再在同一 sink 上补发一段 observed turn（模拟后台唤醒） */
 class WakingAdapter implements HarnessAdapter {
@@ -204,16 +204,16 @@ class WakingAdapter implements HarnessAdapter {
   async close(_ref: HarnessSessionRef): Promise<void> {}
 }
 
-describe("runtime observed-turn accounting", () => {
+describe("controller observed-turn accounting", () => {
   test("summarizes the observed turn and keeps the driven queue unaffected", async () => {
     const adapter = new WakingAdapter();
-    const runtime = new BatonSessionRuntime({
+    const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       createAdapter: () => adapter,
     });
 
-    await runtime.submit("claude", [{ type: "text", text: "kick off background work" }]);
+    await controller.submit("claude", [{ type: "text", text: "kick off background work" }]);
     await Bun.sleep(20); // 等 observed turn 收界
 
     const summaries = session
@@ -224,8 +224,8 @@ describe("runtime observed-turn accounting", () => {
     expect(summaries).toHaveLength(2); // driven + observed，各恰好一次
 
     // observed turn 不占队列：下一个 driven turn 照常执行
-    await runtime.submit("claude", [{ type: "text", text: "next" }]);
-    expect(runtime.queueLength).toBe(0);
+    await controller.submit("claude", [{ type: "text", text: "next" }]);
+    expect(controller.queueLength).toBe(0);
   });
 });
 

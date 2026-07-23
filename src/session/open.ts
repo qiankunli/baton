@@ -21,7 +21,7 @@ export const CRASH_RECOVERY_NOTICE_TITLE =
 /**
  * BatonSession 的唯一打开策略，供 CLI 与 TUI 会话切换共同复用。
  * 打开即独占（会话锁）+ 归一化（crash recovery）：任何入口拿到的会话保证终态干净、
- * 每个 turn 都有 summary。recovery 的核心价值不在 UI 状态（busy 来自 runtime），
+ * 每个 turn 都有 summary。recovery 的核心价值不在 UI 状态（busy 来自 controller），
  * 而在 catch-up 与 @ 引用只读 turn-summary——没有 summary 的半截 turn
  * 对后续 harness 同步是永久盲区。
  */
@@ -67,7 +67,7 @@ function resolveSession(
 /**
  * 崩溃残留归一化。前提：调用方已持有会话锁——否则"最后事件是 running"可能是
  * 另一个活进程正在执行，合成终态会污染活会话。
- * 收口顺序与 runtime.finalize 一致（终态 → notice → summary），三类残留：
+ * 收口顺序与 controller.finalize 一致（终态 → notice → summary），三类残留：
  * 悬挂审批 → resolved(cancelled)；每个未收口的 turn（driven/observed 并发崩溃时
  * 可能不止一个）→ 各补 idle(cancelled) + 中断 notice；缺 summary 的 turn
  * （含 fork 从运行中源会话复制来的半截 turn）→ 补 summary。

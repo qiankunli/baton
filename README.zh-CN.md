@@ -25,9 +25,9 @@ baton 是一个以持久、harness-independent 会话为内核的 terminal-nativ
 
 ## 架构速览
 
-baton 是一条双向流水线：chat-tui 只承载 `intent`/`render`，runtime 拥有 `Input` 生命周期与 driven-turn 队列，adapter 把各 harness 的 wire 归一成同一条事件流，`session.jsonl` 落盘持久化。事件流是唯一真相源，UI 是它的投影。
+baton 是一条双向流水线：chat-tui 只承载 `intent`/`render`，controller 拥有 `Input` 生命周期与 driven-turn 队列，adapter 把各 harness 的 wire 归一成同一条事件流，`session.jsonl` 落盘持久化。事件流是唯一真相源，UI 是它的投影。
 
-![baton 内核：一条双向流水线](docs/kernel-pipeline.png)
+![baton 内核：一条双向流水线](docs/kernel-pipeline.svg)
 
 稳定内核（核心概念、不变量、流水线、harness 扩展契约）见 [`docs/kernel.md`](docs/kernel.md)。
 

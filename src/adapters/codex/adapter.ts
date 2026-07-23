@@ -73,7 +73,7 @@ interface ThreadRuntime {
   /**
    * cancel 早于 codexTurnId 就位（fast-submit 后 turn/start 响应与 turn/started
    * 通知都未回）时挂起的取消意图；id 就位后由 flushPendingCancel 补发 interrupt。
-   * 没有它，这个窗口内的 cancel 会被静默丢弃——runtime 宽限期到点合成"已取消"
+   * 没有它，这个窗口内的 cancel 会被静默丢弃——controller 宽限期到点合成"已取消"
    * 并推进队列，而原生 codex turn 仍在继续跑。
    */
   pendingCancel?: boolean;
@@ -648,7 +648,7 @@ export class CodexAdapter implements HarnessAdapter {
 
     const rt: ThreadRuntime = { child, peer, threadId: "", approvalRoute: null, sink };
     // transport 终结 = 该 session 所有在途工作的终结点：pending request 全部 reject，
-    // 活跃 turn 必须在此合成终态，否则 runtime 永远等不到 idle（design §4.1 终态保证）。
+    // 活跃 turn 必须在此合成终态，否则 controller 永远等不到 idle（design §4.1 终态保证）。
     child.on("close", (code) => {
       if (code !== 0) {
         diagnostic({
@@ -773,7 +773,7 @@ export class CodexAdapter implements HarnessAdapter {
       this.threads.set(threadId, rt);
       return { harness: this.harness, harnessSessionId: threadId, resumed: opened.resumed };
     } catch (error) {
-      // open() 尚未返回 HarnessSessionRef，runtime 无法调用 close()；adapter 必须清掉自己已启动的进程。
+      // open() 尚未返回 HarnessSessionRef，controller 无法调用 close()；adapter 必须清掉自己已启动的进程。
       rt.child.kill();
       throw error;
     }
@@ -864,13 +864,13 @@ export class CodexAdapter implements HarnessAdapter {
     const turn: CodexTurn = { turnId: input.turnId, finalized: false };
     rt.turnId = input.turnId;
     rt.activeTurn = turn;
-    // user_message / state_update(running) 由 runtime 在出队时落盘（用户输入是 BatonSession
+    // user_message / state_update(running) 由 controller 在出队时落盘（用户输入是 BatonSession
     // 的事实，且入参 blocks 可能含 <baton-sync> prepend，不能进正典历史）；adapter 只在
     // steer 成功时补 delivery:"steer" 的用户消息。
 
     // 跨 harness catch-up 随本 turn 送达：additionalContext 按 key 的 contextual
     // fragment（untrusted → user 语义）在 codex 侧与 prompt 同回合入史。admission 失败
-    // 即未送达，runtime 水位不动、下次重注入（PromptInput.syncBlocks 契约）。
+    // 即未送达，controller 水位不动、下次重注入（PromptInput.syncBlocks 契约）。
     const syncText = input.syncBlocks?.length ? textOf(input.syncBlocks) : undefined;
     // fast-submit：turn/start 的响应立即返回 status=inProgress 的 Turn（旧版本才会阻塞到结束）。
     // 因此响应只用于拿 codex turn id 和捕获终态；正常结束以 turn/completed 通知为准。
@@ -907,7 +907,7 @@ export class CodexAdapter implements HarnessAdapter {
    * same-turn steer：映射原生 `turn/steer`（Steerable，design §4.3）。入参 expectedTurnId
    * 是 baton turn id，wire 上换成 codex turn id；成功不产生新 `turn/started`，输入在
    * 当前 turn 的下一个安全边界被消费。stale turn、codex 侧拒绝（review/compact 等特殊
-   * turn）与 wire 失败都归 rejected 交 runtime 降级——rejected 路径不发任何事件。
+   * turn）与 wire 失败都归 rejected 交 controller 降级——rejected 路径不发任何事件。
    */
   async steer(ref: HarnessSessionRef, input: PromptInput, expectedTurnId: string): Promise<SteerReceipt> {
     const rt = this.mustThread(ref);
@@ -950,14 +950,14 @@ export class CodexAdapter implements HarnessAdapter {
     if (!turn || turn.finalized) return;
     if (!rt.codexTurnId) {
       // fast-submit 窗口：codex turn id 尚未回，此刻无法定向 interrupt。记下意图，
-      // id 就位后补发；即便补发失败，runtime 的 cancel 宽限期兜底仍会合成终态。
+      // id 就位后补发；即便补发失败，controller 的 cancel 宽限期兜底仍会合成终态。
       rt.pendingCancel = true;
       return;
     }
     await rt.peer.request("turn/interrupt", { threadId: rt.threadId, turnId: rt.codexTurnId });
   }
 
-  /** cancel 早于 codex turn id 就位时的补发：fire-and-forget，失败由 runtime 宽限期兜底 */
+  /** cancel 早于 codex turn id 就位时的补发：fire-and-forget，失败由 controller 宽限期兜底 */
   private flushPendingCancel(rt: ThreadRuntime): void {
     if (!rt.pendingCancel || !rt.codexTurnId) return;
     rt.pendingCancel = false;

@@ -1,5 +1,5 @@
-// baton 对 chat-tui 的接入层：实现 ChatProtocol，把 BatonSessionRuntime / SessionStore
-// 的状态投影成视图快照，把 TUI intents 翻译成 runtime 操作。
+// baton 对 chat-tui 的接入层：实现 ChatProtocol，把 Controller / SessionStore
+// 的状态投影成视图快照，把 TUI intents 翻译成 controller 操作。
 // UI 语义（补全、分层 Ctrl+C、浮层交互）都在 chat-tui；这里只有 baton 的业务编排。
 
 import type {
@@ -43,9 +43,9 @@ import {
   harnessDefinitionFor,
   harnessSessionKey,
   harnessShortName,
-} from "../harnesses/registry.ts";
+} from "../harness/registry.ts";
 import { openBatonSession } from "../session/open.ts";
-import { BatonSessionRuntime } from "../session/runtime.ts";
+import { Controller } from "../session/controller.ts";
 import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from "../store/reduce.ts";
 import { sessionDisplayTitle, type SessionHandle, type SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
@@ -210,7 +210,7 @@ interface PendingPicker {
 export class BatonChatProtocol implements ChatProtocol {
   private session: SessionHandle;
   private state: SessionState;
-  private runtime: BatonSessionRuntime;
+  private controller: Controller;
   private agent: HarnessName;
   private status: StatusMessage | null = null;
   private commandOutput: TranscriptItem | null = null;
@@ -243,7 +243,7 @@ export class BatonChatProtocol implements ChatProtocol {
     if (opened.recovered) {
       this.status = { text: "Recovered an interrupted turn from a previous baton run", tone: "info" };
     }
-    this.runtime = this.createRuntime();
+    this.controller = this.createController();
     // 投影单通道：live 与 resume 走同一条 reduce 路径（loadState 补历史 + subscribe 跟增量），
     // 不从 per-turn 回调取事件——harness 自发回合（observed turn）没有对应的 submit 调用。
     this.state = this.session.loadState();
@@ -312,8 +312,8 @@ export class BatonChatProtocol implements ChatProtocol {
 
     // busy 且当前 harness 支持时默认 steer（对齐原生"打字即纠偏"体验）；队列非空时
     // 例外——已有排队的 follow-up 意味着用户在按顺序编排，插队 steer 会打乱预期顺序。
-    if (this.runtime.queueLength === 0 && this.runtime.canSteer(target)) {
-      const steered = await this.runtime.steer(target, blocks);
+    if (this.controller.queueLength === 0 && this.controller.canSteer(target)) {
+      const steered = await this.controller.steer(target, blocks);
       if (steered.effective === "steer") {
         this.status = { text: `steering ${target} — applies at the next safe point`, tone: "info" };
         this.changed();
@@ -330,11 +330,11 @@ export class BatonChatProtocol implements ChatProtocol {
       return;
     }
 
-    if (this.runtime.isBusy || this.runtime.queueLength > 0) {
+    if (this.controller.isBusy || this.controller.queueLength > 0) {
       this.status = { text: `${target} turn queued`, tone: "info" };
     }
     this.changed();
-    const outcome = await this.runtime.submit(target, blocks);
+    const outcome = await this.controller.submit(target, blocks);
     if (outcome === "completed" && this.status?.tone !== "error") {
       this.status = null;
       this.changed();
@@ -383,14 +383,14 @@ export class BatonChatProtocol implements ChatProtocol {
         if (argument) throw new Error("/compact takes no arguments");
         const target = this.agent;
         this.status = null;
-        await this.runtime.compactContext(target);
+        await this.controller.compactContext(target);
         this.status = { text: `${target} context compacted`, tone: "info" };
         this.changed();
         return;
       }
       case "model": {
         const target = this.agent;
-        const models = await this.runtime.listModels(target);
+        const models = await this.controller.listModels(target);
         if (!argument) {
           this.openPicker({
             title: `Select ${target} model`,
@@ -411,7 +411,7 @@ export class BatonChatProtocol implements ChatProtocol {
       }
       case "effort": {
         const target = this.agent;
-        const efforts = await this.runtime.listEfforts(target);
+        const efforts = await this.controller.listEfforts(target);
         if (!argument) {
           this.openPicker({
             title: `Select ${target} effort`,
@@ -440,14 +440,14 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   cancel(): void {
-    void this.runtime.control({ kind: "interrupt" });
+    void this.controller.control({ kind: "interrupt" });
   }
 
   /** 优雅退出：先关掉 agent 子进程再退（对应 /exit、双击 Ctrl+C、Ctrl+D） */
   async exit(): Promise<void> {
     this.status = { text: "Exiting…", tone: "info" };
     this.changed();
-    await this.runtime.close();
+    await this.controller.close();
     this.unsubscribeSession();
     this.session.releaseLock();
     this.quit(this.session.id);
@@ -470,7 +470,7 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   /**
-   * 审批卡片应答 → runtime 的 resolver 注册表（id 即事件流里的 requestId）。
+   * 审批卡片应答 → controller 的 resolver 注册表（id 即事件流里的 requestId）。
    * 卡片消失不在这里发生：被唤醒的 adapter 发对应 *_resolved 落盘，
    * reduced pending 删除后视图自然更新——UI 只消费事件流投影，不维护第二份状态。
    */
@@ -478,7 +478,7 @@ export class BatonChatProtocol implements ChatProtocol {
     const response = this.state.pendingHookTrusts.has(id)
       ? ({ kind: "hook_trust", requestId: id, decision: optionId === "trust" ? "trust" : "skip" } as const)
       : ({ kind: "permission", requestId: id, optionId } as const);
-    if (!this.runtime.respond(response)) {
+    if (!this.controller.respond(response)) {
       // 无 resolver：请求已被应答，或是崩溃残留（新进程没有等待中的 adapter）
       this.status = { text: "approval request is no longer pending", tone: "info" };
       this.changed();
@@ -486,14 +486,14 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   resolveQuestion(id: string, answers: QuestionAnswers): void {
-    if (!this.runtime.respond({ kind: "question", requestId: id, answers })) {
+    if (!this.controller.respond({ kind: "question", requestId: id, answers })) {
       this.status = { text: "question is no longer pending", tone: "info" };
       this.changed();
     }
   }
 
   recallQueued(): { text: string } | null {
-    const recalled = this.runtime.recallLatestQueued();
+    const recalled = this.controller.recallLatestQueued();
     if (!recalled) return null;
     // 召回队列是另一种取回动作，结束进行中的历史浏览，避免游标错位。
     this.resetHistoryNav();
@@ -571,13 +571,13 @@ export class BatonChatProtocol implements ChatProtocol {
 
   // ===== 内部 =====
 
-  private createRuntime(): BatonSessionRuntime {
-    return new BatonSessionRuntime({
+  private createController(): Controller {
+    return new Controller({
       session: this.session,
       mentionBudgetChars: this.config.mentionBudgetChars,
       modelPreferences: this.modelPreferences,
       effortPreferences: this.effortPreferences,
-      // 交互回调由 runtime 提供（resolver 注册表）：protocol 不再持有交互状态
+      // 交互回调由 controller 提供（resolver 注册表）：protocol 不再持有交互状态
       createAdapter: (name, handlers) =>
         createHarnessAdapter(name as HarnessName, {
           ...handlers,
@@ -586,7 +586,7 @@ export class BatonChatProtocol implements ChatProtocol {
         }),
       resolveTarget: (targetId) => defaultHarnessTarget(targetId as HarnessName),
       harnessSessionKey: (name) => harnessSessionKey(name as HarnessName),
-      onStateChange: () => this.changed(),
+      onChange: () => this.changed(),
     });
   }
 
@@ -601,17 +601,17 @@ export class BatonChatProtocol implements ChatProtocol {
   private async switchSession(
     open: () => { session: SessionHandle; recovered?: boolean },
   ): Promise<void> {
-    if (this.runtime.isBusy || this.runtime.queueLength > 0) {
+    if (this.controller.isBusy || this.controller.queueLength > 0) {
       throw new Error("Wait for the current turn to finish before switching BatonSession");
     }
     const next = open();
-    await this.runtime.close();
+    await this.controller.close();
     this.unsubscribeSession();
     this.session.releaseLock();
     this.session = next.session;
     this.syncTerminalTitle();
     this.commandOutput = null;
-    this.runtime = this.createRuntime();
+    this.controller = this.createController();
     this.state = next.session.loadState();
     this.seedHistoryFromState();
     this.unsubscribeSession = this.subscribeSession(next.session);
@@ -622,7 +622,7 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   private async configureModel(target: HarnessName, model: { id: string; label: string }): Promise<void> {
-    await this.runtime.setModel(target, model.id);
+    await this.controller.setModel(target, model.id);
     saveModelPreference(this.store.rootDir, target, model.id);
     if (model.id === "default") delete this.modelPreferences[target];
     else this.modelPreferences[target] = model.id;
@@ -631,7 +631,7 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   private async configureEffort(target: HarnessName, effort: { id: string; label: string }): Promise<void> {
-    await this.runtime.setEffort(target, effort.id);
+    await this.controller.setEffort(target, effort.id);
     saveEffortPreference(this.store.rootDir, target, effort.id);
     if (effort.id === "default") delete this.effortPreferences[target];
     else this.effortPreferences[target] = effort.id;
@@ -642,9 +642,9 @@ export class BatonChatProtocol implements ChatProtocol {
   /** 控制命令输出只进入当前 view，不写 session.jsonl，避免污染可恢复的会话历史。 */
   private sessionStatusItem(): TranscriptItem {
     const meta = this.session.meta;
-    const active = this.runtime.activeHarness;
-    const selectedModel = this.runtime.currentModel(this.agent) ?? "default";
-    const selectedEffort = this.runtime.currentEffort(this.agent) ?? "default";
+    const active = this.controller.activeHarness;
+    const selectedModel = this.controller.currentModel(this.agent) ?? "default";
+    const selectedEffort = this.controller.currentEffort(this.agent) ?? "default";
     // perHarness 的键是信封 harness（= sessionKey），不是 canonical id：
     // claude 两者不同（"claude" vs "claude-code"），曾用 id 查导致 context 永远 unavailable
     const harnessKey = harnessDefinitionFor(this.agent)?.sessionKey ?? this.agent;
@@ -660,7 +660,7 @@ export class BatonChatProtocol implements ChatProtocol {
       `Context: ${contextText}`,
       `Harnesses: ${harnesses}`,
       `Turns: ${this.state.turnSummaries.length} - tokens in ${this.state.usage.inputTokens} / out ${this.state.usage.outputTokens}`,
-      `State: ${active ? `running (${active})` : "idle"} - queue ${this.runtime.queueLength}`,
+      `State: ${active ? `running (${active})` : "idle"} - queue ${this.controller.queueLength}`,
     ].join("\n");
     return this.batonTranscriptItem("_baton_status", text);
   }
@@ -713,9 +713,9 @@ export class BatonChatProtocol implements ChatProtocol {
 
   private buildView(): ChatViewState {
     const v = this.state;
-    const active = this.runtime.activeHarness;
+    const active = this.controller.activeHarness;
     // pending 交互从事件流投影（Map 保插入序，取最早的一个）；id 即 requestId，
-    // 应答经 runtime 的 resolver 注册表回到 adapter 的 await 点
+    // 应答经 controller 的 resolver 注册表回到 adapter 的 await 点
     const permission = v.pendingPermissions.values().next().value;
     const hookTrust = v.pendingHookTrusts.values().next().value;
     const question = v.pendingQuestions.values().next().value;
@@ -724,18 +724,18 @@ export class BatonChatProtocol implements ChatProtocol {
     // baton 当前只呈现一个 agent 的状态：driven turn 优先，其次是 harness 自发的
     // background turn，完全空闲时才回落到当前输入目标。状态本体与附加信息可拆成两行，
     // 但仍是同一个 agent；多运行者并发尚未进入产品范围。
-    const activeTurnId = this.runtime.activeTurnId;
+    const activeTurnId = this.controller.activeTurnId;
     const statusHarness = active ?? observedRun?.harness ?? this.agent;
     const statusHarnessDefinition = harnessDefinitionFor(statusHarness);
     const statusHarnessId = statusHarnessDefinition?.id;
-    const statusModel = statusHarnessId ? (this.runtime.currentModel(statusHarnessId) ?? "default") : "default";
+    const statusModel = statusHarnessId ? (this.controller.currentModel(statusHarnessId) ?? "default") : "default";
     const statusHarnessKey = statusHarnessDefinition?.sessionKey ?? statusHarness;
     const contextStatus = contextUsageStatusText(v.perHarness.get(statusHarnessKey)?.contextUsage, statusModel);
     // 审批路由问 adapter 要（harness 自己报的生效值），不读 config——config 是意图，
     // 且投影层不得按 harness 分支（不变量 #3）。曾经这里硬编码 codexApprovalReviewer，
     // 于是跟 claude 对话时 footer 照样显示 codex 的委托状态。
     const approvalStatus =
-      statusHarnessId && this.runtime.approvalRoute(statusHarnessId) === "delegated"
+      statusHarnessId && this.controller.approvalRoute(statusHarnessId) === "delegated"
         ? "approvals:auto-review"
         : undefined;
     const statusDetails = [contextStatus, approvalStatus].filter((detail): detail is string => detail !== undefined);
@@ -757,7 +757,7 @@ export class BatonChatProtocol implements ChatProtocol {
           id: `run:${active}`,
           author: harnessAuthor(active),
           label: `${statusModel} · ${runStatusLabel(v, activeTurnId)}`,
-          startedAt: this.runtime.activeStartedAt,
+          startedAt: this.controller.activeStartedAt,
           hint: "Esc to interrupt",
         })
       : observedRun
@@ -795,7 +795,7 @@ export class BatonChatProtocol implements ChatProtocol {
       busy,
       runStatus,
       plan: planActive ? planEntries : undefined,
-      queued: this.runtime.queuedTurns.map((turn) => ({
+      queued: this.controller.queuedTurns.map((turn) => ({
         id: String(turn.id),
         text: userVisibleText(textOf(turn.blocks)),
         tag: turn.harness,
@@ -844,13 +844,13 @@ export class BatonChatProtocol implements ChatProtocol {
           }
         : null,
       status: this.status,
-      footer: `session: ${this.session.id}  in:${v.usage.inputTokens} out:${v.usage.outputTokens}  turns:${v.turnSummaries.length}  queue:${this.runtime.queueLength}${planActive ? `  plan:${planEntries.filter((entry) => entry.status === "completed").length}/${planEntries.length}` : ""}  cwd:${this.session.meta.cwd}`,
+      footer: `session: ${this.session.id}  in:${v.usage.inputTokens} out:${v.usage.outputTokens}  turns:${v.turnSummaries.length}  queue:${this.controller.queueLength}${planActive ? `  plan:${planEntries.filter((entry) => entry.status === "completed").length}/${planEntries.length}` : ""}  cwd:${this.session.meta.cwd}`,
       // ↑ 召回提示只在"可召回"时出现：交互发生地是 composer（placeholder 天然只在空输入时可见）
       // busy 且可 steer 时提示 Enter 的实际语义（design §3.2：delivery 对用户可见、可预期）
       composerPlaceholder: `Message ${this.agent} (/ commands, @ mentions, ${
-        this.runtime.queueLength > 0
+        this.controller.queueLength > 0
           ? "↑ recall queued"
-          : this.runtime.canSteer(this.agent)
+          : this.controller.canSteer(this.agent)
             ? "Enter steers current turn"
             : "Ctrl+J newline"
       })`,

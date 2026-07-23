@@ -131,7 +131,7 @@ function harnessSummaries(handle: SessionHandle): HarnessSummary[] {
  * 生成 harness 尚未同步的 BatonSession 历史，并返回本批覆盖到的事件水位。
  * 新建原生会话时 includeHarnessTurns=true，从零恢复完整逻辑历史；resume 时只补其它 harness 的增量。
  *
- * 同步语义（与 runtime 的注入时点水位配套，三条规则都有测试钉住）：
+ * 同步语义（与 controller 的注入时点水位配套，三条规则都有测试钉住）：
  * - **自身产出不注入**：harness 自己的 driven/observed turn（summary 的 envelope.harness
  *   等于目标 harness）是其亲历内容，注入即复读；
  * - **throughSeq = 全量 summary 尾 seq（含自己的）**：亲历即已同步，水位越过它是正确的。

@@ -1,4 +1,4 @@
-// driven turn 的用户事实由 runtime 出队即落盘（owner 边界，design §4.1）：
+// driven turn 的用户事实由 controller 出队即落盘（owner 边界，design §4.1）：
 // - user_message/running 不等 harness 冷启动——首启延迟不能绑住 Transcript；
 // - 正典 user_message 是原始输入，<baton-sync> prepend 只进 harness transport；
 // - preparing（冷启动中）可取消：Esc 立即合成 cancelled 终态 + notice + summary；
@@ -18,7 +18,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import { textOf } from "../src/events/types.ts";
-import { BatonSessionRuntime } from "../src/session/runtime.ts";
+import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** open() 被外部 gate 控制的 adapter：制造稳定的"harness 冷启动中"窗口 */
@@ -77,8 +77,8 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function runtimeWith(adapter: HarnessAdapter): BatonSessionRuntime {
-  return new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+function controllerWith(adapter: HarnessAdapter): Controller {
+  return new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 }
 
 /** 直接写入一个已收口、带 summary 的 turn（另一 harness 的既有历史） */
@@ -98,12 +98,12 @@ function completedTurn(handle: SessionHandle, harness: string, turnId: string, t
   handle.summarizeTurn(turnId);
 }
 
-describe("runtime-owned user_message at dequeue", () => {
+describe("controller-owned user_message at dequeue", () => {
   test("user_message and running are persisted before the harness finishes opening", async () => {
     const adapter = new GatedOpenAdapter("codex");
-    const runtime = runtimeWith(adapter);
+    const controller = controllerWith(adapter);
 
-    const outcome = runtime.submit("codex", [{ type: "text", text: "hello" }]);
+    const outcome = controller.submit("codex", [{ type: "text", text: "hello" }]);
     await Bun.sleep(5); // open() 仍被 gate 挡住
 
     const events = session.readEvents();
@@ -131,9 +131,9 @@ describe("runtime-owned user_message at dequeue", () => {
     completedTurn(session, "claude-code", "t_prev", "earlier claude work");
     const adapter = new GatedOpenAdapter("codex"); // 无 syncContext ⇒ prepend 注入路径
     adapter.openGate();
-    const runtime = runtimeWith(adapter);
+    const controller = controllerWith(adapter);
 
-    await runtime.submit("codex", [{ type: "text", text: "next step" }]);
+    await controller.submit("codex", [{ type: "text", text: "next step" }]);
 
     // harness 收到的 prompt 带 sync 块
     expect(adapter.prompts[0]).toContain("<baton-sync>");
@@ -152,11 +152,11 @@ describe("runtime-owned user_message at dequeue", () => {
 
   test("cancel during preparing synthesizes a cancelled terminal immediately and the slot is reused", async () => {
     const adapter = new GatedOpenAdapter("codex");
-    const runtime = runtimeWith(adapter);
+    const controller = controllerWith(adapter);
 
-    const first = runtime.submit("codex", [{ type: "text", text: "cold start" }]);
+    const first = controller.submit("codex", [{ type: "text", text: "cold start" }]);
     await Bun.sleep(5); // preparing：open() 未完成
-    await runtime.control({ kind: "interrupt" });
+    await controller.control({ kind: "interrupt" });
 
     // Esc 立即生效：cancelled 终态 + 打断 notice + summary，全部不等 open() 完成
     const events = session.readEvents();
@@ -173,7 +173,7 @@ describe("runtime-owned user_message at dequeue", () => {
     // 会带上它（标记 cancelled），这是预期语义而非泄漏
     adapter.openGate();
     expect(await first).toBe("completed");
-    expect(await runtime.submit("codex", [{ type: "text", text: "warm follow-up" }])).toBe("completed");
+    expect(await controller.submit("codex", [{ type: "text", text: "warm follow-up" }])).toBe("completed");
     expect(adapter.prompts).toHaveLength(1);
     expect(adapter.prompts[0]).toContain("warm follow-up");
     expect(adapter.prompts[0]).toContain("(cancelled)");
@@ -181,9 +181,9 @@ describe("runtime-owned user_message at dequeue", () => {
 
   test("harness startup failure leaves error + idle + summary instead of a vanished input", async () => {
     const adapter = new GatedOpenAdapter("codex");
-    const runtime = runtimeWith(adapter);
+    const controller = controllerWith(adapter);
 
-    const outcome = runtime.submit("codex", [{ type: "text", text: "doomed" }]);
+    const outcome = controller.submit("codex", [{ type: "text", text: "doomed" }]);
     await Bun.sleep(5);
     adapter.openFail(new Error("spawn blew up"));
     await expect(outcome).rejects.toThrow(/spawn blew up/);
@@ -198,6 +198,6 @@ describe("runtime-owned user_message at dequeue", () => {
     expect(idles).toHaveLength(1);
     expect((idles[0]!.payload as { stopReason?: string }).stopReason).toBe("error");
     expect(events.filter((ev) => ev.kind === "_baton_turn_summary")).toHaveLength(1);
-    expect(runtime.isBusy).toBe(false);
+    expect(controller.isBusy).toBe(false);
   });
 });

@@ -11,7 +11,7 @@ import {
   harnessDefinitionFor,
   harnessSessionKey,
   harnessShortName,
-} from "../src/harnesses/registry.ts";
+} from "../src/harness/registry.ts";
 import { agentColorFor } from "../src/tui/theme.ts";
 
 const requestHandler: RequestHandler = async (req) =>
@@ -28,7 +28,7 @@ describe("harness registry", () => {
     expect(harnessSessionKey("claude")).toBe("claude-code");
   });
 
-  test("constructs adapters without putting harness branches in the TUI or session runtime", () => {
+  test("constructs adapters without putting harness branches in the TUI or session controller", () => {
     const options = { requestHandler, config: DEFAULT_CONFIG };
     expect(createHarnessAdapter("codex", options).harness).toBe("codex");
     expect(createHarnessAdapter("claude", options).harness).toBe("claude-code");

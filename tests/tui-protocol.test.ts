@@ -9,7 +9,7 @@ import { sessionDisplayTitle, SessionStore } from "../src/store/store.ts";
 import { BatonChatProtocol, runStatusLabel, thoughtDisplayBlocks, toolTranscriptItem } from "../src/tui/protocol.ts";
 
 describe("BatonChatProtocol exit", () => {
-  test("restores the TUI only after runtime and session cleanup", async () => {
+  test("restores the TUI only after controller and session cleanup", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-exit-"));
     try {
       const store = new SessionStore(root);
@@ -20,18 +20,18 @@ describe("BatonChatProtocol exit", () => {
       });
 
       const internals = protocol as unknown as {
-        runtime: { close: () => Promise<void> };
+        controller: { close: () => Promise<void> };
         session: { releaseLock: () => void };
       };
-      internals.runtime.close = async () => {
-        calls.push("runtime");
+      internals.controller.close = async () => {
+        calls.push("controller");
       };
       internals.session.releaseLock = () => {
         calls.push("lock");
       };
 
       await protocol.exit();
-      expect(calls).toEqual(["runtime", "lock", `quit:${session.id}`]);
+      expect(calls).toEqual(["controller", "lock", `quit:${session.id}`]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -46,9 +46,9 @@ describe("BatonChatProtocol session preview", () => {
       const session = store.createSession({ cwd: "/repo" });
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
       const internals = protocol as unknown as {
-        runtime: { submit: () => Promise<"completed">; close: () => Promise<void> };
+        controller: { submit: () => Promise<"completed">; close: () => Promise<void> };
       };
-      internals.runtime.submit = async () => "completed";
+      internals.controller.submit = async () => "completed";
 
       await protocol.submit("Implement session previews");
       await protocol.submit("Do not replace the preview");
@@ -68,9 +68,9 @@ describe("BatonChatProtocol session preview", () => {
       const session = store.forkSession(source.id);
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
       const internals = protocol as unknown as {
-        runtime: { submit: () => Promise<"completed">; close: () => Promise<void> };
+        controller: { submit: () => Promise<"completed">; close: () => Promise<void> };
       };
-      internals.runtime.submit = async () => "completed";
+      internals.controller.submit = async () => "completed";
 
       expect(sessionDisplayTitle(session.meta)).toBe("fork: Design session labels");
       await protocol.submit("Implement fork session labels");
@@ -109,8 +109,8 @@ describe("BatonChatProtocol status command", () => {
         text: expect.stringContaining("Context: 12,500 / 200,000 tokens (6%)"),
       });
       expect(session.readEvents()).toHaveLength(eventCount);
-      const internals = protocol as unknown as { runtime: { submit: () => Promise<"completed"> } };
-      internals.runtime.submit = async () => "completed";
+      const internals = protocol as unknown as { controller: { submit: () => Promise<"completed"> } };
+      internals.controller.submit = async () => "completed";
       await protocol.submit("continue");
       expect(protocol.getView().transcript.some((item) => item.id === "_baton_status")).toBe(false);
     } finally {
@@ -227,17 +227,17 @@ describe("BatonChatProtocol harness commands", () => {
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
       const submitted: Array<{ harness: string; text: string }> = [];
       const internals = protocol as unknown as {
-        runtime: {
+        controller: {
           submit: (harness: string, blocks: Array<{ type: string; text?: string }>) => Promise<"completed">;
           compactContext: (harness: string) => Promise<void>;
         };
       };
-      internals.runtime.submit = async (harness, blocks) => {
+      internals.controller.submit = async (harness, blocks) => {
         submitted.push({ harness, text: blocks[0]?.text ?? "" });
         return "completed";
       };
       const compacted: string[] = [];
-      internals.runtime.compactContext = async (harness) => {
+      internals.controller.compactContext = async (harness) => {
         compacted.push(harness);
       };
 
@@ -452,7 +452,7 @@ describe("BatonChatProtocol view projection", () => {
 });
 
 describe("BatonChatProtocol transcript projection", () => {
-  // 委托状态是否可见改由 adapter 报告的生效路由驱动（见 session-runtime.test.ts）：
+  // 委托状态是否可见改由 adapter 报告的生效路由驱动（见 session-controller.test.ts）：
   // 投影不再读 config——config 是意图，且投影层不得按 harness 分支（不变量 #3）。
   test("renders auto-review receipts beside the target tool", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-auto-review-"));
@@ -881,19 +881,19 @@ describe("BatonChatProtocol steer submit", () => {
       const protocol = protocolWith(root);
       const calls: string[] = [];
       const internals = protocol as unknown as {
-        runtime: {
+        controller: {
           queueLength: number;
           canSteer: (harness: string) => boolean;
           steer: (harness: string, blocks: unknown) => Promise<{ effective: string }>;
           submit: () => Promise<"completed">;
         };
       };
-      internals.runtime.canSteer = () => true;
-      internals.runtime.steer = async () => {
+      internals.controller.canSteer = () => true;
+      internals.controller.steer = async () => {
         calls.push("steer");
         return { effective: "steer" };
       };
-      internals.runtime.submit = async () => {
+      internals.controller.submit = async () => {
         calls.push("submit");
         return "completed";
       };
@@ -911,7 +911,7 @@ describe("BatonChatProtocol steer submit", () => {
     try {
       const protocol = protocolWith(root);
       const internals = protocol as unknown as {
-        runtime: {
+        controller: {
           canSteer: (harness: string) => boolean;
           steer: () => Promise<{ effective: string; outcome: Promise<string> }>;
         };
@@ -920,8 +920,8 @@ describe("BatonChatProtocol steer submit", () => {
       const outcome = new Promise<string>((resolve) => {
         resolveOutcome = resolve;
       });
-      internals.runtime.canSteer = () => true;
-      internals.runtime.steer = async () => ({ effective: "follow_up", outcome });
+      internals.controller.canSteer = () => true;
+      internals.controller.steer = async () => ({ effective: "follow_up", outcome });
 
       const submitted = protocol.submit("prefer approach B");
       await Bun.sleep(1); // 让 protocol 走到降级状态提示、停在等待 outcome 处
@@ -941,19 +941,19 @@ describe("BatonChatProtocol steer submit", () => {
       const protocol = protocolWith(root);
       const calls: string[] = [];
       const internals = protocol as unknown as {
-        runtime: {
+        controller: {
           queueLength: number;
           isBusy: boolean;
           canSteer: (harness: string) => boolean;
           submit: () => Promise<"completed">;
         };
       };
-      Object.defineProperty(internals.runtime, "queueLength", { get: () => 1 });
-      Object.defineProperty(internals.runtime, "isBusy", { get: () => true });
-      internals.runtime.canSteer = () => {
+      Object.defineProperty(internals.controller, "queueLength", { get: () => 1 });
+      Object.defineProperty(internals.controller, "isBusy", { get: () => true });
+      internals.controller.canSteer = () => {
         throw new Error("canSteer must not decide when follow-ups are already queued");
       };
-      internals.runtime.submit = async () => {
+      internals.controller.submit = async () => {
         calls.push("submit");
         return "completed";
       };
@@ -972,7 +972,7 @@ describe("BatonChatProtocol input history", () => {
     const store = new SessionStore(root);
     const session = store.createSession({ cwd: "/repo" });
     const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
-    (protocol as unknown as { runtime: { submit: () => Promise<"completed"> } }).runtime.submit = async () => "completed";
+    (protocol as unknown as { controller: { submit: () => Promise<"completed"> } }).controller.submit = async () => "completed";
     return { root, store, session, protocol };
   }
 

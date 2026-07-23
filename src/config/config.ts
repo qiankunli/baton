@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 import { parse, stringify } from "yaml";
 
-import { parseHarness, type HarnessName } from "../harnesses/ids.ts";
+import { parseHarness, type HarnessName } from "../harness/ids.ts";
 
 export interface BatonConfig {
   /** 打开 TUI / REPL 时的默认 agent（canonical harness id） */

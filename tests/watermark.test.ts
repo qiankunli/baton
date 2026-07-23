@@ -18,7 +18,7 @@ import type {
 } from "../src/adapters/types.ts";
 import type { PromptBlock } from "../src/events/types.ts";
 import { textOf } from "../src/events/types.ts";
-import { BatonSessionRuntime } from "../src/session/runtime.ts";
+import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** submit 只记账 + 报 running；终态由测试经 finish() 手动触发（确定性时序） */
@@ -35,7 +35,7 @@ class ManualAdapter implements HarnessAdapter {
     return { harness: this.harness, harnessSessionId: `${this.harness}-ref`, resumed: false };
   }
 
-  // 新契约：user_message / running 由 runtime 出队时落盘，adapter submit 只做 admission
+  // 新契约：user_message / running 由 controller 出队时落盘，adapter submit 只做 admission
   async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.activeTurn = input;
     this.prompts.push(textOf(input.blocks));
@@ -125,10 +125,10 @@ function lastSummarySeq(handle: SessionHandle): number {
 describe("watermark advances only at injection (bug#5 regression)", () => {
   test("finalize does not push syncedSeq past concurrent progress; next injection backfills it", async () => {
     const adapter = new SyncableManualAdapter("codex");
-    const runtime = new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 
     // turn 1：无历史可注入
-    const first = runtime.submit("codex", [{ type: "text", text: "one" }]);
+    const first = controller.submit("codex", [{ type: "text", text: "one" }]);
     await Bun.sleep(1);
     // driven turn 运行期间，另一 harness 的进展落盘（并发 observed turn 的等价形态）
     completedTurn(session, "claude-code", "t_claude", "claude progress landed mid-turn");
@@ -140,7 +140,7 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     expect(session.meta.harnessSessions["codex"]?.syncedSeq ?? 0).toBeLessThan(tailSeq);
 
     // turn 2：注入补上并发期间的 claude 进展，且不复读自己的 turn
-    const second = runtime.submit("codex", [{ type: "text", text: "two" }]);
+    const second = controller.submit("codex", [{ type: "text", text: "two" }]);
     await Bun.sleep(1);
     expect(adapter.synced).toHaveLength(1);
     expect(adapter.synced[0]).toContain("claude progress landed mid-turn");
@@ -152,7 +152,7 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     await second;
 
     // turn 3：没有新的他方进展（只有自己 turn-2 的 summary）→ 不再注入
-    const third = runtime.submit("codex", [{ type: "text", text: "three" }]);
+    const third = controller.submit("codex", [{ type: "text", text: "three" }]);
     await Bun.sleep(1);
     expect(adapter.synced).toHaveLength(1); // 同一 summary 不二次注入
     adapter.finish();
@@ -164,9 +164,9 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     const injectionTail = lastSummarySeq(session);
 
     const adapter = new ManualAdapter("codex");
-    const runtime = new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 
-    const first = runtime.submit("codex", [{ type: "text", text: "hello" }]);
+    const first = controller.submit("codex", [{ type: "text", text: "hello" }]);
     await Bun.sleep(1);
     // sync 块随 prompt 前置注入
     expect(adapter.prompts[0]).toContain("<baton-sync>");
@@ -180,7 +180,7 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     expect(session.meta.harnessSessions["codex"]?.syncedSeq).toBe(injectionTail);
 
     // 第二轮：无新的他方进展 → 不重复注入
-    const second = runtime.submit("codex", [{ type: "text", text: "again" }]);
+    const second = controller.submit("codex", [{ type: "text", text: "again" }]);
     await Bun.sleep(1);
     expect(adapter.prompts[1]).not.toContain("baton-sync");
     adapter.finish();
@@ -191,17 +191,17 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     completedTurn(session, "claude-code", "t_claude", "earlier claude work");
 
     const adapter = new SyncBlocksManualAdapter("codex");
-    const runtime = new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 
     // 第一次 submit admission 失败：sync 视为未送达，水位不动
     adapter.failNextSubmit = true;
-    await expect(runtime.submit("codex", [{ type: "text", text: "hello" }])).rejects.toThrow("admission down");
+    await expect(controller.submit("codex", [{ type: "text", text: "hello" }])).rejects.toThrow("admission down");
     expect(session.meta.harnessSessions["codex"]?.syncedSeq ?? 0).toBe(0);
 
     // 重试：sync 走 side-channel（不混入 prompt 正文），admission 通过后水位推进到
     // 本次注入时点的 summary 尾（含失败 turn 自己的 summary：亲历即已同步）
     const injectionTail = lastSummarySeq(session);
-    const second = runtime.submit("codex", [{ type: "text", text: "hello again" }]);
+    const second = controller.submit("codex", [{ type: "text", text: "hello again" }]);
     await Bun.sleep(1);
     expect(adapter.prompts[0]).toBe("hello again");
     expect(adapter.syncPayloads[0]).toContain("<baton-sync>");
@@ -211,7 +211,7 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     await second;
 
     // 第三轮：无新的他方进展 → 不重复注入
-    const third = runtime.submit("codex", [{ type: "text", text: "again" }]);
+    const third = controller.submit("codex", [{ type: "text", text: "again" }]);
     await Bun.sleep(1);
     expect(adapter.syncPayloads).toHaveLength(1);
     adapter.finish();

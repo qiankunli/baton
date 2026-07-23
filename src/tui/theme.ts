@@ -3,7 +3,7 @@
 
 import { defaultTheme, type Theme } from "chat-tui";
 
-import { HARNESS_REGISTRY } from "../harnesses/registry.ts";
+import { HARNESS_REGISTRY } from "../harness/registry.ts";
 
 /**
  * 已知 harness 的固定认色，从 registry 派生（shortName 即 author 展示名 =

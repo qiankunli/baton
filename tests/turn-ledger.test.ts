@@ -21,7 +21,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
-import { BatonSessionRuntime } from "../src/session/runtime.ts";
+import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 const requestHandler: RequestHandler = async (req) =>
@@ -55,7 +55,7 @@ class OverlapAdapter implements HarnessAdapter {
     return { harness: this.harness, harnessSessionId: "ov1", resumed: false };
   }
 
-  // 新契约：user_message / running 由 runtime 出队时落盘，adapter submit 只做 admission
+  // 新契约：user_message / running 由 controller 出队时落盘，adapter submit 只做 admission
   async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.driven = input;
     return { accepted: true };
@@ -75,9 +75,9 @@ function summaryTurnIds(): string[] {
 describe("terminal routing by turnId (bug#2 regression)", () => {
   test("observed idle during a same-harness driven turn still closes the observed turn", async () => {
     const adapter = new OverlapAdapter();
-    const runtime = new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 
-    const submitted = runtime.submit("claude", [{ type: "text", text: "go" }]);
+    const submitted = controller.submit("claude", [{ type: "text", text: "go" }]);
     await Bun.sleep(1); // driven turn admission + running 就位
 
     // 同一 slot 上 observed turn 开界 → 收界，此刻 driven turn 仍在运行
@@ -116,9 +116,9 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
 
   test("driven idle does not close a still-running observed turn (reverse ordering)", async () => {
     const adapter = new OverlapAdapter();
-    const runtime = new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 
-    const submitted = runtime.submit("claude", [{ type: "text", text: "go" }]);
+    const submitted = controller.submit("claude", [{ type: "text", text: "go" }]);
     await Bun.sleep(1);
 
     adapter.sink?.({
@@ -149,9 +149,9 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
 
   test("an idle without turnId is persisted but drives no lifecycle", async () => {
     const adapter = new OverlapAdapter();
-    const runtime = new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 
-    const submitted = runtime.submit("claude", [{ type: "text", text: "go" }]);
+    const submitted = controller.submit("claude", [{ type: "text", text: "go" }]);
     let done = false;
     void submitted.then(() => {
       done = true;
@@ -183,14 +183,14 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
 describe("finalized turn records are retired (memory retention regression)", () => {
   test("finalize drops the queued prompt and release closure but keeps idempotency", async () => {
     const adapter = new OverlapAdapter();
-    const runtime = new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+    const controller = new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
     const ledger = (
-      runtime as unknown as {
+      controller as unknown as {
         turns: Map<string, { status: string; turn?: unknown; release?: unknown; cancelGraceTimer?: unknown }>;
       }
     ).turns;
 
-    const submitted = runtime.submit("claude", [{ type: "text", text: "go" }]);
+    const submitted = controller.submit("claude", [{ type: "text", text: "go" }]);
     await Bun.sleep(1);
     const turnId = adapter.driven!.turnId;
     expect(ledger.get(turnId)?.turn).toBeDefined(); // active 期间入队原件在场（canSteer 依赖）
@@ -235,7 +235,7 @@ describe("adapter contract: terminal state_update carries a turnId", () => {
       finishTurn(rt: unknown, emit: (ev: AnyNewEvent) => void, turn: unknown, stopReason: string): void;
     };
     const rt = seams.sessions.get(ref.harnessSessionId);
-    if (!rt) throw new Error("runtime not registered by open()");
+    if (!rt) throw new Error("controller not registered by open()");
 
     for (const [turnId, stop] of [
       ["t_ok", "end_turn"],

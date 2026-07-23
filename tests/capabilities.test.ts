@@ -1,6 +1,6 @@
 // 契约测试：capability descriptor 与可选能力接口必须一致（design §4.4）。
 // 声明了 marker 就必须实现对应接口；反过来，接口尚未落地的能力不允许提前声明——
-// descriptor 是给 runtime/UI 消费的事实，不是路线图。
+// descriptor 是给 controller/UI 消费的事实，不是路线图。
 
 import type { RequestHandler } from "../src/adapters/types.ts";
 import { describe, expect, test } from "bun:test";

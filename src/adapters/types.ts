@@ -21,11 +21,11 @@ export interface OpenOptions {
 }
 
 /**
- * 一轮输入。ID 都由 runtime 分配（design §4.10.1）：turnId 在入队时分配（steer 的
+ * 一轮输入。ID 都由 controller 分配（design §4.10.1）：turnId 在入队时分配（steer 的
  * expectedTurnId 引用它）；harness 侧各自的 turn/message id 只进 raw 或 adapter
- * 内部映射，不进 runtime 契约。
+ * 内部映射，不进 controller 契约。
  *
- * 普通 prompt 的 `user_message` / `state_update(running)` 由 runtime 在出队时落盘
+ * 普通 prompt 的 `user_message` / `state_update(running)` 由 controller 在出队时落盘
  * （用户输入是 BatonSession 的事实，不等 harness 冷启动；且 submit 的 blocks 可能
  * 含 <baton-sync> prepend，不能进正典历史）——adapter **不得**为 prompt 重复发这两个
  * 事件；messageId 仅供 steer 成功路径发 delivery:"steer" 的 user_message upsert。
@@ -38,10 +38,10 @@ export interface PromptInput {
   blocks: PromptBlock[];
   /**
    * 跨 harness catch-up 注入（不属于用户输入正文，不进正典历史）。仅当 adapter 声明
-   * `capabilities.sync` 时由 runtime 传入，adapter 用原生 side-channel 随本次 submit
+   * `capabilities.sync` 时由 controller 传入，adapter 用原生 side-channel 随本次 submit
    * 送达（codex: `turn/start.additionalContext`）——独立注入 user message 会污染原生
    * 历史，text prepend 则把注入混进用户消息并暴露给 UserPromptSubmit hook。
-   * 契约：与本 turn 一起送达；admission 失败视为未送达（runtime 水位不动，下次重注入）。
+   * 契约：与本 turn 一起送达；admission 失败视为未送达（controller 水位不动，下次重注入）。
    */
   syncBlocks?: PromptBlock[];
 }
@@ -61,7 +61,7 @@ export interface CapabilityMarker {
 
 /**
  * 可展示的能力 descriptor（design §4.4）：声明"这个 adapter 支持哪些可选能力"，
- * 供 runtime/UI 决策（如不支持 image 时 admission 报错、不展示 steer 选项）。
+ * 供 controller/UI 决策（如不支持 image 时 admission 报错、不展示 steer 选项）。
  * 行为仍由可选接口承载（ModelConfigurable、EffortConfigurable、Steerable/CommandDiscoverable/
  * SessionConfigurable/Interactive）；契约测试保证"声明支持就必须实现对应接口"。
  */
@@ -78,7 +78,7 @@ export interface AdapterCapabilities {
   /**
    * submit 原生承载 `PromptInput.syncBlocks`（side-channel 注入）。与 ContextSynchronizable
    * 互斥使用：syncContext 是"急切注入、resolve 即送达"（水位立即推进）；sync 是"随下一次
-   * submit 送达"（水位在 admission 通过后推进，语义同 prepend 路径）。都未声明时 runtime
+   * submit 送达"（水位在 admission 通过后推进，语义同 prepend 路径）。都未声明时 controller
    * 回落为把 sync 块 prepend 进 prompt 文本。
    */
   sync?: CapabilityMarker;
@@ -95,13 +95,13 @@ export interface AdapterCapabilities {
 
 /**
  * Adapter 生命周期（ACP v2 风格，design §4.1）：open 时绑定事件出口，submit 只确认接收，
- * turn 进展与终结全部经 sink 的事件报告；runtime 以 state event 驱动 busy/idle，
+ * turn 进展与终结全部经 sink 的事件报告；controller 以 state event 驱动 busy/idle，
  * 不以任何 Promise 生命周期推断。
  *
  * 终态硬性约定：每个被 submit 接受的 turn，adapter 在**任何退出路径**（正常结束、
  * wire fatal error、子进程退出、transport close）都必须恰好报告或合成一次
  * `state_update(idle)`；错误路径先发 `_baton_error_update` 再发 idle。重复/迟到的
- * 物理终态允许存在，由 runtime 按 baton turn id 幂等 finalize。
+ * 物理终态允许存在，由 controller 按 baton turn id 幂等 finalize。
  */
 export interface HarnessAdapter {
   readonly harness: string;
@@ -217,7 +217,7 @@ export function isApprovalRoutable(adapter: HarnessAdapter): adapter is HarnessA
 
 /**
  * steer 的回执：`rejected` 是正常返回值而非异常——expectedTurnId 已过期（race）、
- * harness 侧拒绝（review/compact 等特殊 turn）都归入 rejected，由 runtime 决定降级；
+ * harness 侧拒绝（review/compact 等特殊 turn）都归入 rejected，由 controller 决定降级；
  * 只有 wire/transport 故障才 throw。
  */
 export interface SteerReceipt {
@@ -229,11 +229,11 @@ export interface SteerReceipt {
  *
  * 契约：
  * - `expectedTurnId` 恒为 baton turn id；到 harness turn id 的映射留在 adapter 内部，
- *   不进 runtime 词汇。expectedTurnId 与 adapter 当前 active turn 不符必须返回 rejected
+ *   不进 controller 词汇。expectedTurnId 与 adapter 当前 active turn 不符必须返回 rejected
  *   （防 race：用户提交时看到的 turn 已结束，不能把输入注入新 turn）。
  * - `input.turnId` 即被注入的 turn；effective:"steer" 时 adapter 负责发 delivery:"steer"
  *   的 user_message upsert（信封 turnId 绑定该 turn），rejected 时不得发任何事件。
- * - 声明 capabilities.steer 才可被 runtime 调用；契约测试钉住"声明即实现"。
+ * - 声明 capabilities.steer 才可被 controller 调用；契约测试钉住"声明即实现"。
  */
 export interface Steerable {
   steer(ref: HarnessSessionRef, input: PromptInput, expectedTurnId: string): Promise<SteerReceipt>;
@@ -246,7 +246,7 @@ export function isSteerable(adapter: HarnessAdapter): adapter is HarnessAdapter 
 /**
  * 可选能力：让 harness 用自己的原生机制压缩当前会话上下文。
  *
- * `turnId` 由 runtime 分配；runtime 已先发 running 开界，adapter 必须把压缩过程事件绑定
+ * `turnId` 由 controller 分配；controller 已先发 running 开界，adapter 必须把压缩过程事件绑定
  * 到该 turn，并在所有终结路径发一次 idle。方法 resolve 只表示请求已被接收，不表示压缩完成。
  */
 export interface ContextCompactable {
@@ -308,7 +308,7 @@ export interface HookTrustResponse {
 export type InteractionResponse = PermissionResponse | QuestionResponse | HookTrustResponse;
 
 /**
- * 所属 turn 被打断/收口时，runtime 用它级联解开仍挂起的 request（cancel-cascade）：不是用户
+ * 所属 turn 被打断/收口时，controller 用它级联解开仍挂起的 request（cancel-cascade）：不是用户
  * 答复，而是"这个 request 随 turn 一起黄了"。adapter 收到即发 `*_resolved(cancelled)` 留痕、
  * 并回 harness 一个 abort/deny（不静默丢、不当成 allow）。参考 codex `clear_pending_waiters`
  * → `unwrap_or(Abort)`、opencode interrupt 的 `ensuring(pending.delete)`。

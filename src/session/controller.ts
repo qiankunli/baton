@@ -30,7 +30,7 @@ import {
 import {
   createHarnessLaunchSnapshot,
   type HarnessTarget,
-} from "../harnesses/target.ts";
+} from "../harness/target.ts";
 import type { SessionHandle } from "../store/store.ts";
 
 interface HarnessSlot {
@@ -68,7 +68,7 @@ export type InputStatus =
   | "interrupted";
 
 /**
- * 一条输入的 runtime 生命周期记录（与 `TurnRecord` 对称：TurnRecord 之于 turn，
+ * 一条输入的 controller 生命周期记录（与 `TurnRecord` 对称：TurnRecord 之于 turn，
  * InputRecord 之于 input）。**身份即 `messageId`**——一条输入的 durable 形态是事件流里的
  * `user_message`，live 形态就是这条记录，两者同一个 `m_` id，不另造平行身份。
  * queued/admitted 记录持有 resolve/reject（submit 的回执通道）；accepted_steer 是
@@ -79,7 +79,7 @@ export type InputStatus =
  * admit 后才物化为 Input/Turn；不能把可召回队列复用成易失的 monitor work queue。
  */
 interface InputRecord {
-  /** 身份：用户消息的 baton message id（`m_`）。user_message 由 runtime 出队时落盘（见 runTurn） */
+  /** 身份：用户消息的 baton message id（`m_`）。user_message 由 controller 出队时落盘（见 runTurn） */
   messageId: string;
   /** 队列内展示排序用的自增号（与身份无关，仅供 QueuedTurnSnapshot） */
   id: number;
@@ -104,7 +104,7 @@ type TurnRole = "driven" | "observed";
  *
  * 合法迁移：
  * - （队列，不入台账）→ driven/active：drain 取走 QueuedTurn，runTurn **出队即登记**并由
- *   runtime 落 user_message/running——用户输入是 BatonSession 的事实，不等 harness 冷启动；
+ *   controller 落 user_message/running——用户输入是 BatonSession 的事实，不等 harness 冷启动；
  *   排队中的 turn 留在 queue（无事件可路由），被 recall 的永不入账。
  * - （无）→ observed/active：`state_update(running, origin:"harness")` 开界登记，不进队列。
  * - active → finalized：`state_update(idle)` 按 envelope.turnId 命中；或 cancel 宽限期
@@ -169,13 +169,13 @@ export type SteerOutcome =
   | { effective: "steer" }
   | { effective: "follow_up"; outcome: Promise<SubmitOutcome> };
 
-/** runtime 注入给 adapter 构造器的交互回调（见注入点 slotFor）：统一的 Request→Response 通道 */
+/** controller 注入给 adapter 构造器的交互回调（见注入点 slotFor）：统一的 Request→Response 通道 */
 export interface InteractionHandlers {
   requestHandler: RequestHandler;
   diagnostic: DiagnosticSink;
 }
 
-export interface BatonSessionRuntimeOptions {
+export interface ControllerOptions {
   session: SessionHandle;
   mentionBudgetChars: number;
   /** 新 session 未选过 model 时使用的 harness 级持久偏好。 */
@@ -186,7 +186,7 @@ export interface BatonSessionRuntimeOptions {
   /** target 是 Baton 控制面概念；Adapter 工厂只接收 target.harness。 */
   resolveTarget?(harnessTargetId: string): HarnessTarget;
   harnessSessionKey?(harness: string): string;
-  onStateChange?: () => void;
+  onChange?: () => void;
   /**
    * cancel 后等待 harness 确认终态的宽限期。到期仍无终态则合成 terminal error 并
    * 推进队列（design §4.1：除 cancel grace 与 transport close 外不设全局 watchdog，
@@ -219,7 +219,7 @@ export const INTERRUPTED_NOTICE_TITLE = "Conversation interrupted — tell the a
  * 的终态）。driven ≤ 1 是**队列策略**（activeDrivenTurnId 指针 + drain 串行），不是
  * 台账模型假设；将来放开并行 driven 只改 drain 取件策略，台账与路由不动。
  */
-export class BatonSessionRuntime {
+export class Controller {
   private readonly slots = new Map<string, HarnessSlot>();
   private readonly queue: InputRecord[] = [];
   private nextQueueId = 1;
@@ -244,7 +244,7 @@ export class BatonSessionRuntime {
   /** requestId → turnId：onAdapterEvent 见 *_request 时记下，requestHandler 消费，供 cancel-cascade 按 turn 归属 */
   private readonly requestTurns = new Map<string, string>();
 
-  constructor(private readonly options: BatonSessionRuntimeOptions) {}
+  constructor(private readonly options: ControllerOptions) {}
 
   /** 注入给 adapter 的统一 request 回调：注册 resolver 后挂起，等宿主经 respond() 应答或 turn 收口级联取消 */
   readonly requestHandler: RequestHandler = (request) =>
@@ -375,7 +375,7 @@ export class BatonSessionRuntime {
     try {
       receipt = await adapter.steer(
         active.slot.ref,
-        // steer 消息归属被注入的 turn；messageId 照常由 runtime 分配（design §4.10.1）
+        // steer 消息归属被注入的 turn；messageId 照常由 controller 分配（design §4.10.1）
         { turnId: active.turnId, messageId, blocks },
         active.turnId,
       );
@@ -531,7 +531,7 @@ export class BatonSessionRuntime {
     } catch (error) {
       this.options.session.diagnostic({
         level: "error",
-        component: "runtime.compact",
+        component: "controller.compact",
         harness: target.harness,
         harnessTargetId,
         turnId: record?.turnId,
@@ -597,7 +597,7 @@ export class BatonSessionRuntime {
     } catch (error) {
       this.options.session.diagnostic({
         level: "error",
-        component: "runtime.cancel",
+        component: "controller.cancel",
         harness: active.harness,
         harnessTargetId: active.harnessTargetId,
         turnId: active.turnId,
@@ -620,7 +620,7 @@ export class BatonSessionRuntime {
           slot.adapter.close(slot.ref).catch((error) => {
             this.options.session.diagnostic({
               level: "warn",
-              component: "runtime.close",
+              component: "controller.close",
               harness: slot.adapter.harness,
               harnessTargetId: slot.target.id,
               message: "harness close failed",
@@ -706,7 +706,7 @@ export class BatonSessionRuntime {
     this.processingHarness = turn.target.harness;
     this.processingStartedAt = Date.now();
 
-    // 出队即入账、即落盘：用户输入是 BatonSession 的事实，owner 是 runtime——
+    // 出队即入账、即落盘：用户输入是 BatonSession 的事实，owner 是 controller——
     // 不等 harness 冷启动（codex 首启要 spawn → initialize → thread resume/start，
     // 可达数秒，期间 Transcript 必须已能看到这条输入）。落盘的是**原始输入** turn.blocks：
     // <baton-sync> 注入只进 harness transport（syncContext / prepend），不进正典历史。
@@ -815,7 +815,7 @@ export class BatonSessionRuntime {
       const detail = error instanceof Error ? error.message : String(error);
       this.options.session.diagnostic({
         level: "error",
-        component: "runtime.turn",
+        component: "controller.turn",
         harness: turn.target.harness,
         harnessTargetId: targetKey,
         turnId: turn.turnId,
@@ -836,7 +836,7 @@ export class BatonSessionRuntime {
   }
 
   /**
-   * 所有事件的唯一入口（adapter 上报 + runtime 自有：出队 user_message/running、
+   * 所有事件的唯一入口（adapter 上报 + controller 自有：出队 user_message/running、
    * 合成终态）：持久化（append 即广播给事件流订阅者，UI 投影由订阅侧完成，
    * 这里不做任何转发）→ 识别 turn 边界并记账。
    * 不变量：任何进入本方法的事件必然对订阅者可见——投影正确性由 append 广播
@@ -885,8 +885,8 @@ export class BatonSessionRuntime {
       const { requestId } = envelope.payload as { requestId: string };
       this.requestTurns.set(requestId, envelope.turnId);
     }
-    // append 已同步广播给投影；普通流式事件不能再走 runtime 通知，否则每个 chunk
-    // 都会重建两次完整 view。终态对 runtime 私有台账的变更由 finalize 自己通知。
+    // append 已同步广播给投影；普通流式事件不能再走 controller 通知，否则每个 chunk
+    // 都会重建两次完整 view。终态对 controller 私有台账的变更由 finalize 自己通知。
   }
 
   /**
@@ -981,7 +981,7 @@ export class BatonSessionRuntime {
   }
 
   /**
-   * runtime 合成终态：可选的结构化 error 留痕 + idle，走统一事件管线（→ finalize）。
+   * controller 合成终态：可选的结构化 error 留痕 + idle，走统一事件管线（→ finalize）。
    * 使用方：cancel 宽限期到期 / cancel 请求失败 / preparing 取消（无 error，纯 cancelled）/
    * 启动与 admission 失败（stopReason:"error"）。
    */
@@ -1154,6 +1154,6 @@ export class BatonSessionRuntime {
   }
 
   private changed(): void {
-    this.options.onStateChange?.();
+    this.options.onChange?.();
   }
 }
