@@ -16,7 +16,7 @@
 
 | 阶段 | 触发 | 是否终态 | 语义 |
 |---|---|---|---|
-| running | `state_update(running)`（origin 缺省=driven，`"harness"`=observed） | 否 | turn 开界，busy 由它派生 |
+| running | `state_update(running)`；`source:baton`=driven，`source:harness`=observed | 否 | turn 开界，busy 由它派生 |
 | streaming | message/tool/plan 的 chunk 与 update | 否 | 增量产出，可乱序、可丢，completed 自愈 |
 | settling | `tool_call_update(completed/failed/declined)`、item completed | 部分 | 单个产出收口，携全量内容纠偏 |
 | finalized | `state_update(idle, stopReason)` | 是 | 整个 turn 收口，controller 幂等 finalize、推进队列 |
@@ -26,7 +26,7 @@
 
 ### 2.1 事件归一与保真
 
-Adapter 消费原生 wire（Codex app-server 的 JSON-RPC 通知、Claude Agent SDK 的消息流），翻译成内部事件交给 sink，信封字段由 Store 补齐。归一原则是"最大公约数 + raw 保真"：思考、工具、文件改动、命令输出、计划等形状统一，粒度差异（Claude 原始思考流 vs Codex reasoning 摘要）不掩盖、全部留在 `raw`。渲染层与存储层不出现 harness 分支。
+Adapter 消费原生 wire（Codex app-server 的 JSON-RPC 通知、Claude Agent SDK 的消息流），翻译成内部 Event 草稿交给 sink；宿主在可信入口盖上 `source:harness`，Store 再补齐版本、时间、序号和 BatonSession。归一原则是"最大公约数 + raw 保真"：思考、工具、文件改动、命令输出、计划等形状统一，粒度差异（Claude 原始思考流 vs Codex reasoning 摘要）不掩盖、全部留在 `raw`。渲染层与存储层不出现 harness 分支。
 
 ### 2.2 三态 patch 与自愈
 
@@ -67,7 +67,7 @@ completed 但整个 turn 零产出，说明 prompt 在进模型前被丢弃（ho
 | 终态 | `state_update(idle, stopReason)` | 消息流结束 / interrupt | `turn/completed` | 已支持；退出路径均合成 |
 | 错误 | `_baton_error_update` + `idle(failed)` | SDK error | wire error / 响应终态 | 已支持 |
 | 空回合 | `_baton_notice`（warning，不改生命周期） | 无此形态（SDK 进程内 hook 报错走 error 流） | completed 且零产出 + `hook/completed`（仅 userPromptSubmit/sessionStart 的 blocked/stopped 会让 codex 静默空结束） | Codex 已支持 |
-| observed turn | `state_update(running, origin:"harness")` 开界、idle 收界 | 后台任务唤醒 | — | 已支持；不进队列 |
+| observed turn | Harness 来源的 `state_update(running)` 开界、idle 收界 | 后台任务唤醒 | — | 已支持；不进队列 |
 | 未知通知 | 有界诊断日志 + 计数 | 进程内 hook 报错走 error 流 | 未识别通知 | 当前忽略，不进 timeline |
 | **静默悬挂对账** | L1 stall 观测 + 可选 `reconcile` 能力（见 §5） | 未声明 reconcile，回落 L1（`backgroundTasks`/`getContextUsage` 为后续方向） | `thread/read.status` | L1 已支持；L2 Codex 已支持，Claude 回落 L1 |
 
@@ -91,7 +91,7 @@ completed 但整个 turn 零产出，说明 prompt 在进模型前被丢弃（ho
 
 **目标**：agent 无用户输入时自己开口（后台任务唤醒、未来的 cron/事件 loop），其回复必须出现在 UI，而不是重开会话才可见。
 
-**当前结论：已支持，由投影单通道不变量保证。** observed turn 以 `origin:"harness"` 开界、idle 收界，controller 只划界记账、不进队列。UI 状态 = `loadState()`（补历史）+ `subscribe`（跟增量），live 与 resume 同一条 reduce 路径；事件一经 append 即广播，投影正确性不依赖"是否有活跃 turn"。历史教训：per-turn 回调曾是第二条投影通道，导致 observed turn 事件"只持久化、不投影"，UI 静默丢后台唤醒的回复——因此**不允许旁路投影通道**，由 `tests/harness-initiated-turn.test.ts` 参数化契约钉住。v1 不支持打断 observed turn（Esc 只作用 driven turn）。
+**当前结论：已支持，由投影单通道不变量保证。** observed turn 以 Harness 来源的 running 开界、idle 收界，Controller 只划界记账、不进队列。UI 状态 = `loadState()`（补历史）+ `subscribe`（跟增量），live 与 resume 同一条 reduce 路径；事件一经 append 即广播，投影正确性不依赖"是否有活跃 turn"。历史教训：per-turn 回调曾是第二条投影通道，导致 observed turn 事件"只持久化、不投影"，UI 静默丢后台唤醒的回复——因此**不允许旁路投影通道**，由 `tests/harness-initiated-turn.test.ts` 参数化契约钉住。v1 不支持打断 observed turn（Esc 只作用 driven turn）。
 
 ## 5. 收敛方向与验收
 
@@ -122,7 +122,7 @@ completed 但整个 turn 零产出，说明 prompt 在进模型前被丢弃（ho
 
 ## 6. 代码与测试锚点
 
-- `src/events/types.ts`：事件 kind 全集、三态 patch、`state_update` origin、终态词汇（含 declined 一等成员）、`StallNotice`（L1）。
+- `src/events/types.ts`：Event source、事件 kind 全集、三态 patch、终态词汇（含 declined 一等成员）、`StallNotice`（L1）。
 - `src/adapters/types.ts`：`HarnessAdapter` 终态硬约定、`AdapterCapabilities`、`Reconcilable` / `ReconcileVerdict` / `isReconcilable`（L2）。
 - `src/adapters/codex/adapter.ts`：item/turn 通知归一、`finishTurn`/`failTurn` 终态合成、空回合上报、悲观 failed 映射、`reconcile` + `mapThreadStatus`（L2，`thread/read.status`）。
 - `src/adapters/claude/adapter.ts`：SDK 消息流归一、error 流、cancel 映射 interrupt；未声明 reconcile，回落 L1。

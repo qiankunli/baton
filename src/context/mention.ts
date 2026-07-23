@@ -120,7 +120,7 @@ function harnessSummaries(handle: SessionHandle): HarnessSummary[] {
     .readEvents()
     .filter((e) => e.kind === "_baton_turn_summary")
     .map((e) => ({
-      harness: e.harness,
+      harness: e.harness ?? "baton",
       harnessTargetId: e.harnessTargetId,
       seq: e.seq,
       summary: e.payload as TurnSummary,

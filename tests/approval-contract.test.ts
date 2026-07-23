@@ -9,12 +9,12 @@ import { describe, expect, test } from "bun:test";
 
 import { ClaudeAdapter } from "../src/adapters/claude/adapter.ts";
 import { CodexAdapter, codexLaunchCommand, codexToolTerminalStatus } from "../src/adapters/codex/adapter.ts";
-import type { AnyNewEvent } from "../src/events/types.ts";
+import type { AnyEventDraft } from "../src/events/types.ts";
 
 function codexServerRequestHarness(optionId: string) {
-  const events: AnyNewEvent[] = [];
+  const events: AnyEventDraft[] = [];
   const adapter = new CodexAdapter({ requestHandler: async (req) => ({ kind: "permission", requestId: req.requestId, optionId }) });
-  const rt = { threadId: "th1", turnId: "t1", sink: (ev: AnyNewEvent) => events.push(ev) };
+  const rt = { threadId: "th1", turnId: "t1", sink: (ev: AnyEventDraft) => events.push(ev) };
   const request = (method: string, params: unknown) =>
     (
       adapter as unknown as {
@@ -59,12 +59,12 @@ describe("approval loop closes through the host (all adapters)", () => {
       ["allow", "allow"],
       ["deny", "deny"],
     ] as const) {
-      const events: AnyNewEvent[] = [];
+      const events: AnyEventDraft[] = [];
       const adapter = new ClaudeAdapter({ requestHandler: async (req) => ({ kind: "permission", requestId: req.requestId, optionId }) });
       const result = await (
         adapter as unknown as {
           handleCanUseTool: (
-            emit: (ev: AnyNewEvent) => void,
+            emit: (ev: AnyEventDraft) => void,
             name: string,
             input: Record<string, unknown>,
             meta: Record<string, unknown>,

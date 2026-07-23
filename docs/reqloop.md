@@ -145,7 +145,7 @@ reqloop
 └── harness work?    预留：plan、diagnose、repair、summarize
 ```
 
-reqloop 发出的外部领域事件以 reqloop PluginInstance 为 origin，同时保留实际平台和资源
+reqloop 发出的外部领域事件以 reqloop PluginInstance 为 source，同时保留实际平台和资源
 provenance。Action 也始终先进入 Baton：
 
 ```text
@@ -283,11 +283,11 @@ cursor / snapshot cache
 
 BoardContribution 进入共享 BoardState；BoardView、Plugin 可读的 BoardSnapshot 和
 ContextBundle 再按不同预算与受众从中派生。Board 更新可以发出带 revision、changed keys、
-origin 和 correlation 的 `board.changed` 事件，reqloop 据此重新读取 snapshot、评估并提出
+source 和 correlation 的 `board.changed` 事件，reqloop 据此重新读取 snapshot、评估并提出
 新的 Intent。
 
 Board observer 不能直接调用 Connector 或执行副作用；Intent 仍需经过 Baton 的
-Policy/Permission/Action 路径，并使用 origin、correlation 和幂等键避免 contribution
+Policy/Permission/Action 路径，并使用 source、correlation 和幂等键避免 contribution
 反馈成自激 loop。ReqLoopRun 仍由领域事件、ActionReceipt 和用户决策归约；Board 是跨参与者
 共享的协调读模型，不取代 reqloop 或外部系统的事实真相源。
 

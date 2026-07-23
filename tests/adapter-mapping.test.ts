@@ -15,7 +15,7 @@ import {
 } from "../src/adapters/claude/adapter.ts";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
 import type { DiagnosticEntry } from "../src/diagnostics.ts";
-import type { AnyNewEvent } from "../src/events/types.ts";
+import type { AnyEventDraft } from "../src/events/types.ts";
 import type { RequestHandler } from "../src/adapters/types.ts";
 
 const requestHandler: RequestHandler = async (req) =>
@@ -23,9 +23,9 @@ const requestHandler: RequestHandler = async (req) =>
     ? { kind: "permission", requestId: req.requestId, optionId: "deny" }
     : { kind: "question", requestId: req.requestId, answers: {} };
 
-function claudeHarness(): { events: AnyNewEvent[]; feed: (msg: unknown) => void } {
+function claudeHarness(): { events: AnyEventDraft[]; feed: (msg: unknown) => void } {
   const adapter = new ClaudeAdapter({ requestHandler });
-  const events: AnyNewEvent[] = [];
+  const events: AnyEventDraft[] = [];
   const rt = {
     cwd: "/tmp",
     suppressedToolIds: new Set<string>(),
@@ -37,16 +37,16 @@ function claudeHarness(): { events: AnyNewEvent[]; feed: (msg: unknown) => void 
   const feed = (msg: unknown) =>
     (
       adapter as unknown as {
-        handleMessage: (r: unknown, e: (ev: AnyNewEvent) => void, m: unknown, t: unknown) => void;
+        handleMessage: (r: unknown, e: (ev: AnyEventDraft) => void, m: unknown, t: unknown) => void;
       }
     ).handleMessage(rt, (ev) => events.push(ev), msg, turn);
   return { events, feed };
 }
 
-function codexHarness(): { events: AnyNewEvent[]; notify: (method: string, params: unknown) => void } {
+function codexHarness(): { events: AnyEventDraft[]; notify: (method: string, params: unknown) => void } {
   const adapter = new CodexAdapter({ requestHandler });
-  const events: AnyNewEvent[] = [];
-  const rt = { threadId: "th1", turnId: "t1", sink: (ev: AnyNewEvent) => events.push(ev) };
+  const events: AnyEventDraft[] = [];
+  const rt = { threadId: "th1", turnId: "t1", sink: (ev: AnyEventDraft) => events.push(ev) };
   const notify = (method: string, params: unknown) =>
     (adapter as unknown as { handleNotification: (r: unknown, m: string, p: unknown) => void }).handleNotification(
       rt,
@@ -321,7 +321,7 @@ describe("claude: edit tools → diff content", () => {
 
 describe("structured questions", () => {
   test("Claude AskUserQuestion emits request/resolved and returns answers in updatedInput", async () => {
-    const events: AnyNewEvent[] = [];
+    const events: AnyEventDraft[] = [];
     const adapter = new ClaudeAdapter({
       requestHandler: async (req) =>
         req.kind === "question"
@@ -331,7 +331,7 @@ describe("structured questions", () => {
     const result = await (
       adapter as unknown as {
         handleCanUseTool: (
-          emit: (event: AnyNewEvent) => void,
+          emit: (event: AnyEventDraft) => void,
           name: string,
           input: Record<string, unknown>,
           meta: Record<string, unknown>,
@@ -371,7 +371,7 @@ describe("structured questions", () => {
   });
 
   test("Codex requestUserInput returns the app-server answer envelope", async () => {
-    const events: AnyNewEvent[] = [];
+    const events: AnyEventDraft[] = [];
     const adapter = new CodexAdapter({
       requestHandler: async (req) =>
         req.kind === "question"
@@ -383,7 +383,7 @@ describe("structured questions", () => {
         handleServerRequest: (runtime: unknown, method: string, params: unknown) => Promise<unknown>;
       }
     ).handleServerRequest(
-      { threadId: "th1", sink: (event: AnyNewEvent) => events.push(event) },
+      { threadId: "th1", sink: (event: AnyEventDraft) => events.push(event) },
       "item/tool/requestUserInput",
       {
         itemId: "item1",

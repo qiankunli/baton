@@ -719,7 +719,7 @@ export class BatonChatProtocol implements ChatProtocol {
     const permission = v.pendingPermissions.values().next().value;
     const hookTrust = v.pendingHookTrusts.values().next().value;
     const question = v.pendingQuestions.values().next().value;
-    const observedRuns = [...v.activeTurns.values()].filter((turn) => turn.origin === "harness");
+    const observedRuns = [...v.activeTurns.values()].filter((turn) => turn.role === "observed");
     const observedRun = observedRuns.at(-1);
     // baton 当前只呈现一个 agent 的状态：driven turn 优先，其次是 harness 自发的
     // background turn，完全空闲时才回落到当前输入目标。状态本体与附加信息可拆成两行，

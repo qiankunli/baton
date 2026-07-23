@@ -63,6 +63,7 @@ describe("crash recovery on open", () => {
   test("normalizes an interrupted turn: idle + notice + summary", () => {
     const h = store.createSession({ cwd: "/repo" });
     h.append({
+      source: { type: "baton" },
       kind: "state_update",
       payload: { state: "running" },
       harness: "codex",
@@ -70,6 +71,7 @@ describe("crash recovery on open", () => {
       turnId: "t1",
     });
     h.append({
+      source: { type: "baton" },
       kind: "user_message",
       payload: { messageId: "m1", content: [{ type: "text", text: "hi" }] },
       harness: "codex",
@@ -77,6 +79,7 @@ describe("crash recovery on open", () => {
       turnId: "t1",
     });
     h.append({
+      source: { type: "baton" },
       kind: "agent_message_chunk",
       payload: { messageId: "m2", content: { type: "text", text: "partial" } },
       harness: "codex",
@@ -104,20 +107,23 @@ describe("crash recovery on open", () => {
   test("concurrent interrupted turns each get idle + notice + summary", () => {
     const h = store.createSession({ cwd: "/repo" });
     // driven turn 运行中 + 同 harness 的 observed turn 也在运行时崩溃
-    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t_driven" });
+    h.append({ source: { type: "baton" }, kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t_driven" });
     h.append({
+      source: { type: "baton" },
       kind: "agent_message_chunk",
       payload: { messageId: "m1", content: { type: "text", text: "partial" } },
       harness: "codex",
       turnId: "t_driven",
     });
     h.append({
+      source: { type: "harness", harnessTargetId: "claude" },
       kind: "state_update",
-      payload: { state: "running", origin: "harness" },
+      payload: { state: "running" },
       harness: "claude-code",
       turnId: "t_obs",
     });
     h.append({
+      source: { type: "baton" },
       kind: "agent_message",
       payload: { messageId: "m2", content: [{ type: "text", text: "bg partial" }] },
       harness: "claude-code",
@@ -143,7 +149,7 @@ describe("crash recovery on open", () => {
 
   test("recovery is idempotent: second open changes nothing", () => {
     const h = store.createSession({ cwd: "/repo" });
-    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
+    h.append({ source: { type: "baton" }, kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
 
     openBatonSession(store, { cwd: "/repo", sessionId: h.id });
     const count = store.openSession(h.id).readEvents().length;
@@ -154,14 +160,15 @@ describe("crash recovery on open", () => {
 
   test("completed turn missing its summary gets one, without an interruption notice", () => {
     const h = store.createSession({ cwd: "/repo" });
-    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
+    h.append({ source: { type: "baton" }, kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
     h.append({
+      source: { type: "baton" },
       kind: "agent_message_chunk",
       payload: { messageId: "m1", content: { type: "text", text: "done" } },
       harness: "codex",
       turnId: "t1",
     });
-    h.append({ kind: "state_update", payload: { state: "idle", stopReason: "end_turn" }, harness: "codex", turnId: "t1" });
+    h.append({ source: { type: "baton" }, kind: "state_update", payload: { state: "idle", stopReason: "end_turn" }, harness: "codex", turnId: "t1" });
 
     const result = openBatonSession(store, { cwd: "/repo", sessionId: h.id });
     expect(result.recovered).toBe(true);
@@ -173,8 +180,9 @@ describe("crash recovery on open", () => {
 
   test("dangling permission requests are cancelled", () => {
     const h = store.createSession({ cwd: "/repo" });
-    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
+    h.append({ source: { type: "baton" }, kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
     h.append({
+      source: { type: "baton" },
       kind: "permission_request",
       payload: {
         kind: "permission",
@@ -193,8 +201,9 @@ describe("crash recovery on open", () => {
 
   test("dangling question requests are cancelled", () => {
     const h = store.createSession({ cwd: "/repo" });
-    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
+    h.append({ source: { type: "baton" }, kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
     h.append({
+      source: { type: "baton" },
       kind: "question_request",
       payload: {
         kind: "question",
@@ -212,8 +221,9 @@ describe("crash recovery on open", () => {
 
   test("dangling hook trust requests are cancelled", () => {
     const h = store.createSession({ cwd: "/repo" });
-    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
+    h.append({ source: { type: "baton" }, kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
     h.append({
+      source: { type: "baton" },
       kind: "hook_trust_request",
       payload: {
         kind: "hook_trust",
@@ -240,8 +250,8 @@ describe("crash recovery on open", () => {
 
   test("clean session is untouched", () => {
     const h = store.createSession({ cwd: "/repo" });
-    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
-    h.append({ kind: "state_update", payload: { state: "idle", stopReason: "end_turn" }, harness: "codex", turnId: "t1" });
+    h.append({ source: { type: "baton" }, kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
+    h.append({ source: { type: "baton" }, kind: "state_update", payload: { state: "idle", stopReason: "end_turn" }, harness: "codex", turnId: "t1" });
     h.summarizeTurn("t1");
     const count = h.readEvents().length;
 
@@ -292,10 +302,10 @@ describe("lock hardening (codex review)", () => {
 
   test("recovery failure releases the lock before rethrowing", () => {
     const h = store.createSession({ cwd: "/repo" });
-    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
+    h.append({ source: { type: "baton" }, kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
     // 中间行损坏：recovery 的 readEvents 会抛错
     appendFileSync(join(h.dir, "session.jsonl"), "garbage\n");
-    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
+    h.append({ source: { type: "baton" }, kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
 
     expect(() => openBatonSession(store, { cwd: "/repo", sessionId: h.id })).toThrow(/corrupt/);
     // 锁必须已释放：否则本进程存活期间该会话被永久判"在用"

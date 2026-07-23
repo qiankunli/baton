@@ -22,9 +22,9 @@ afterEach(() => {
 
 function turn(harness: string, i: number, agentText: string): void {
   const turnId = `t_${harness}_${i}`;
-  h.append({ kind: "user_message", harness, turnId, payload: { messageId: `${turnId}_u`, content: [{ type: "text", text: `q${i}` }] } });
-  h.append({ kind: "agent_message", harness, turnId, payload: { messageId: `${turnId}_a`, content: [{ type: "text", text: agentText }] } });
-  h.append({ kind: "state_update", harness, turnId, payload: { state: "idle", stopReason: "end_turn" } });
+  h.append({ source: { type: "baton" }, kind: "user_message", harness, turnId, payload: { messageId: `${turnId}_u`, content: [{ type: "text", text: `q${i}` }] } });
+  h.append({ source: { type: "baton" }, kind: "agent_message", harness, turnId, payload: { messageId: `${turnId}_a`, content: [{ type: "text", text: agentText }] } });
+  h.append({ source: { type: "baton" }, kind: "state_update", harness, turnId, payload: { state: "idle", stopReason: "end_turn" } });
   h.summarizeTurn(turnId);
 }
 

@@ -22,8 +22,10 @@ import { diagnosticError } from "../diagnostics.ts";
 import { newId } from "../events/ids.ts";
 import {
   isRequestEventKind,
+  type AnyEventDraft,
   type AnyEventEnvelope,
   type AnyNewEvent,
+  type EventSource,
   type PromptBlock,
   type StopReason,
 } from "../events/types.ts";
@@ -42,7 +44,7 @@ interface HarnessSlot {
    * harness **setup 阶段**（slot 创建 → open 完成）由哪个 driven turn 触发。
    * setup 是 turn 生命周期之外的活动窗口：adapter 可能阻塞征询用户（hook trust）、
    * 拉模型目录、失败自清资源；其间发出的 request 事件天然无 turnId，一律用本字段
-   * 归属回触发冷启动的 turn（onAdapterEvent 唯一入口补齐），不依赖 adapter 首个 await 时序。
+   * 归属回触发冷启动的 turn（appendEvent 唯一入口补齐），不依赖 adapter 首个 await 时序。
    */
   setupTurnId?: string;
   freshNative: boolean;
@@ -74,7 +76,7 @@ export type InputStatus =
  * queued/admitted 记录持有 resolve/reject（submit 的回执通道）；accepted_steer 是
  * fire-and-forget 注入当前 turn 的记录，无独立回执。
  *
- * 刻意叫 Input 而非 UserInput：input 有**来源**维度（对称于 Turn 的 origin）。当前只有
+ * 刻意叫 Input 而非 UserInput：input 有**来源**维度。当前只有
  * `user`（composer 键入）。未来自动工作先形成持久 HarnessWorkIntent，经过 policy 与路由
  * admit 后才物化为 Input/Turn；不能把可召回队列复用成易失的 monitor work queue。
  */
@@ -106,7 +108,7 @@ type TurnRole = "driven" | "observed";
  * - （队列，不入台账）→ driven/active：drain 取走 QueuedTurn，runTurn **出队即登记**并由
  *   controller 落 user_message/running——用户输入是 BatonSession 的事实，不等 harness 冷启动；
  *   排队中的 turn 留在 queue（无事件可路由），被 recall 的永不入账。
- * - （无）→ observed/active：`state_update(running, origin:"harness")` 开界登记，不进队列。
+ * - （无）→ observed/active：Harness 来源的 `state_update(running)` 开界登记，不进队列。
  * - active → finalized：`state_update(idle)` 按 envelope.turnId 命中；或 cancel 宽限期
  *   到期 / preparing 期间被取消 / driven 启动与 admission 失败时合成。此后记录保留在内存
  *   作幂等判定依据（会话级规模），但经 retire 瘦身——幂等判定只需 turnId+status，
@@ -207,7 +209,7 @@ export const INTERRUPTED_NOTICE_TITLE = "Conversation interrupted — tell the a
  *
  * turn 分两类生命周期（docs/design.md §5.10）：
  * - driven turn：baton 发起（用户 submit），入队、全局串行、finalize 推进队列；
- * - observed turn：harness 自发（`state_update(running, origin:"harness")` 开界），
+ * - observed turn：harness 自发（Harness 来源的 `state_update(running)` 开界），
  *   baton 不控制其开始，只划界、记账（turn summary + 同步水位），不进队列。
  *
  * 生命周期由 state event 驱动（design §4.1）：adapter.submit 只确认接收，turn 的
@@ -241,7 +243,7 @@ export class Controller {
     string,
     { turnId?: string; resolve: (o: RequestOutcome) => void }
   >();
-  /** requestId → turnId：onAdapterEvent 见 *_request 时记下，requestHandler 消费，供 cancel-cascade 按 turn 归属 */
+  /** requestId → turnId：appendEvent 见 *_request 时记下，requestHandler 消费，供 cancel-cascade 按 turn 归属 */
   private readonly requestTurns = new Map<string, string>();
 
   constructor(private readonly options: ControllerOptions) {}
@@ -249,7 +251,7 @@ export class Controller {
   /** 注入给 adapter 的统一 request 回调：注册 resolver 后挂起，等宿主经 respond() 应答或 turn 收口级联取消 */
   readonly requestHandler: RequestHandler = (request) =>
     new Promise((resolve) => {
-      // turnId 来自 *_request 事件（onAdapterEvent 先落盘再触发本 await），供 cancel-cascade 归属
+      // turnId 来自 *_request 事件（appendEvent 先落盘再触发本 await），供 cancel-cascade 归属
       const turnId = this.requestTurns.get(request.requestId);
       this.requestTurns.delete(request.requestId);
       this.pendingRequests.set(request.requestId, { turnId, resolve });
@@ -684,21 +686,29 @@ export class Controller {
     this.turns.set(opts.turnId, record);
     this.activeDrivenTurnId = opts.turnId;
     if (opts.input) {
-      this.onAdapterEvent(slot, {
-        kind: "user_message",
+      this.appendEvent(
+        slot,
+        {
+          kind: "user_message",
+          harness: harnessKey,
+          harnessSessionId: opts.harnessSessionId,
+          turnId: opts.turnId,
+          payload: { messageId: opts.input.messageId, content: opts.input.blocks },
+        },
+        { type: "user" },
+      );
+    }
+    this.appendEvent(
+      slot,
+      {
+        kind: "state_update",
         harness: harnessKey,
         harnessSessionId: opts.harnessSessionId,
         turnId: opts.turnId,
-        payload: { messageId: opts.input.messageId, content: opts.input.blocks },
-      });
-    }
-    this.onAdapterEvent(slot, {
-      kind: "state_update",
-      harness: harnessKey,
-      harnessSessionId: opts.harnessSessionId,
-      turnId: opts.turnId,
-      payload: { state: "running" },
-    });
+        payload: { state: "running" },
+      },
+      { type: "baton" },
+    );
     return { record, released };
   }
 
@@ -722,12 +732,16 @@ export class Controller {
     if (coldStart) {
       // 冷启动阶段对用户可见（否则 spinner 只能显示误导性的 thinking…）；
       // idle 终态会连带清掉 phase，失败/取消路径无需单独收尾
-      this.onAdapterEvent(slot, {
-        kind: "_baton_run_status",
-        harness: harnessKey,
-        turnId: turn.turnId,
-        payload: { phase: "starting", title: `Starting ${turn.target.harness}…` },
-      });
+      this.appendEvent(
+        slot,
+        {
+          kind: "_baton_run_status",
+          harness: harnessKey,
+          turnId: turn.turnId,
+          payload: { phase: "starting", title: `Starting ${turn.target.harness}…` },
+        },
+        { type: "baton" },
+      );
     }
 
     try {
@@ -736,12 +750,16 @@ export class Controller {
       if (record.status === "finalized") return;
       if (!slot.ref) throw new Error(`${targetKey} failed to start`);
       if (coldStart) {
-        this.onAdapterEvent(slot, {
-          kind: "_baton_run_status",
-          harness: harnessKey,
-          turnId: turn.turnId,
-          payload: { phase: null },
-        });
+        this.appendEvent(
+          slot,
+          {
+            kind: "_baton_run_status",
+            harness: harnessKey,
+            turnId: turn.turnId,
+            payload: { phase: null },
+          },
+          { type: "baton" },
+        );
       }
 
       const session = this.options.session;
@@ -842,7 +860,7 @@ export class Controller {
    * 不变量：任何进入本方法的事件必然对订阅者可见——投影正确性由 append 广播
    * 单通道保证，不依赖"是否有活跃 turn"。
    */
-  private onAdapterEvent(slot: HarnessSlot, ev: AnyNewEvent): void {
+  private appendEvent(slot: HarnessSlot, ev: AnyEventDraft, source: EventSource): void {
     // harness setup 阶段（冷启动）也可能阻塞征询用户（当前是 Codex hook trust；将来
     // 可能是登录确认等 permission / question）。此时 adapter 尚无 HarnessSessionRef，
     // 但活动仍归属触发冷启动的 driven turn；在唯一事件入口按"是不是 request"统一补归属
@@ -855,11 +873,12 @@ export class Controller {
     }
     const envelope = this.options.session.append({
       ...ev,
+      source,
       harnessTargetId: slot.target.id,
-    }) as AnyEventEnvelope;
+    } as AnyNewEvent) as AnyEventEnvelope;
     if (envelope.kind === "state_update") {
       const p = envelope.payload;
-      if (p.state === "running" && p.origin === "harness" && envelope.turnId) {
+      if (p.state === "running" && envelope.source.type === "harness" && envelope.turnId) {
         // observed turn 开界：登记入台账，不进队列（design §5.10）
         if (!this.turns.has(envelope.turnId)) {
           this.turns.set(envelope.turnId, {
@@ -928,6 +947,7 @@ export class Controller {
     if (record.role === "driven" && stopReason === "cancelled") {
       session.append({
         kind: "_baton_notice",
+        source: { type: "baton" },
         harness: record.harness,
         harnessTargetId: record.harnessTargetId,
         turnId,
@@ -988,19 +1008,27 @@ export class Controller {
   private synthesizeTerminal(record: TurnRecord, opts: { message?: string; stopReason: StopReason }): void {
     if (record.status === "finalized") return;
     if (opts.message !== undefined) {
-      this.onAdapterEvent(record.slot, {
-        kind: "_baton_error_update",
+      this.appendEvent(
+        record.slot,
+        {
+          kind: "_baton_error_update",
+          harness: record.harness,
+          turnId: record.turnId,
+          payload: { message: opts.message, retryable: false },
+        },
+        { type: "baton" },
+      );
+    }
+    this.appendEvent(
+      record.slot,
+      {
+        kind: "state_update",
         harness: record.harness,
         turnId: record.turnId,
-        payload: { message: opts.message, retryable: false },
-      });
-    }
-    this.onAdapterEvent(record.slot, {
-      kind: "state_update",
-      harness: record.harness,
-      turnId: record.turnId,
-      payload: { state: "idle", stopReason: opts.stopReason },
-    });
+        payload: { state: "idle", stopReason: opts.stopReason },
+      },
+      { type: "baton" },
+    );
   }
 
   /**
@@ -1052,7 +1080,11 @@ export class Controller {
               cwd: this.options.session.meta.cwd,
               resumeSessionId: existing?.harnessSessionId,
             },
-            (ev) => this.onAdapterEvent(created, ev),
+            (ev) =>
+              this.appendEvent(created, ev, {
+                type: "harness",
+                harnessTargetId: created.target.id,
+              }),
           );
           created.freshNative = !created.ref.resumed;
           if (model) await modelAdapter?.setModel(created.ref, model);

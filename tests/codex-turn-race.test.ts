@@ -7,7 +7,7 @@ import { expect, test } from "bun:test";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
 import { JsonRpcPeer } from "../src/adapters/codex/jsonrpc.ts";
 import type { PromptInput, HarnessSessionRef } from "../src/adapters/types.ts";
-import type { AnyNewEvent } from "../src/events/types.ts";
+import type { AnyEventDraft } from "../src/events/types.ts";
 
 const requestHandler: RequestHandler = async (req) =>
   req.kind === "permission"
@@ -32,7 +32,7 @@ function harness() {
     turnId: undefined as string | undefined,
     activeTurn: undefined as TurnState | undefined,
     codexTurnId: undefined as string | undefined,
-    sink: (ev: AnyNewEvent) => events.push(ev as never),
+    sink: (ev: AnyEventDraft) => events.push(ev as never),
   };
   return { seams: adapter as unknown as Seams, events, rt };
 }
@@ -111,7 +111,7 @@ function wireHarness() {
     turnId: undefined as string | undefined,
     activeTurn: undefined as TurnState | undefined,
     codexTurnId: undefined as string | undefined,
-    sink: (ev: AnyNewEvent) => events.push(ev as never),
+    sink: (ev: AnyEventDraft) => events.push(ev as never),
   };
   // open() 会 spawn 真子进程；这里手工重建它对 peer 的通知接线 + threads 注入
   // （threads 注入 seam 同 codex-steer.test.ts）

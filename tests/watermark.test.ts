@@ -104,12 +104,13 @@ afterEach(() => {
 /** 直接写入一个已收口、带 summary 的 turn（模拟另一 harness 的并发产出） */
 function completedTurn(handle: SessionHandle, harness: string, turnId: string, text: string): void {
   handle.append({
+    source: { type: "baton" },
     kind: "agent_message",
     harness,
     turnId,
     payload: { messageId: `${turnId}-agent`, content: [{ type: "text", text }] },
   });
-  handle.append({ kind: "state_update", harness, turnId, payload: { state: "idle", stopReason: "end_turn" } });
+  handle.append({ source: { type: "baton" }, kind: "state_update", harness, turnId, payload: { state: "idle", stopReason: "end_turn" } });
   handle.summarizeTurn(turnId);
 }
 

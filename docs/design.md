@@ -210,7 +210,7 @@ Footer            常驻状态栏（usage、队列计数、plan 进度摘要、c
 
 ### 5.10 Harness 自发回合（observed turn）与投影单通道
 
-turn origin（driven / observed）、observed turn 的开界收界与"不进队列"、投影单通道不变量均为**内核定义**，见 `docs/kernel.md` §2 不变量 #1 与 §3 Turn 生命周期。
+turn role（driven / observed）、observed turn 的开界收界与"不进队列"、投影单通道不变量均为**内核定义**，见 `docs/kernel.md` §2 不变量 #1 与 §3 Turn 生命周期。
 
 内核之外的 v1 产品取舍：当前 TUI 只显示一条状态，driven turn 优先于 observed turn；v1 不支持打断 observed turn（Esc 只作用于 driven turn），也不把它的唤醒来源建模成事件——留给"事件驱动 loop"方向一并设计。
 

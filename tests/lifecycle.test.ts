@@ -17,7 +17,7 @@ import type {
   PromptReceipt,
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
-import type { AnyEventEnvelope, AnyNewEvent, StopReason } from "../src/events/types.ts";
+import type { AnyEventEnvelope, AnyEventDraft, StopReason } from "../src/events/types.ts";
 import { Controller, INTERRUPTED_NOTICE_TITLE } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
@@ -42,7 +42,7 @@ class ScriptedAdapter implements HarnessAdapter {
     return { accepted: true };
   }
 
-  emit(ev: AnyNewEvent): void {
+  emit(ev: AnyEventDraft): void {
     this.sink?.(ev);
   }
 
@@ -214,7 +214,7 @@ describe("codex transport failure", () => {
       requestHandler: async (req) => ({ kind: "permission", requestId: req.requestId, optionId: "decline" }),
       command: ["bun", "-e", script],
     });
-    const events: AnyNewEvent[] = [];
+    const events: AnyEventDraft[] = [];
     const ref = await adapter.open({ cwd: "/tmp" }, (ev) => events.push(ev));
     await adapter.submit(ref, { turnId: "t_1", messageId: "m_1", blocks: [{ type: "text", text: "go" }] });
 

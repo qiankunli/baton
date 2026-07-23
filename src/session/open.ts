@@ -101,6 +101,7 @@ function recoverInterruptedState(session: SessionHandle): boolean {
   for (const requestId of state.pendingPermissions.keys()) {
     session.append({
       kind: "permission_resolved",
+      source: { type: "baton" },
       harness: "baton",
       payload: { requestId, outcome: "cancelled" },
     });
@@ -108,6 +109,7 @@ function recoverInterruptedState(session: SessionHandle): boolean {
   for (const requestId of state.pendingQuestions.keys()) {
     session.append({
       kind: "question_resolved",
+      source: { type: "baton" },
       harness: "baton",
       payload: { requestId, outcome: "cancelled" },
     });
@@ -115,6 +117,7 @@ function recoverInterruptedState(session: SessionHandle): boolean {
   for (const requestId of state.pendingHookTrusts.keys()) {
     session.append({
       kind: "hook_trust_resolved",
+      source: { type: "baton" },
       harness: "baton",
       payload: { requestId, outcome: "cancelled" },
     });
@@ -127,6 +130,7 @@ function recoverInterruptedState(session: SessionHandle): boolean {
     const harnessTargetId = latest?.harnessTargetId;
     session.append({
       kind: "state_update",
+      source: { type: "baton" },
       harness,
       ...(harnessTargetId ? { harnessTargetId } : {}),
       turnId,
@@ -134,6 +138,7 @@ function recoverInterruptedState(session: SessionHandle): boolean {
     });
     session.append({
       kind: "_baton_notice",
+      source: { type: "baton" },
       harness,
       ...(harnessTargetId ? { harnessTargetId } : {}),
       turnId,

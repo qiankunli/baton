@@ -606,6 +606,7 @@ export class SessionHandle {
     const harnessTargetId = turnEvents.find((event) => event.harnessTargetId)?.harnessTargetId;
     const event = this.append({
       kind: "_baton_turn_summary",
+      source: { type: "baton" },
       payload: summary,
       harness,
       ...(harnessTargetId ? { harnessTargetId } : {}),

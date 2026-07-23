@@ -6,7 +6,7 @@ import { expect, test } from "bun:test";
 
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
 import type { PromptInput, HarnessSessionRef } from "../src/adapters/types.ts";
-import type { AnyNewEvent } from "../src/events/types.ts";
+import type { AnyEventDraft } from "../src/events/types.ts";
 
 const requestHandler: RequestHandler = async (req) =>
   req.kind === "permission"
@@ -19,12 +19,12 @@ interface FakeRt {
   activeTurn?: { turnId: string; finalized: boolean };
   codexTurnId?: string;
   peer: { request: (method: string, params?: unknown) => Promise<unknown> };
-  sink: (ev: AnyNewEvent) => void;
+  sink: (ev: AnyEventDraft) => void;
 }
 
 function harness(opts: { requestError?: Error } = {}) {
   const adapter = new CodexAdapter({ requestHandler });
-  const events: Array<AnyNewEvent & { turnId?: string }> = [];
+  const events: Array<AnyEventDraft & { turnId?: string }> = [];
   const requests: Array<{ method: string; params: unknown }> = [];
   const rt: FakeRt = {
     threadId: "th1",

@@ -107,7 +107,11 @@ async function main(): Promise<void> {
   let sawOutput = false;
   let turnDone: (() => void) | undefined;
   const ref = await adapter.open({ cwd }, (ev) => {
-    session.append({ ...ev, harnessTargetId: target.id });
+    session.append({
+      ...ev,
+      source: { type: "harness", harnessTargetId: target.id },
+      harnessTargetId: target.id,
+    });
     if (ev.kind === "agent_message_chunk" && ev.payload.content.type === "text") {
       if (!sawOutput) {
         stdout.write(`${adapter.harness}> `);
@@ -156,6 +160,7 @@ async function main(): Promise<void> {
     // user_message/running 由 REPL 落盘，adapter 只报告执行过程与终态
     session.append({
       kind: "user_message",
+      source: { type: "user" },
       harness: adapter.harness,
       harnessTargetId: target.id,
       turnId,
@@ -163,6 +168,7 @@ async function main(): Promise<void> {
     });
     session.append({
       kind: "state_update",
+      source: { type: "baton" },
       harness: adapter.harness,
       harnessTargetId: target.id,
       turnId,
@@ -177,6 +183,7 @@ async function main(): Promise<void> {
       // user_message 已落盘：admission 失败也要有结局，不留无终态的半状态
       session.append({
         kind: "_baton_error_update",
+        source: { type: "baton" },
         harness: adapter.harness,
         harnessTargetId: target.id,
         turnId,
@@ -184,6 +191,7 @@ async function main(): Promise<void> {
       });
       session.append({
         kind: "state_update",
+        source: { type: "baton" },
         harness: adapter.harness,
         harnessTargetId: target.id,
         turnId,

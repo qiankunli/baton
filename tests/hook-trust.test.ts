@@ -14,7 +14,7 @@ import {
   hookStatePath,
   type HookTrustStore,
 } from "../src/config/hook.ts";
-import type { AnyNewEvent, HookTrustCandidate } from "../src/events/types.ts";
+import type { AnyEventDraft, HookTrustCandidate } from "../src/events/types.ts";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -195,7 +195,7 @@ describe("Codex hook trust harness interaction", () => {
     `;
     const command = ["bun", "-e", script, "app-server"];
     const trust = new MemoryHookTrustStore();
-    const firstEvents: AnyNewEvent[] = [];
+    const firstEvents: AnyEventDraft[] = [];
     let questions = 0;
     const first = new CodexAdapter({
       command,
@@ -213,7 +213,7 @@ describe("Codex hook trust harness interaction", () => {
     expect(firstEvents.map((event) => event.kind)).toEqual(["hook_trust_request", "hook_trust_resolved"]);
     await first.close(firstRef);
 
-    const secondEvents: AnyNewEvent[] = [];
+    const secondEvents: AnyEventDraft[] = [];
     const second = new CodexAdapter({
       command,
       hookTrustStore: trust,
@@ -258,7 +258,7 @@ describe("Codex hook trust harness interaction", () => {
         throw new Error("disk full");
       },
     };
-    const events: AnyNewEvent[] = [];
+    const events: AnyEventDraft[] = [];
     const adapter = new CodexAdapter({
       command: ["bun", "-e", script, "app-server"],
       hookTrustStore: failingStore,

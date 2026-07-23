@@ -2,7 +2,21 @@
 // tool_call_update upsert），wire 协议不必是 ACP——adapter 负责把各家原生协议归一到这里。
 // baton 自有扩展事件用 _baton_ 前缀，遵守 ACP 的扩展值约定。见 docs/design.md §5.2。
 
-export const ENVELOPE_VERSION = 1 as const;
+export const ENVELOPE_VERSION = 2 as const;
+
+/**
+ * 事实来源：回答“谁对这条 Event 负责”，不是 payload 中行为主体的角色，也不承载执行坐标。
+ * 例如 controller admit 的 user_message 来源是 user；Harness 确认接收 steer 后补报的
+ * user_message 来源是 harness。
+ * harness / plugin / schedule 的具体实例身份跟随各自分支，避免消费者再从 payload
+ * 或其它执行坐标反推来源。
+ */
+export type EventSource =
+  | { type: "baton" }
+  | { type: "user" }
+  | { type: "harness"; harnessTargetId: string }
+  | { type: "plugin"; pluginInstanceId: string }
+  | { type: "schedule"; scheduleId: string };
 
 export type SessionRunState = "running" | "idle" | "requires_action";
 
@@ -85,12 +99,6 @@ export interface StateUpdate {
   state: SessionRunState;
   /** 仅在 idle 且结束了活跃工作时携带 */
   stopReason?: StopReason;
-  /**
-   * running 的发起方。缺省 = baton 驱动的 driven turn（用户 submit 经队列串行执行）；
-   * "harness" = agent 自发开界的 observed turn（如 Claude Code 后台任务唤醒）——
-   * baton 不控制其开始，只划界、记账、投影，不进 turn 队列。
-   */
-  origin?: "harness";
 }
 
 /**
@@ -480,7 +488,10 @@ export interface EventEnvelope<K extends EventKind = EventKind> {
   /** session 内单调递增，reduce 定序靠它（不靠 ID、不靠 ts） */
   seq: number;
   batonSessionId: string;
-  harness: string;
+  /** 事实来源；与执行坐标正交。 */
+  source: EventSource;
+  /** 事件关联的 harness 执行上下文；Baton / user / Plugin 事实可缺省。 */
+  harness?: string;
   /** 实际投递/产出事件的配置目标；Baton 自身事件或未进入 controller 的外部事实可缺省。 */
   harnessTargetId?: string;
   harnessSessionId?: string;
@@ -505,6 +516,15 @@ export type NewEvent<K extends EventKind = EventKind> = Omit<
   EventEnvelope<K>,
   "v" | "ts" | "seq" | "batonSessionId"
 >;
+
+/**
+ * 尚未由可信宿主入口归因的 Event 草稿。Harness Adapter 只能产出这种形状，
+ * Controller / CLI 在接入边界补 source 后才允许写入 Store。
+ */
+export type EventDraft<K extends EventKind = EventKind> = Omit<NewEvent<K>, "source">;
+
+/** EventDraft 的判别联合版本，供 adapter sink 按 kind 正确收窄 payload。 */
+export type AnyEventDraft = { [K in EventKind]: EventDraft<K> }[EventKind];
 
 export function textOf(blocks: ReadonlyArray<ContentBlock | PromptBlock>): string {
   return blocks

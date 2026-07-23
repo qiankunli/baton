@@ -2,8 +2,8 @@
 // event → append → broadcast → reduce → projection，不允许第二条投影通道）。
 //
 // 回归背景（PR #112）：普通流式事件曾同时走两条通知——session.append 的事件流广播
-// （投影订阅）+ controller onAdapterEvent 末尾的 changed()（onChange），导致每个
-// streaming chunk 触发两次完整 view 重建。修复删掉了 onAdapterEvent 末尾的 changed()，
+// （投影订阅）+ controller appendEvent 末尾的 changed()（onChange），导致每个
+// streaming chunk 触发两次完整 view 重建。修复删掉了 appendEvent 末尾的 changed()，
 // 但这条"哪类变更走哪条通知通道"的分工只靠 controller.ts 里的一行注释守着——任何人
 // 顺手加回 changed() 就会无声复发（双重建只是性能劣化，UI 不出错，肉眼看不出来）。
 // 本测试把它钉成契约：普通流式事件到达时，订阅方收到的通知恰好一次。
@@ -21,7 +21,7 @@ import type {
   PromptReceipt,
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
-import type { AnyNewEvent } from "../src/events/types.ts";
+import type { AnyEventDraft } from "../src/events/types.ts";
 import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
@@ -66,8 +66,8 @@ class StreamingAdapter implements HarnessAdapter {
     return { accepted: true };
   }
 
-  /** 模拟 harness 在 turn 运行中经同一 sink 上报一个事件（走 controller.onAdapterEvent） */
-  emit(ev: AnyNewEvent): void {
+  /** 模拟 harness 在 turn 运行中经同一 sink 上报一个事件（走 controller.appendEvent） */
+  emit(ev: AnyEventDraft): void {
     this.sink?.(ev);
   }
 
@@ -81,7 +81,7 @@ class StreamingAdapter implements HarnessAdapter {
 // 2 = append 广播之外又走了 controller onChange（#112 的双重建回归，这半边归本文件）。
 
 describe("single-channel view notification per streaming event", () => {
-  const cases: Array<{ name: string; event: (turnId: string) => AnyNewEvent }> = [
+  const cases: Array<{ name: string; event: (turnId: string) => AnyEventDraft }> = [
     {
       name: "agent_message_chunk",
       event: (turnId) => ({

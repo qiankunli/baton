@@ -12,7 +12,7 @@ import { expect, test } from "bun:test";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
 import { JsonRpcPeer } from "../src/adapters/codex/jsonrpc.ts";
 import type { PromptInput, HarnessSessionRef } from "../src/adapters/types.ts";
-import type { AnyNewEvent, Notice } from "../src/events/types.ts";
+import type { AnyEventDraft, Notice } from "../src/events/types.ts";
 
 const requestHandler: RequestHandler = async (req) =>
   req.kind === "permission"
@@ -45,7 +45,7 @@ function wireHarness() {
     turnId: undefined as string | undefined,
     activeTurn: undefined as TurnState | undefined,
     codexTurnId: undefined as string | undefined,
-    sink: (ev: AnyNewEvent) => events.push(ev as never),
+    sink: (ev: AnyEventDraft) => events.push(ev as never),
   };
   peer.onNotification((method, params) =>
     (adapter as unknown as { handleNotification(rt: unknown, method: string, params: unknown): void })

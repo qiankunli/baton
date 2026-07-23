@@ -214,17 +214,20 @@ intent，而不是直接控制 TUI：
 Harness、Plugin、Baton、用户和 Schedule 都可以产生事件。事件来源显式表达：
 
 ```ts
-type EventOrigin =
+type EventSource =
   | { type: "baton" }
-  | { type: "harness"; harnessId: string }
+  | { type: "harness"; harnessTargetId: string }
   | { type: "plugin"; pluginInstanceId: string }
   | { type: "user" }
   | { type: "schedule"; scheduleId: string };
 ```
 
-本文未加限定的 Event 指持久、可重放的 **FactEvent**。wake、文件通知和 projection
-invalidation 是可合并的 signal：它们只提示消费者读取权威状态，不通过 EventSink 冒充已经
-发生的事实，也不能直接驱动 reducer。
+`source` 表示对事实负责的权威来源，不是 payload 中描述的行为主体，也不替代
+`harnessTargetId`、`turnId` 等执行坐标。
+
+Event 本身就是持久、可重放的事实，不再为它另造平行名字。wake、文件通知和
+projection invalidation 是可合并的 signal：它们只提示消费者读取权威状态，不通过
+EventSink 冒充已经发生的事实，也不能直接驱动 reducer。
 
 领域事件使用 namespace，例如：
 
@@ -235,14 +238,14 @@ deployment.completed
 review.changes_requested
 ```
 
-Baton core 只理解 event id、origin、subject/resource reference、时间、correlation、
+Baton core 只理解 event id、source、subject/resource reference、时间、correlation、
 causation、payload schema 和 provenance 等稳定信封字段，不解释领域 payload。
 
-所有 source 通过 `emit` / `EventSink` 报告事实：
+各来源通过自己的宿主入口报告 Event 草稿，宿主在可信边界盖上不可伪造的 `source`：
 
 ```text
-source emit
-  → Baton append + dedupe
+source emit draft
+  → Baton stamp source + append + dedupe
   → ack source
   → reduce / project / dispatch
   → Plugin subscriber / Hook / Policy
@@ -603,7 +606,7 @@ DevelopmentOutcome
 1. **作用域与执行位置分离**：引入 Workspace、HarnessTarget 和不可变的
    HarnessLaunchSnapshot；BatonSession 继续只承担正典逻辑历史。初期可以把当前项目隐式映射
    成一个 Workspace，不要求先做多 workspace UI。
-2. **事实与信号分离**：持久、可重放的 FactEvent 负责 reducer 和领域判断；wake、文件通知和
+2. **Event 与 Signal 分离**：持久、可重放的 Event 负责 reducer 和领域判断；wake、文件通知和
    projection invalidation 只作为可合并的 signal。signal 触发权威读取，不能直接改变状态。
 3. **可靠工作投递**：为 ActionIntent 先建立通用的 Intent/Attempt/Receipt、幂等 identity 与
    payload digest、`uncertain` 状态和 reconcile，再让 Harness Work 复用这条路径。
@@ -615,7 +618,7 @@ DevelopmentOutcome
 
 ### Loop 产品路径
 
-1. devloop 在 Harness 内提供稳定 DevelopmentOutcome；Harness 边界归一成 Baton FactEvent；
+1. devloop 在 Harness 内提供稳定 DevelopmentOutcome；Harness 边界归一成 Baton Event；
 2. 建立 PluginPackage/PluginInstance、EventSink、统一事实信封和 subscriber cursor；
 3. 支持 slash command、resource/query、BoardContribution 与 ContextContribution；
 4. 建立 Hook、Schedule，先只观察、更新 projection 或走 Manual 策略；它们只产生 Event、
@@ -629,7 +632,7 @@ DevelopmentOutcome
    Attempt 恢复流程，不另造 notify 协议。
 
 reqloop 的 `ReqLoopRun`、checkpoint 与完成条件始终归 reqloop。Baton core 在这一阶段只提供
-correlation、ResourceRef、FactEvent、Intent/Attempt/Receipt 和 projection 原语，不提前抽象
+correlation、ResourceRef、Event、Intent/Attempt/Receipt 和 projection 原语，不提前抽象
 一个所有领域都必须采用的通用 `LoopRun`。
 
 每一步都应保持 BatonSession 的 session 事件流是 Harness 会话历史真相源，并明确它与全局
@@ -654,7 +657,7 @@ Plugin/Event ledger 的关联，避免形成两份可独立修改的历史。
 12. Harness 与 Plugin 共用 Permission 语义；Board 只投影请求和结果，不持有授权。
 13. 时间触发不自动获得副作用权限，仍需经过同一 Policy 与 Action 路径。
 14. Context 只通过 Harness 支持的通道交付，不修改其原生 session 文件。
-15. FactEvent 是可重放事实；wake 与 invalidation signal 只提示读取权威状态，不能直接驱动
+15. Event 是可重放事实；wake 与 invalidation signal 只提示读取权威状态，不能直接驱动
     reducer 或形成第二份真相源。
 16. Action 与未来 Harness Work 都先持久化 Intent/Attempt 再 dispatch；无法确认目标是否接收
     时进入 `uncertain` 并对账，不盲目重试。
@@ -666,7 +669,7 @@ Plugin/Event ledger 的关联，避免形成两份可独立修改的历史。
 
 1. Plugin/Event 全局 ledger 与 BatonSession `session.jsonl` 如何关联而不形成双真相？
 2. Workspace 与项目/cwd 的初始映射、Plugin Package/Instance 和用户配置的继承关系是什么？
-3. FactEvent 的 ack、cursor、回放、乱序和 schema version，以及 signal 的合并/补扫策略如何
+3. Event 的 ack、cursor、回放、乱序和 schema version，以及 signal 的合并/补扫策略如何
    定义？
 4. PermissionPolicy 的 scope 继承与覆盖规则如何跨 requester、operation、workspace、环境和
    session 表达？

@@ -23,7 +23,7 @@
 
 一条用户输入是一个 **Input** 概念，**身份即它的 `messageId`（`m_`）**：durable 形态是事件流里的 `user_message` 事件，live 形态是 controller 的 `InputRecord`（与 `TurnRecord` 对称），两者同一个 id，不另造平行身份。`InputRecord` 带显式 `status` 走上表各阶段：submit → `queued`，出队 → `admitted`，steer 成功 → `accepted_steer`，召回 → `recalled`，turn 正常收口 → `finalized`，被 Esc 打断 → `interrupted`。`controller.inputs` 暴露在世 Input 的只读快照，让 recall / interrupt / steer 的迁移是对同一 Input 的状态查询，而非散落的时序特判。历史回溯（§2.4）读的是事件流里已 finalized 的同一批 Input。
 
-概念叫 **Input** 而非 UserInput 是有意的：input 有**来源**维度（对称于 Turn 的 origin）。
+概念叫 **Input** 而非 UserInput 是有意的：input 有**来源**维度。
 当前只有 `user`（composer 键入）。未来事件驱动的工作不会作为可召回的 `monitor Input` 直接
 塞进队列，而是先形成持久 `HarnessWorkIntent`；经过 Policy、路由和冲突处理并真正 admit 到
 BatonSession 后，才物化为 Input/Turn。这样自动工作复用可靠调度路径，同时不污染用户输入的
