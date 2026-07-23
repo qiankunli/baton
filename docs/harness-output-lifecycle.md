@@ -122,7 +122,7 @@ completed 但整个 turn 零产出，说明 prompt 在进模型前被丢弃（ho
 
 ## 6. 代码与测试锚点
 
-- `src/events/types.ts`：Event source、事件 kind 全集、三态 patch、终态词汇（含 declined 一等成员）、`StallNotice`（L1）。
+- `src/event/types.ts`：Event identity/scope/source、事件 kind 全集、三态 patch、终态词汇（含 declined 一等成员）、`StallNotice`（L1）。
 - `src/adapters/types.ts`：`HarnessAdapter` 终态硬约定、`AdapterCapabilities`、`Reconcilable` / `ReconcileVerdict` / `isReconcilable`（L2）。
 - `src/adapters/codex/adapter.ts`：item/turn 通知归一、`finishTurn`/`failTurn` 终态合成、空回合上报、悲观 failed 映射、`reconcile` + `mapThreadStatus`（L2，`thread/read.status`）。
 - `src/adapters/claude/adapter.ts`：SDK 消息流归一、error 流、cancel 映射 interrupt；未声明 reconcile，回落 L1。

@@ -9,30 +9,33 @@ import {
   type HarnessAdapter,
   type ApprovalRoute,
   type EffortOption,
-  type InteractionResponse,
+  type InteractionContext,
+  type InteractionHandler,
   type ModelOption,
   type HarnessSessionRef,
-  type RequestHandler,
-  type RequestOutcome,
   type SteerReceipt,
 } from "../adapters/types.ts";
 import { buildHarnessCatchUpContext } from "../context/mention.ts";
 import type { DiagnosticSink } from "../diagnostics.ts";
 import { diagnosticError } from "../diagnostics.ts";
-import { newId } from "../events/ids.ts";
+import { newId } from "../event/ids.ts";
 import {
-  isRequestEventKind,
   type AnyEventDraft,
   type AnyEventEnvelope,
   type AnyNewEvent,
   type EventSource,
   type PromptBlock,
   type StopReason,
-} from "../events/types.ts";
+} from "../event/types.ts";
 import {
   createHarnessLaunchSnapshot,
   type HarnessTarget,
 } from "../harness/target.ts";
+import type {
+  Interaction,
+  InteractionDraft,
+  InteractionResolution,
+} from "../interaction/types.ts";
 import type { SessionHandle } from "../store/store.ts";
 
 interface HarnessSlot {
@@ -42,9 +45,9 @@ interface HarnessSlot {
   starting?: Promise<void>;
   /**
    * harness **setup 阶段**（slot 创建 → open 完成）由哪个 driven turn 触发。
-   * setup 是 turn 生命周期之外的活动窗口：adapter 可能阻塞征询用户（hook trust）、
-   * 拉模型目录、失败自清资源；其间发出的 request 事件天然无 turnId，一律用本字段
-   * 归属回触发冷启动的 turn（appendEvent 唯一入口补齐），不依赖 adapter 首个 await 时序。
+   * setup 是 turn 生命周期之外的活动窗口：adapter 可能打开 Interaction（hook trust）、
+   * 拉模型目录、失败自清资源；没有显式 turnId 的 setup Interaction 用本字段归属回
+   * 触发冷启动的 turn，不依赖 adapter 首个 await 时序。
    */
   setupTurnId?: string;
   freshNative: boolean;
@@ -154,7 +157,8 @@ export interface InputSnapshot {
 export type SubmitOutcome = "completed" | "recalled";
 
 /**
- * Control：与 Input / Response 并列的第三种用户信号（见 user-input-lifecycle.md §1）。
+ * Control：与 Input / Interaction resolution 并列的第三种用户信号
+ * （见 user-input-lifecycle.md §1）。
  * 不携带内容、不到达 model——是对 turn **生命周期**的命令，必须 out-of-band 够到正在跑的
  * turn（不进 queue，否则会排在它要打断的 turn 后面而死锁）。当前唯一 kind 是 `interrupt`
  * （Esc）；pause / abort-bash / shutdown 等作为新 kind 加入时按 kernel §5 演进。
@@ -171,9 +175,9 @@ export type SteerOutcome =
   | { effective: "steer" }
   | { effective: "follow_up"; outcome: Promise<SubmitOutcome> };
 
-/** controller 注入给 adapter 构造器的交互回调（见注入点 slotFor）：统一的 Request→Response 通道 */
+/** Controller 注入给 Adapter 的宿主能力；Interaction 必须经可信边界打开。 */
 export interface InteractionHandlers {
-  requestHandler: RequestHandler;
+  interactionHandler: InteractionHandler;
   diagnostic: DiagnosticSink;
 }
 
@@ -233,42 +237,95 @@ export class Controller {
   /** 队列策略指针：当前唯一 driven turn（本轮 driven ≤ 1；见类 docstring） */
   private activeDrivenTurnId?: string;
   /**
-   * 未决 request 的应答通道：requestId → resolver（各类 harness request 统一路由）。
-   * **只有应答通道，没有状态**——pending request 的真相源是事件流（adapter 先 emit
-   * *_request 再 await 回调，UI 从 reduced state 投影），内存只保留唤醒 adapter 的 resolve。
-   * 崩溃后新进程没有 resolver，open 时的 crash recovery 会对 reduced pending 一律补
-   * resolved(cancelled)，两侧语义自洽。
+   * 未决 Interaction 的活跃交付通道。状态真相仍是 Event 流；这里仅持有当前进程里
+   * 等待结果的 Harness continuation，崩溃恢复由 `interaction.resolved(recovery)` 收口。
    */
-  private readonly pendingRequests = new Map<
+  private readonly pendingInteractions = new Map<
     string,
-    { turnId?: string; resolve: (o: RequestOutcome) => void }
+    {
+      interaction: Interaction;
+      slot: HarnessSlot;
+      turnId?: string;
+      resolve: (resolution: InteractionResolution) => void;
+    }
   >();
-  /** requestId → turnId：appendEvent 见 *_request 时记下，requestHandler 消费，供 cancel-cascade 按 turn 归属 */
-  private readonly requestTurns = new Map<string, string>();
 
   constructor(private readonly options: ControllerOptions) {}
 
-  /** 注入给 adapter 的统一 request 回调：注册 resolver 后挂起，等宿主经 respond() 应答或 turn 收口级联取消 */
-  readonly requestHandler: RequestHandler = (request) =>
-    new Promise((resolve) => {
-      // turnId 来自 *_request 事件（appendEvent 先落盘再触发本 await），供 cancel-cascade 归属
-      const turnId = this.requestTurns.get(request.requestId);
-      this.requestTurns.delete(request.requestId);
-      this.pendingRequests.set(request.requestId, { turnId, resolve });
+  /**
+   * 用户解决一个未决 Interaction。先把用户事实持久化，再唤醒 Harness；没有活跃 continuation
+   * 时返回 false，UI 据此提示 stale，而不是把响应写进一个无人消费的内存通道。
+   */
+  resolveInteraction(interactionId: string, resolution: InteractionResolution): boolean {
+    const entry = this.pendingInteractions.get(interactionId);
+    if (!entry) return false;
+    if (resolution.kind !== "cancelled" && resolution.kind !== entry.interaction.kind) return false;
+    return this.settleInteraction(interactionId, resolution, { type: "user" });
+  }
+
+  private openHarnessInteraction(
+    harnessTargetId: string,
+    draft: InteractionDraft,
+    context?: InteractionContext,
+  ): Promise<InteractionResolution> {
+    const slot = this.slots.get(harnessTargetId);
+    if (!slot) return Promise.reject(new Error(`unknown harness target for interaction: ${harnessTargetId}`));
+    const active = this.activeDriven();
+    const turnId =
+      context?.turnId ?? (active?.slot === slot ? active.turnId : slot.setupTurnId);
+    const interaction: Interaction = {
+      ...draft,
+      interactionId: newId("ix"),
+      requester: { type: "harness", harnessTargetId },
+    };
+
+    return new Promise((resolve, reject) => {
+      this.pendingInteractions.set(interaction.interactionId, {
+        interaction,
+        slot,
+        turnId,
+        resolve,
+      });
+      try {
+        this.appendEvent(
+          slot,
+          {
+            kind: "interaction.opened",
+            harness: slot.adapter.harness,
+            ...(turnId ? { turnId } : {}),
+            payload: interaction,
+            ...(context?.raw !== undefined ? { raw: context.raw } : {}),
+          },
+          { type: "harness", harnessTargetId },
+        );
+      } catch (error) {
+        this.pendingInteractions.delete(interaction.interactionId);
+        reject(error);
+        return;
+      }
       this.changed();
     });
+  }
 
-  /**
-   * 宿主应答一个未决 request（统一入口，response 自带 `requestId` 与
-   * `kind` 路由）。false = requestId 不在挂起集合（已被应答、或事件流里的 pending 来自已死
-   * 进程且无 resolver）——UI 据此提示 stale 而不是静默吞掉。事件留痕（*_resolved）由被唤醒
-   * 的 adapter 负责，这里不落事件。
-   */
-  respond(response: InteractionResponse): boolean {
-    const entry = this.pendingRequests.get(response.requestId);
+  private settleInteraction(
+    interactionId: string,
+    resolution: InteractionResolution,
+    source: EventSource,
+  ): boolean {
+    const entry = this.pendingInteractions.get(interactionId);
     if (!entry) return false;
-    this.pendingRequests.delete(response.requestId);
-    entry.resolve(response);
+    this.appendEvent(
+      entry.slot,
+      {
+        kind: "interaction.resolved",
+        harness: entry.slot.adapter.harness,
+        ...(entry.turnId ? { turnId: entry.turnId } : {}),
+        payload: { interactionId, resolution },
+      },
+      source,
+    );
+    this.pendingInteractions.delete(interactionId);
+    entry.resolve(resolution);
     return true;
   }
 
@@ -564,7 +621,8 @@ export class Controller {
   }
 
   /**
-   * 施加一个 Control 信号（Input / Response 之外的第三种用户信号，见 `Control`）。当前唯一
+   * 施加一个 Control 信号（Input / Interaction resolution 之外的第三种用户信号，见
+   * `Control`）。当前唯一
    * kind 是 `interrupt`（Esc）——打断当前 driven turn。新增 kind 时在此按 kind 分派。
    */
   async control(signal: Control): Promise<void> {
@@ -861,16 +919,6 @@ export class Controller {
    * 单通道保证，不依赖"是否有活跃 turn"。
    */
   private appendEvent(slot: HarnessSlot, ev: AnyEventDraft, source: EventSource): void {
-    // harness setup 阶段（冷启动）也可能阻塞征询用户（当前是 Codex hook trust；将来
-    // 可能是登录确认等 permission / question）。此时 adapter 尚无 HarnessSessionRef，
-    // 但活动仍归属触发冷启动的 driven turn；在唯一事件入口按"是不是 request"统一补归属
-    // ——不按具体 kind 特判，让 requires_action、cancel-cascade 与普通 turn 内 request
-    // 走同一条生命周期，新增 request kind 或新 harness 的 setup 交互都零改动。
-    if (isRequestEventKind(ev.kind) && !ev.turnId) {
-      const active = this.activeDriven();
-      const turnId = active?.slot === slot ? active.turnId : slot.setupTurnId;
-      if (turnId) ev = { ...ev, turnId };
-    }
     const envelope = this.options.session.append({
       ...ev,
       source,
@@ -897,12 +945,6 @@ export class Controller {
         // 终态必带 turnId，由契约测试钉住）。
         if (envelope.turnId) this.finalize(envelope.turnId, p.stopReason);
       }
-    } else if (isRequestEventKind(envelope.kind) && envelope.turnId) {
-      // 记 request→turn 归属：requestHandler 随后（同步 await 前）消费，供 cancel-cascade。
-      // 所有 request payload 均带 requestId（Request↔Response 轴的契约）；kind 谓词
-      // 不足以让 TS 收窄判别联合的 payload，此处显式断言该契约字段。
-      const { requestId } = envelope.payload as { requestId: string };
-      this.requestTurns.set(requestId, envelope.turnId);
     }
     // append 已同步广播给投影；普通流式事件不能再走 controller 通知，否则每个 chunk
     // 都会重建两次完整 view。终态对 controller 私有台账的变更由 finalize 自己通知。
@@ -922,16 +964,18 @@ export class Controller {
     record.status = "finalized";
     record.stopReason = stopReason;
 
-    // cancel-cascade：本 turn 仍挂起的 request 随收口一并了结，绝不留悬挂 waiter（否则 adapter 的
-    // await 永挂、pendingRequests 泄漏、reduce 的 requires_action 残留到重开）。参考 codex
-    // clear_pending_waiters→Abort、opencode interrupt 的 ensuring(pending.delete)。adapter 收到
-    // cancelled 即发 *_resolved(cancelled)（→ reduce 清 pending）并回 harness abort/deny。
+    // cancel-cascade：本 turn 仍挂起的 Interaction 随收口一并了结，绝不留悬挂 continuation。
+    // Controller 先持久化 cancelled resolution，再唤醒 Adapter；参考 codex
+    // clear_pending_waiters→Abort、opencode interrupt 的 ensuring(pending.delete)。
     // 顺序天然对：finalize 发生在 adapter.cancel 之后（先中断 turn，再收 pending），不会让取消以
     // model 可见的 tool rejection 抢在 turn 中断之前冒出来。
-    for (const [requestId, entry] of this.pendingRequests) {
+    for (const [interactionId, entry] of this.pendingInteractions) {
       if (entry.turnId !== turnId) continue;
-      this.pendingRequests.delete(requestId);
-      entry.resolve({ kind: "cancelled", requestId });
+      this.settleInteraction(
+        interactionId,
+        { kind: "cancelled", reason: "turn" },
+        { type: "baton" },
+      );
     }
 
     // 输入实体随 turn 收口迁移终态：cancelled → interrupted（S3：不静默丢、可查、不自动重发），
@@ -1041,7 +1085,8 @@ export class Controller {
     if (!slot) {
       const target = this.targetFor(harnessTargetId);
       const adapter = this.options.createAdapter(target.harness, {
-        requestHandler: this.requestHandler,
+        interactionHandler: (interaction, context) =>
+          this.openHarnessInteraction(target.id, interaction, context),
         diagnostic: (entry) =>
           this.options.session.diagnostic({ ...entry, harnessTargetId: target.id }),
       });
@@ -1100,7 +1145,7 @@ export class Controller {
             ...(effort ? { effort } : {}),
           });
         } finally {
-          created.setupTurnId = undefined; // setup 阶段结束：此后的无 turnId request 不再归属该 turn
+          created.setupTurnId = undefined; // setup 阶段结束：此后的无 turnId Interaction 不再归属该 turn
         }
       })();
       // starting 的消费方（ensureHarness）可能晚一拍才 await：先挂空 handler 防

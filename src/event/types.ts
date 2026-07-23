@@ -2,7 +2,9 @@
 // tool_call_update upsert），wire 协议不必是 ACP——adapter 负责把各家原生协议归一到这里。
 // baton 自有扩展事件用 _baton_ 前缀，遵守 ACP 的扩展值约定。见 docs/design.md §5.2。
 
-export const ENVELOPE_VERSION = 2 as const;
+import type { Interaction, InteractionResolved } from "../interaction/types.ts";
+
+export const ENVELOPE_VERSION = 3 as const;
 
 /**
  * 事实来源：回答“谁对这条 Event 负责”，不是 payload 中行为主体的角色，也不承载执行坐标。
@@ -17,6 +19,11 @@ export type EventSource =
   | { type: "harness"; harnessTargetId: string }
   | { type: "plugin"; pluginInstanceId: string }
   | { type: "schedule"; scheduleId: string };
+
+/** Event 只属于一个权威 ledger；scope 是归属与查询键，不是 payload 中资源的授权范围。 */
+export type EventScope =
+  | { type: "session"; batonSessionId: string }
+  | { type: "workspace"; workspaceId: string };
 
 export type SessionRunState = "running" | "idle" | "requires_action";
 
@@ -182,56 +189,8 @@ export interface PlanUpdate {
 }
 
 /**
- * 审批选项的两根**正交**轴（同 §6 展示轴的双轴教训：混进单一 union 就会让两件事争用
- * 一个状态位）。曾经的单字段 `kind` 把极性与范围压成一维，直接导致 codex 的
- * "永久拉黑某 host"（network amendment action=deny）被映射成 `allow_always`——
- * 最危险的选项长得最安全。
- *
- * **两轴都只是渲染提示**（定色、排序、确认力度），**不是授权语义的真相**：
- * 授权"作用于什么"（本次调用 / 该工具 / 命令前缀 / host / 同一批文件）是 harness
- * 方言，闭不了包——codex 自己的 `acceptForSession` 对 command 是"session 审批缓存"、
- * 对 file change 是"同一批文件"。作用对象只由 `name` 承载（harness 原话，如
- * "Allow and remember: make -C devloop bump-version"）。**UI 不得用两轴合成标签**，
- * 合成出来的 "Allow · persistent" 必然丢掉作用对象。
- */
-export interface PermissionOption {
-  optionId: string;
-  /** harness 原话标签——**唯一权威的语义来源**，含作用对象。UI 展示它，不要重造。 */
-  name: string;
-  /** 极性：闭合、跨 harness 稳定。 */
-  polarity: "allow" | "reject";
-  /**
-   * 这次决定生效多久：闭合三档。**只表达"多久"，不表达"作用于什么"**——
-   * 有意不叫 `scope`：授权的 scope 是「时间 × 作用对象」两轴，这里只是时间那根，
-   * 叫 scope 会招人把命令前缀 / host 塞进来，等于把刚拆开的东西焊回去。
-   * 也不叫 `persistence`：那个词在软件语境里默认指落盘，会被读成存储机制。
-   */
-  lifetime: "once" | "session" | "persistent";
-}
-
-// Request ↔ Response 交互轴（harness 询问用户 ↔ 用户答复，见 harness-interaction-design.md
-// §3.5）：permission / question / hook_trust / (elicitation) 是同轴不同 `kind`。各 request contract 各自
-// 独立（payload/终态不复用），只共享 requestId 路由与统一 respond()——不合成万能字段。
-// `kind` 是 InteractionRequest 联合的判别式（与 envelope kind 冗余但让 request 可独立传递）。
-export interface PermissionRequest {
-  kind: "permission";
-  requestId: string;
-  /** 审批提示文案本身；不修改任何 tool call 的展示标题（ACP v2 的教训） */
-  title: string;
-  description?: string;
-  toolCallId?: string;
-  options: PermissionOption[];
-}
-
-export interface PermissionResolved {
-  requestId: string;
-  outcome: "selected" | "cancelled" | (string & {});
-  optionId?: string;
-}
-
-/**
  * 自动审批（auto-review）回执：reviewer 替用户对某操作作出的决策，供诚实留痕（见
- * docs/approval-lifecycle.md §3）。与 permission_request/resolved 的交互待决流正交——
+ * docs/approval-lifecycle.md §3）。与 Interaction 的交互待决流正交——
  * auto-review 开启时审批卡不触发，baton 只观测这条回执。归一自 codex
  * `item/autoApprovalReview/*`（**UNSTABLE**）：字段全部按可选容忍，原始形状保留在 envelope.raw。
  *
@@ -260,68 +219,6 @@ export interface ApprovalReviewUpdate {
   rationale?: string;
   /** 被审操作类型：command / execve / applyPatch / networkAccess / mcpToolCall 等 */
   actionType?: string;
-}
-
-export interface QuestionOption {
-  label: string;
-  description: string;
-  preview?: string;
-}
-
-export interface QuestionPrompt {
-  questionId: string;
-  header: string;
-  question: string;
-  options?: QuestionOption[];
-  multiSelect?: boolean;
-  allowOther?: boolean;
-  secret?: boolean;
-}
-
-export interface QuestionRequest {
-  kind: "question";
-  requestId: string;
-  questions: QuestionPrompt[];
-}
-
-export interface HookTrustCandidate {
-  key: string;
-  source: string;
-  sourcePath: string;
-  trustStatus: "untrusted" | "modified";
-  command: string;
-  matcher?: string;
-  pluginId?: string;
-  currentHash?: string;
-  handlerType?: string;
-  timeoutSec?: number;
-  statusMessage?: string;
-}
-
-/**
- * harness 启动前发现 hooks 尚未被信任：询问用户是否信任当前精确定义。Baton 按
- * definition hash 持久化，定义不变时后续进程自动放行；这是启动信任，不是单次
- * 工具执行权限，故不复用 PermissionRequest。
- */
-export interface HookTrustRequest {
-  kind: "hook_trust";
-  requestId: string;
-  harnessName: string;
-  hooks: HookTrustCandidate[];
-}
-
-/** InteractionRequest：harness→用户 request 的判别联合（按 `kind` 收窄）。elicitation 待接入 */
-export type InteractionRequest = PermissionRequest | QuestionRequest | HookTrustRequest;
-
-export interface QuestionResolved {
-  requestId: string;
-  outcome: "answered" | "cancelled" | (string & {});
-  answers?: Record<string, string[]>;
-}
-
-export interface HookTrustResolved {
-  requestId: string;
-  outcome: "trusted" | "skipped" | "cancelled" | (string & {});
 }
 
 /** harness 声明的可用 slash command（形状对齐 ACP available command） */
@@ -448,13 +345,9 @@ export type EventPayloadMap = {
   tool_call_update: ToolCallUpdate;
   tool_call_content_chunk: ToolCallContentChunk;
   plan_update: PlanUpdate;
-  permission_request: PermissionRequest;
-  permission_resolved: PermissionResolved;
+  "interaction.opened": Interaction;
+  "interaction.resolved": InteractionResolved;
   approval_review_update: ApprovalReviewUpdate;
-  question_request: QuestionRequest;
-  question_resolved: QuestionResolved;
-  hook_trust_request: HookTrustRequest;
-  hook_trust_resolved: HookTrustResolved;
   usage_update: UsageUpdate;
   available_commands_update: AvailableCommandsUpdate;
   config_option_update: ConfigOptionUpdate;
@@ -467,29 +360,21 @@ export type EventPayloadMap = {
 
 export type EventKind = keyof EventPayloadMap;
 
-/**
- * Request↔Response 交互轴（kernel §6）的 request 事件 kinds：harness 阻塞征询用户、
- * 等待带 requestId 的 Response。turn 归属、requires_action 派生、setup 阶段补归属等
- * 生命周期逻辑按"是不是 request"判断，不逐个枚举 kind——新增 kind 只扩这张表。
- */
-export const REQUEST_EVENT_KINDS = ["permission_request", "question_request", "hook_trust_request"] as const;
-
-export type RequestEventKind = (typeof REQUEST_EVENT_KINDS)[number];
-
-export function isRequestEventKind(kind: EventKind): kind is RequestEventKind {
-  return (REQUEST_EVENT_KINDS as readonly string[]).includes(kind);
-}
-
 /** session.jsonl 每行一条。payload 供渲染/检索/摘要，raw 保真原始 wire 消息。 */
 export interface EventEnvelope<K extends EventKind = EventKind> {
   v: typeof ENVELOPE_VERSION;
+  /** Event 事实身份；定序与游标仍使用 ledger-local seq。 */
+  eventId: string;
   /** ISO 8601 */
   ts: string;
-  /** session 内单调递增，reduce 定序靠它（不靠 ID、不靠 ts） */
+  /** ledger 内单调递增，reduce 定序靠它（不靠 ID、不靠 ts） */
   seq: number;
-  batonSessionId: string;
+  /** Event 的唯一权威 ledger。 */
+  scope: EventScope;
   /** 事实来源；与执行坐标正交。 */
   source: EventSource;
+  /** 本 Event 的直接上游 Event；不表示 ledger 顺序或领域归属。 */
+  parentEventId?: string;
   /** 事件关联的 harness 执行上下文；Baton / user / Plugin 事实可缺省。 */
   harness?: string;
   /** 实际投递/产出事件的配置目标；Baton 自身事件或未进入 controller 的外部事实可缺省。 */
@@ -511,10 +396,10 @@ export type AnyEventEnvelope = { [K in EventKind]: EventEnvelope<K> }[EventKind]
 /** NewEvent 的判别联合版本，事件 sink 的入参类型 */
 export type AnyNewEvent = { [K in EventKind]: NewEvent<K> }[EventKind];
 
-/** append 时由 Store 补齐 v/ts/seq/batonSessionId */
+/** append 时由 Store 补齐 v/eventId/ts/seq/scope */
 export type NewEvent<K extends EventKind = EventKind> = Omit<
   EventEnvelope<K>,
-  "v" | "ts" | "seq" | "batonSessionId"
+  "v" | "eventId" | "ts" | "seq" | "scope"
 >;
 
 /**

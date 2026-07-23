@@ -6,7 +6,9 @@
 
 ## 1. 理念与概念
 
-本文聚焦 **permission**——它是 Request ↔ Response 交互轴（harness 询问用户 ↔ 用户答复，见 `harness-interaction-design.md` §3.5）里的一个 `kind`；choice(question) / elicitation 是同轴的另两个 kind，各自独立。本文的 ApprovalReview 则是 `Response{kind:permission}` 的**委托代批回执**变体。
+本文聚焦 **permission**——它是 Interaction（见 `harness-interaction-design.md` §3.5）的一个
+`kind`；question / hook_trust / 未来的 elicitation 复用同一生命周期，但各自保持 typed
+payload 和 resolution。ApprovalReview 则是**未打开 Interaction 时**观察到的委托代批审计事实。
 
 原始需求不是“弹个确认框”，而是保证用户始终清楚：**谁批准了什么、以什么依据、最终执行到哪一步**。
 
@@ -21,16 +23,16 @@
 
 | 状态 | owner | 语义 |
 |---|---|---|
-| requested | Adapter | harness 请求执行某操作，等待决策 |
-| pending（card） | controller + Store | 已 emit `permission_request`，UI 出审批卡等用户；卡不可 dismiss |
-| resolved | Adapter + Store | 决策作出（approve/deny），`permission_resolved` 留痕 |
+| drafted | Adapter | Harness 请求执行某操作，Adapter 提交 permission draft |
+| opened / pending（card） | Controller + Store | Controller 签发 `interactionId` 并 append `interaction.opened`；UI 出审批卡等用户 |
+| resolved | Controller + Store | 决策作出，`interaction.resolved` 留痕后解开 Adapter await |
 | auto-reviewed | Adapter + Store | reviewer 自动决策，带 risk / authorization / rationale 的权威回执 |
 
 ### 各 harness 审批现状（新 harness 接入时扩展本表）
 
 | 审批维度 | baton 统一入口 | Claude Code | Codex | 现状 |
 |---|---|---|---|---|
-| 交互审批（请求→决策→留痕） | `permission_request` / `approvalHandler` / `permission_resolved` | SDK `canUseTool` 回调 | app-server 审批请求 | 已支持；两家归一到同一对事件 |
+| 交互审批（打开→决策→留痕） | `Interaction{kind:permission}` + `interaction.opened/resolved` | SDK `canUseTool` 回调 | app-server 审批请求 | 已支持；两家归一到同一生命周期 |
 | 审批选项 | `PermissionOption[]`（含 `always`） | 仅当 SDK 给出 permission suggestions 才提供 `always` | `availableDecisions` | 已支持；baton 按 harness 实际候选映射，不自造 always |
 | 权限模式 | 尚无统一入口 | SDK 有 default / acceptEdits / plan / bypassPermissions | `approvals_reviewer` + sandbox 策略 | 未统一暴露；各家模式尚未进 baton 配置面 |
 | 自动审批 / 委托 | 跟随 harness 默认 + 权威回执 | 无逐条 reviewer；acceptEdits / bypass 是另一形态的委托（模式而非 reviewer） | `thread/start.approvalsReviewer` + `item/autoApprovalReview/*` | Codex 自身默认 `user`；事件 UNSTABLE |
@@ -40,7 +42,14 @@
 
 ### 2.1 交互审批
 
-Adapter emit `permission_request` → controller 的 `approvalHandler` 注册 resolver（pending 真相源是事件流，不在 handler 里另存状态）→ chat-tui 渲染审批卡 → 用户经 `resolveApproval` 决策 → Adapter 的 await 点返回 → `permission_resolved` 落盘留痕。
+Adapter 向 `InteractionHandler` 提交 permission draft → Controller 签发 `interactionId`、登记
+waiter 并 append `interaction.opened` → reducer 派生 `requires_action`，chat-tui 渲染审批卡 →
+用户经 `resolveApproval` 调用 `Controller.resolveInteraction` → Controller append
+`interaction.resolved(source:user)` 并解开 Adapter await → Adapter 将选择映射回 Harness。
+
+Interaction 的 durable 真相源是事件流；Controller 的 waiter 只是 live 回执通道。重启时没有
+live waiter，recovery 会将 dangling Interaction 明确 resolve 为 cancelled，而不是复活一张
+无法作答的卡。
 
 ### 2.2 审批人跟随 codex，不由 baton 定默认
 
@@ -65,7 +74,7 @@ Adapter emit `permission_request` → controller 的 `approvalHandler` 注册 re
 ### 3.1 目标与语义边界
 
 - **目标**：把 auto-review 从“静默”变“留痕”——approve 与 deny **都**产生权威回执，携带目标操作、风险等级、授权等级与理由。
-- **取代而非共存**：Codex 的 `review.status ∈ {inProgress, approved, denied, aborted}`，**没有“升级给用户”这一档**（`userAuthorization` 是 reviewer 评估的授权等级，不是回退给用户）。因此开 auto-review = 该 turn 的审批卡**完全不触发**，baton 只观测回执。依据：app-server README 的 `approvalsReviewer` 与 `item/autoApprovalReview/*` 段（均标 **UNSTABLE**）。
+- **取代而非共存**：Codex 的 `review.status ∈ {inProgress, approved, denied, aborted}`，**没有“升级给用户”这一档**（`userAuthorization` 是 reviewer 评估的授权等级，不是回退给用户）。因此开 auto-review = 该 turn 的 permission Interaction **完全不打开**，baton 只观测回执；不伪造不存在的 opened/resolved 生命周期。依据：app-server README 的 `approvalsReviewer` 与 `item/autoApprovalReview/*` 段（均标 **UNSTABLE**）。
 - **委托是 opt-in、可撤回**：缺省跟随 codex（其自身默认 `user`）；`codexApprovalReviewer: auto_review` 显式委托，改回 `user` 或删掉该项即撤回。
 
 ### 3.2 事件归一
@@ -102,9 +111,10 @@ codex 报告生效 reviewer 为委托时，Harness Status 常驻 `approvals:auto
 ## 5. 代码与测试锚点
 
 - `src/adapters/codex/adapter.ts`：reviewer 下发与生效值回吐（`approvalRoute`）、`autoApprovalReview/*` 消费、归一与 §2.3 启发式 notice 收敛。
-- `src/adapters/types.ts`：`ApprovalHandler` / `PermissionRequest` 交互审批契约。
-- `src/session/controller.ts`：`approvalHandler` resolver 注册、pending 事件流真相源。
-- `src/events/types.ts`：`permission_request` / `permission_resolved` / `approval_review_update`。
+- `src/interaction/types.ts`：permission draft / resolution 与统一 Interaction identity/requester。
+- `src/adapters/types.ts`：`InteractionHandler` 宿主交互契约。
+- `src/session/controller.ts`：Interaction identity、opened/resolved 与 waiter 生命周期。
+- `src/event/types.ts`：`interaction.opened` / `interaction.resolved` / `approval_review_update`。
 - `src/tui/protocol.ts`：审批卡、review 回执与 Harness Status 委托提示投影。
 - chat-tui `src/types/index.ts`：`TranscriptBlockStatus.warning`；`components/transcript.tsx` 的状态图标/配色。
 - `tests/approval-contract.test.ts` 等：审批契约与回执归一。

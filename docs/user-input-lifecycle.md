@@ -29,12 +29,12 @@
 BatonSession 后，才物化为 Input/Turn。这样自动工作复用可靠调度路径，同时不污染用户输入的
 recall 语义，见 `baton-v2.md` §2。
 
-**三种用户信号：Input / Response / Control。** Input（内容，驱动 / 加入 turn）之外，用户还发两种信号，三者同为"用户→会话信号"但不同型（状态机与落点都不同），不并进一个扁平 Input（参考 codex `Op`：UserInput / ExecApproval / Interrupt 是同一枚举的兄弟；pi `RpcCommand`）：
+**三种用户信号：Input / Interaction resolution / Control。** Input（内容，驱动 / 加入 turn）之外，用户还发两种信号，三者同为"用户→会话信号"但不同型（状态机与落点都不同），不并进一个扁平 Input（参考 codex `Op`：UserInput / ExecApproval / Interrupt 是同一枚举的兄弟；pi `RpcCommand`）：
 
-- **Response**（内容，对某个 harness Request 的答复，`refersTo` 一个 request）：走 `respond()` **就地解阻**当前 turn 的 pending request，不进 queue（见 harness-interaction-design.md §3.5）。
+- **Interaction resolution**（回答一个带稳定 `interactionId` 的已打开交互）：走 `resolveInteraction()` **就地解阻**等待方，不进 queue（见 harness-interaction-design.md §3.5）。
 - **Control**（无内容，对 turn **生命周期**的命令）：`controller.control(signal)`，当前唯一 kind 是 `interrupt`（Esc）；`pause` / `abort-bash` / `shutdown` 等作为新 kind 时按 kernel §5 演进（届时把 `Control` 从单例升为判别联合）。Control 必须 **out-of-band** 够到正在跑的 turn——不进 queue，否则会排在它要打断的那个 turn 后面而死锁。
 
-**cancel-cascade（Control:interrupt 与 pending Response 对账）：** 打断一个 turn 时，该 turn 上仍挂起的 Response（pending request）随收口一并了结——controller 在 `finalize` 里用 `{kind:"cancelled"}` 级联解开每个 resolver，adapter 发 `*_resolved(cancelled)` 留痕、并回 harness abort/deny。这样中断不留悬挂 waiter、不残留 `requires_action`（否则浮层会挂到会话重开）；**live cancel 与 crash-recovery 从此走同一套 "dangling → cancelled" 语义**。参考 codex `clear_pending_waiters` → `unwrap_or(Abort)`（且 abort-task-first）、opencode interrupt 的 `ensuring(pending.delete)`。
+**cancel-cascade（Control:interrupt 与 pending Interaction 对账）：** 打断一个 turn 时，该 turn 上仍挂起的 Interaction 随收口一并了结——Controller append `interaction.resolved`，resolution 为 `{kind:"cancelled", reason:"turn"}`，再级联解开每个 waiter；Adapter 据此回 Harness abort/deny。这样中断不留悬挂 waiter、不残留 `requires_action`（否则浮层会挂到会话重开）；**live cancel 与 crash-recovery 从此走同一套 "pending → resolved" 语义**。参考 codex `clear_pending_waiters` → `unwrap_or(Abort)`（且 abort-task-first）、opencode interrupt 的 `ensuring(pending.delete)`。
 
 Turn 是一段有始有终的 harness 活动，不等于“一条用户消息”：一个 driven turn 包含初始 prompt，也可能包含零到多条 same-turn steer。
 
@@ -172,9 +172,9 @@ baton 保证 effective delivery 如实：只有 harness 确认接受才记录 st
 
 - `src/tui/protocol.ts`：busy submit 的 steer / follow-up 选择，Esc intent 到 controller 的映射；`recallQueued` / `historyPrev` / `historyNext` 与历史游标 / stash / 事件流种入。
 - chat-tui `components/chat-shell.tsx`（↑/↓ 三级分派）、`components/composer.tsx`（`cursorAtBoundary` 边界门槛）、`protocol/index.ts`（`historyPrev` / `historyNext` 契约）。
-- `src/session/controller.ts`：一等 `InputRecord`（身份即 messageId + status）、`inputs` 快照、队列、active driven turn、steer 降级、cancel 与 finalize 的状态迁移；`Control` 类型 + `control(signal)`（interrupt 为首个 kind）；finalize 里 pending request 的 cancel-cascade。
+- `src/session/controller.ts`：一等 `InputRecord`（身份即 messageId + status）、`inputs` 快照、队列、active driven turn、steer 降级、cancel 与 finalize 的状态迁移；`Control` 类型 + `control(signal)`（interrupt 为首个 kind）；finalize 里 pending Interaction 的 cancel-cascade。
 - `tests/input-lifecycle.test.ts`：Input id / status 迁移契约（queued/admitted/accepted_steer/recalled/interrupted）。
-- `tests/cancel-cascade.test.ts`：Control:interrupt 打断时 pending Response 级联 cancelled、不留悬挂 requires_action。
+- `tests/cancel-cascade.test.ts`：Control:interrupt 打断时 pending Interaction 级联 cancelled、不留悬挂 requires_action。
 - `src/adapters/codex/adapter.ts`：`turn/steer` / `turn/interrupt` 原生映射。
 - `src/adapters/claude/adapter.ts`：当前只声明普通 prompt，cancel 映射 SDK interrupt。
 - `tests/steer.test.ts`、`tests/codex-steer.test.ts`：same-turn steer 与降级契约。

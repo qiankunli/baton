@@ -71,17 +71,17 @@ baton 是一个 terminal-native 的统一 coding agent 会话：用户始终在 
 
 | 交互 | 应有的统一语义 | Claude Code | Codex | 当前状态 |
 |---|---|---|---|---|
-| 工具 / 文件 / 命令授权 | `permission_request` → option → `permission_resolved` | SDK `canUseTool` | `*/requestApproval` | 两者已闭环；Claude 当前仅 allow once / deny，Codex 保留四种决策 |
-| Agent 结构化提问 | `question_request` → answers → `question_resolved`（不是 permission） | `AskUserQuestion` | `item/tool/requestUserInput` | 两者已闭环；支持多问题、多选、Other / 自由文本，secret 暂不遮罩 |
+| 工具 / 文件 / 命令授权 | `Interaction{kind:permission}` opened → option → resolved | SDK `canUseTool` | `*/requestApproval` | 两者已闭环；Claude 当前仅 allow once / deny，Codex 保留四种决策 |
+| Agent 结构化提问 | `Interaction{kind:question}` opened → answers → resolved（不是 permission） | `AskUserQuestion` | `item/tool/requestUserInput` | 两者已闭环；支持多问题、多选、Other / 自由文本，secret 暂不遮罩 |
 | Harness 自有阻塞 dialog | 开放 kind + typed payload/result | SDK `onUserDialog` | 按具体 server request 扩展 | 未支持 |
 | MCP elicitation / form | 独立 elicitation request/response | SDK `onElicitation` | `mcpServer/elicitation/request` | 未支持 |
 
 这里必须保留四条边界：
 
-1. **permission、user input、elicitation 是三类不同契约**。permission 决定是否允许某个动作；user input 是 agent 为继续推理索取答案；elicitation 是工具 / MCP server 索取结构化数据。不能都塞进 `ApprovalRequest`。
+1. **permission、question、elicitation 是不同 kind contract**。permission 决定是否允许某个动作；question 是 agent 为继续推理索取答案；elicitation 是工具 / MCP server 索取结构化数据。它们共享 Interaction identity 与 opened/resolved 生命周期，不共享万能 payload。
 2. **chat-tui picker 不等于 agent question**。picker 只适合单题单选的产品命令；harness question 通过独立 QuestionCard 处理多题、多选、自由文本和 preview，secret 遮罩与超时仍待补齐。
 3. **baton command 不等于 harness command**。`/codex`、`/claude`、`/sessions` 等由 baton core 消费；`/model`、`/effort`、`/compact` 是 baton 统一后再调用 adapter capability；Claude/Codex 私有 slash command 必须经能力发现和显式 adapter 映射，不能把未知 `/xxx` 当文本盲透传。
-4. structured question 已在 baton 事件层建立独立 request/response 模型，并由 chat-tui 的对应展示形状消费；harness 原始 payload 继续放在 `raw` 中保真。
+4. structured question 已成为 `Interaction{kind:question}`，由 chat-tui 的对应展示形状消费；harness 原始 payload 继续放在 `raw` 中保真。
 
 ## 4. 架构总览
 

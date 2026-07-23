@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 
-import type { HookTrustCandidate } from "../events/types.ts";
+import type { HookTrustCandidate } from "../interaction/types.ts";
 import { batonRoot } from "./config.ts";
 
 interface PersistedHookState extends Record<string, unknown> {

@@ -91,35 +91,28 @@ function recoverInterruptedState(session: SessionHandle): boolean {
   if (
     interruptedTurns.length === 0 &&
     unsummarized.length === 0 &&
-    state.pendingPermissions.size === 0 &&
-    state.pendingQuestions.size === 0 &&
-    state.pendingHookTrusts.size === 0
+    ![...state.interactions.values()].some((interaction) => !interaction.resolution)
   ) {
     return false;
   }
 
-  for (const requestId of state.pendingPermissions.keys()) {
+  for (const [interactionId, interaction] of state.interactions) {
+    if (interaction.resolution) continue;
+    const opened = events.findLast(
+      (event) =>
+        event.kind === "interaction.opened" &&
+        event.payload.interactionId === interactionId,
+    );
     session.append({
-      kind: "permission_resolved",
+      kind: "interaction.resolved",
       source: { type: "baton" },
-      harness: "baton",
-      payload: { requestId, outcome: "cancelled" },
-    });
-  }
-  for (const requestId of state.pendingQuestions.keys()) {
-    session.append({
-      kind: "question_resolved",
-      source: { type: "baton" },
-      harness: "baton",
-      payload: { requestId, outcome: "cancelled" },
-    });
-  }
-  for (const requestId of state.pendingHookTrusts.keys()) {
-    session.append({
-      kind: "hook_trust_resolved",
-      source: { type: "baton" },
-      harness: "baton",
-      payload: { requestId, outcome: "cancelled" },
+      harness: opened?.harness ?? "baton",
+      ...(opened?.harnessTargetId ? { harnessTargetId: opened.harnessTargetId } : {}),
+      ...(interaction.turnId ? { turnId: interaction.turnId } : {}),
+      payload: {
+        interactionId,
+        resolution: { kind: "cancelled", reason: "recovery" },
+      },
     });
   }
   // 每个未收口的 turn 各补一份终态 + 中断标记（并发崩溃不止一个；恒带 turnId，

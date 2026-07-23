@@ -2,7 +2,11 @@
 // 各家用原生协议接入，翻译成内部 Event 草稿交给 sink；source 由宿主在可信边界补齐，
 // 其余信封字段由 Store 补齐。
 
-import type { AnyEventDraft, InteractionRequest, PromptBlock } from "../events/types.ts";
+import type { AnyEventDraft, PromptBlock } from "../event/types.ts";
+import type {
+  InteractionDraft,
+  InteractionResolution,
+} from "../interaction/types.ts";
 
 export interface HarnessSessionRef {
   harness: string;
@@ -64,7 +68,7 @@ export interface CapabilityMarker {
  * 可展示的能力 descriptor（design §4.4）：声明"这个 adapter 支持哪些可选能力"，
  * 供 controller/UI 决策（如不支持 image 时 admission 报错、不展示 steer 选项）。
  * 行为仍由可选接口承载（ModelConfigurable、EffortConfigurable、Steerable/CommandDiscoverable/
- * SessionConfigurable/Interactive）；契约测试保证"声明支持就必须实现对应接口"。
+ * SessionConfigurable/interaction handler）；契约测试保证"声明支持就必须实现对应接口"。
  */
 export interface AdapterCapabilities {
   prompt: {
@@ -280,52 +284,20 @@ export function isNativeSessionIdentifiable(
   return typeof (adapter as Partial<NativeSessionIdentifiable>).nativeSessionId === "function";
 }
 
-// Response：用户对某个 InteractionRequest 的答复（Request ↔ Response 轴，见
-// harness-interaction-design.md §3.5）。按 `kind` 与对应 request 判别配对，`requestId`
-// 关联（refersTo）该 request、供统一 respond() 路由。各 kind payload 独立，不复用。
-
-/** permission 答复：optionId 取自 PermissionRequest.options */
-export interface PermissionResponse {
-  kind: "permission";
-  requestId: string;
-  optionId: string;
+/**
+ * Adapter 报告 Interaction 时附带的执行坐标与原始协议消息。它们进入 Event 信封，
+ * 不混入 Interaction 的稳定内容。
+ */
+export interface InteractionContext {
+  turnId?: string;
+  raw?: unknown;
 }
-
-/** question 答复：answers 按 questionId 收集 */
-export interface QuestionResponse {
-  kind: "question";
-  requestId: string;
-  answers: Record<string, string[]>;
-}
-
-/** 信任当前 hook 精确定义；定义 hash 不变时后续 harness 进程自动放行。 */
-export interface HookTrustResponse {
-  kind: "hook_trust";
-  requestId: string;
-  decision: "trust" | "skip";
-}
-
-/** InteractionResponse：用户答复的判别联合（按 `kind` 收窄）。elicitation 待接入 */
-export type InteractionResponse = PermissionResponse | QuestionResponse | HookTrustResponse;
 
 /**
- * 所属 turn 被打断/收口时，controller 用它级联解开仍挂起的 request（cancel-cascade）：不是用户
- * 答复，而是"这个 request 随 turn 一起黄了"。adapter 收到即发 `*_resolved(cancelled)` 留痕、
- * 并回 harness 一个 abort/deny（不静默丢、不当成 allow）。参考 codex `clear_pending_waiters`
- * → `unwrap_or(Abort)`、opencode interrupt 的 `ensuring(pending.delete)`。
+ * Harness 只提交 kind-specific 草稿并等待结果。宿主负责铸造 interactionId/requester、
+ * 先持久化 `interaction.opened`，再把持久化后的 resolution 送回 Adapter。
  */
-export interface InteractionCancelled {
-  kind: "cancelled";
-  requestId: string;
-}
-
-/** adapter `await requestHandler` 的解值：用户答复 或 turn 收口时的级联取消 */
-export type RequestOutcome = InteractionResponse | InteractionCancelled;
-
-/**
- * 宿主提供的统一 request 回调：adapter 收到 harness 的 permission / question / hook trust 请求时，
- * 构造对应 kind 的 InteractionRequest 调用并等待 `RequestOutcome`（用户答复，或 turn 收口时
- * 的 cancelled）。adapter 负责把 *_request / *_resolved 事件发给 sink 留痕。取代旧的
- * approvalHandler / questionHandler 双回调——只保留一条 request→response 通道（design §4.7）。
- */
-export type RequestHandler = (req: InteractionRequest) => Promise<RequestOutcome>;
+export type InteractionHandler = (
+  interaction: InteractionDraft,
+  context?: InteractionContext,
+) => Promise<InteractionResolution>;

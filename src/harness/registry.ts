@@ -4,7 +4,7 @@
 
 import { ClaudeAdapter } from "../adapters/claude/adapter.ts";
 import { CodexAdapter } from "../adapters/codex/adapter.ts";
-import type { HarnessAdapter, RequestHandler } from "../adapters/types.ts";
+import type { HarnessAdapter, InteractionHandler } from "../adapters/types.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { FileHookTrustStore } from "../config/hook.ts";
 import type { DiagnosticSink } from "../diagnostics.ts";
@@ -14,7 +14,7 @@ import type { HarnessTarget } from "./target.ts";
 export { HARNESSES, parseHarness, type HarnessName };
 
 export interface HarnessAdapterOptions {
-  requestHandler: RequestHandler;
+  interactionHandler: InteractionHandler;
   diagnostic?: DiagnosticSink;
   config: BatonConfig;
   rootDir?: string;
@@ -48,9 +48,9 @@ export const HARNESS_REGISTRY = [
     sessionKey: "codex",
     shortName: "codex",
     color: "#73daca", // 青
-    create: ({ requestHandler, diagnostic, config, rootDir }) =>
+    create: ({ interactionHandler, diagnostic, config, rootDir }) =>
       new CodexAdapter({
-        requestHandler,
+        interactionHandler,
         diagnostic,
         command: config.codexCommand,
         approvalReviewer: config.codexApprovalReviewer,
@@ -63,8 +63,8 @@ export const HARNESS_REGISTRY = [
     sessionKey: "claude-code",
     shortName: "claude",
     color: "#ff9e64", // 橙
-    create: ({ requestHandler, diagnostic, config }) =>
-      new ClaudeAdapter({ requestHandler, diagnostic, executablePath: config.claudeExecutable }),
+    create: ({ interactionHandler, diagnostic, config }) =>
+      new ClaudeAdapter({ interactionHandler, diagnostic, executablePath: config.claudeExecutable }),
   },
 ] as const satisfies readonly HarnessDefinition<HarnessName>[];
 

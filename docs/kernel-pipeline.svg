@@ -18,7 +18,7 @@
 
   <text x="45" y="355" class="title">用户</text>
   <line x1="105" y1="350" x2="300" y2="350" class="flow"/>
-  <text x="205" y="310" text-anchor="middle" class="small">Input / Response</text>
+  <text x="205" y="310" text-anchor="middle" class="small">Input / Resolve</text>
   <text x="205" y="335" text-anchor="middle" class="small">/ Control</text>
 
   <text x="365" y="72" class="title">chat-tui</text>
@@ -72,6 +72,6 @@
   <line x1="1320" y1="370" x2="1265" y2="370" class="flow"/>
 
   <line x1="330" y1="527" x2="115" y2="527" class="flow"/>
-  <text x="215" y="487" text-anchor="middle" class="small">Transcript / Request</text>
+  <text x="215" y="487" text-anchor="middle" class="small">Transcript / Interaction</text>
   <text x="215" y="512" text-anchor="middle" class="small">/ Status</text>
 </svg>

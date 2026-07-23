@@ -17,7 +17,7 @@ import type {
   PromptReceipt,
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
-import type { AnyEventEnvelope, AnyEventDraft, StopReason } from "../src/events/types.ts";
+import type { AnyEventEnvelope, AnyEventDraft, StopReason } from "../src/event/types.ts";
 import { Controller, INTERRUPTED_NOTICE_TITLE } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
@@ -211,7 +211,7 @@ describe("codex transport failure", () => {
       });
     `;
     const adapter = new CodexAdapter({
-      requestHandler: async (req) => ({ kind: "permission", requestId: req.requestId, optionId: "decline" }),
+      interactionHandler: async (req) => ({ kind: "permission", outcome: "selected", optionId: "decline" }),
       command: ["bun", "-e", script],
     });
     const events: AnyEventDraft[] = [];

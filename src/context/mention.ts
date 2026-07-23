@@ -1,7 +1,7 @@
 // @ 引用的急切解析（MVP，design §5.6）：发送时把目标会话的 turn-summary 压成紧凑文本，
 // 以"用户提供的材料"身份拼进目标 agent 的 prompt。二期换 mention:// 句柄 + CLI 惰性回查。
 
-import type { TurnSummary } from "../events/types.ts";
+import type { TurnSummary } from "../event/types.ts";
 import { sessionDisplayTitle, type SessionHandle, type SessionStore } from "../store/store.ts";
 
 /** @bs_<ULID>：MVP 只支持引用整个 BatonSession */

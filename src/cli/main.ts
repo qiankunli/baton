@@ -6,14 +6,19 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 
-import { isNativeSessionIdentifiable } from "../adapters/types.ts";
-import type { InteractionResponse } from "../adapters/types.ts";
+import {
+  isNativeSessionIdentifiable,
+  type InteractionHandler,
+} from "../adapters/types.ts";
 import { ensureConfigFile, loadConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
-import { newId } from "../events/ids.ts";
-import type { InteractionRequest } from "../events/types.ts";
+import { newId } from "../event/ids.ts";
 import { createHarnessAdapter, defaultHarnessTarget, parseHarness } from "../harness/registry.ts";
 import { createHarnessLaunchSnapshot } from "../harness/target.ts";
+import type {
+  InteractionDraft,
+  InteractionResolution,
+} from "../interaction/types.ts";
 import { SessionStore, sessionDisplayTitle } from "../store/store.ts";
 
 function argValue(flag: string): string | undefined {
@@ -23,37 +28,39 @@ function argValue(flag: string): string | undefined {
 
 const rl = createInterface({ input: stdin, output: stdout });
 
-// 统一的 request 应答（headless REPL）：按 kind 分派，返回 kind 配对的 InteractionResponse。
-async function askRequest(req: InteractionRequest): Promise<InteractionResponse> {
-  if (req.kind === "permission") {
-    stdout.write(`\n⚠ ${req.title}\n`);
-    req.options.forEach((o, i) => stdout.write(`  ${i + 1}. ${o.name} [${o.optionId}]\n`));
+// headless REPL 的 Interaction resolution：按 kind 渲染并返回严格配对的结果。
+async function resolveInteraction(interaction: InteractionDraft): Promise<InteractionResolution> {
+  if (interaction.kind === "permission") {
+    stdout.write(`\n⚠ ${interaction.title}\n`);
+    interaction.options.forEach((o, i) => stdout.write(`  ${i + 1}. ${o.name} [${o.optionId}]\n`));
     for (;;) {
       const answer = (await rl.question("approve> ")).trim();
-      const byIndex = req.options[Number(answer) - 1];
-      const byId = req.options.find((o) => o.optionId === answer);
+      const byIndex = interaction.options[Number(answer) - 1];
+      const byId = interaction.options.find((o) => o.optionId === answer);
       const chosen = byId ?? byIndex;
-      if (chosen) return { kind: "permission", requestId: req.requestId, optionId: chosen.optionId };
+      if (chosen) return { kind: "permission", outcome: "selected", optionId: chosen.optionId };
       stdout.write("Enter an option number or optionId\n");
     }
   }
-  if (req.kind === "hook_trust") {
-    stdout.write(`\n⚠ Trust ${req.hooks.length} ${req.harnessName} hook${req.hooks.length === 1 ? "" : "s"}?\n`);
-    req.hooks.forEach((hook) => {
+  if (interaction.kind === "hook_trust") {
+    stdout.write(
+      `\n⚠ Trust ${interaction.hooks.length} ${interaction.harnessName} hook${interaction.hooks.length === 1 ? "" : "s"}?\n`,
+    );
+    interaction.hooks.forEach((hook) => {
       stdout.write(`  - ${hook.pluginId ?? hook.source}: ${hook.sourcePath} [${hook.trustStatus}]\n`);
     });
     for (;;) {
       const answer = (await rl.question("trust current definitions? [y/N] ")).trim().toLowerCase();
       if (answer === "y" || answer === "yes") {
-        return { kind: "hook_trust", requestId: req.requestId, decision: "trust" };
+        return { kind: "hook_trust", outcome: "trusted" };
       }
       if (!answer || answer === "n" || answer === "no") {
-        return { kind: "hook_trust", requestId: req.requestId, decision: "skip" };
+        return { kind: "hook_trust", outcome: "skipped" };
       }
     }
   }
   const answers: Record<string, string[]> = {};
-  for (const question of req.questions) {
+  for (const question of interaction.questions) {
     stdout.write(`\n? ${question.header}: ${question.question}\n`);
     question.options?.forEach((option, index) =>
       stdout.write(`  ${index + 1}. ${option.label} — ${option.description}\n`),
@@ -66,7 +73,7 @@ async function askRequest(req: InteractionRequest): Promise<InteractionResponse>
       return option?.label ?? value;
     });
   }
-  return { kind: "question", requestId: req.requestId, answers };
+  return { kind: "question", outcome: "answered", answers };
 }
 
 async function main(): Promise<void> {
@@ -85,13 +92,41 @@ async function main(): Promise<void> {
   const session = store.createSession({ cwd });
   stdout.write(`baton session: ${session.id}\nlog: ${session.dir}/session.jsonl\n`);
 
+  const target = defaultHarnessTarget(agentName);
+  let adapterHarness = target.harness;
+  const interactionHandler: InteractionHandler = async (draft, context) => {
+    const interaction = {
+      ...draft,
+      interactionId: newId("ix"),
+      requester: { type: "harness" as const, harnessTargetId: target.id },
+    };
+    session.append({
+      kind: "interaction.opened",
+      source: { type: "harness", harnessTargetId: target.id },
+      harness: adapterHarness,
+      harnessTargetId: target.id,
+      ...(context?.turnId ? { turnId: context.turnId } : {}),
+      ...(context?.raw !== undefined ? { raw: context.raw } : {}),
+      payload: interaction,
+    });
+    const resolution = await resolveInteraction(draft);
+    session.append({
+      kind: "interaction.resolved",
+      source: { type: "user" },
+      harness: adapterHarness,
+      harnessTargetId: target.id,
+      ...(context?.turnId ? { turnId: context.turnId } : {}),
+      payload: { interactionId: interaction.interactionId, resolution },
+    });
+    return resolution;
+  };
   const adapter = createHarnessAdapter(agentName, {
-    requestHandler: askRequest,
+    interactionHandler,
     diagnostic: (entry) => session.diagnostic(entry),
     config,
     rootDir: store.rootDir,
   });
-  const target = defaultHarnessTarget(agentName);
+  adapterHarness = adapter.harness;
   const launchSnapshot = createHarnessLaunchSnapshot({
     target,
     harnessSessionKey: adapter.harness,

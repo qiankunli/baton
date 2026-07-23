@@ -33,10 +33,8 @@ import {
   type ApprovalReviewUpdate,
   type DiffBlock,
   type EventKind,
-  type HookTrustRequest,
-  type PermissionOption,
   type PromptBlock,
-} from "../events/types.ts";
+} from "../event/types.ts";
 import {
   createHarnessAdapter,
   defaultHarnessTarget,
@@ -44,6 +42,11 @@ import {
   harnessSessionKey,
   harnessShortName,
 } from "../harness/registry.ts";
+import type {
+  HookTrustInteraction,
+  Interaction,
+  PermissionOption,
+} from "../interaction/types.ts";
 import { openBatonSession } from "../session/open.ts";
 import { Controller } from "../session/controller.ts";
 import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from "../store/reduce.ts";
@@ -53,7 +56,7 @@ import { sessionPickerOptions, type SessionPickerMode } from "./session-picker.t
 import { setTerminalTabTitle } from "./terminal-title.ts";
 
 // OpenTUI 以 30 FPS 绘制；逐 token 同步发布完整 view 只会让 React 重复重建 transcript，
-// 还会挤占 composer 的终端光标刷新。只合并高频、可安全追加的流式事件；请求、终态和
+// 还会挤占 composer 的终端光标刷新。只合并高频、可安全追加的流式事件；Interaction、终态和
 // 完整快照仍立即发布，并顺带冲刷此前积累的 chunk，避免交互卡片被延迟。
 const STREAM_VIEW_FRAME_MS = 33;
 const COALESCED_STREAM_EVENT_KINDS: ReadonlySet<EventKind> = new Set([
@@ -68,12 +71,8 @@ const COALESCED_STREAM_EVENT_KINDS: ReadonlySet<EventKind> = new Set([
  * 已消费的形状——中间重构不惊动边界契约（kernel §3）。chat-tui 把 kind 当 description
  * 渲染，所以这里的取值直接是用户看见的字；等 chat-tui 改成消费双轴，再退掉这层。
  *
- * 旧事件流（双轴之前）的 option 只有 kind、没有两轴：原样透传它，不据缺失的轴伪造
- * 取值——replay 必须得到同样的累计结果（§5 三问③）。
  */
 function approvalOptionKind(option: PermissionOption): string {
-  const legacy = (option as { kind?: unknown }).kind;
-  if (!option.polarity && typeof legacy === "string") return legacy;
   const lasting = option.lifetime !== "once";
   return option.polarity === "allow"
     ? lasting
@@ -84,8 +83,8 @@ function approvalOptionKind(option: PermissionOption): string {
       : "reject_once";
 }
 
-function hookTrustDescription(request: HookTrustRequest): string {
-  return request.hooks
+function hookTrustDescription(interaction: HookTrustInteraction): string {
+  return interaction.hooks
     .map((hook) => {
       const owner = hook.pluginId ?? hook.source;
       const matcher = hook.matcher ? ` · matcher: ${hook.matcher}` : "";
@@ -470,15 +469,16 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   /**
-   * 审批卡片应答 → controller 的 resolver 注册表（id 即事件流里的 requestId）。
-   * 卡片消失不在这里发生：被唤醒的 adapter 发对应 *_resolved 落盘，
-   * reduced pending 删除后视图自然更新——UI 只消费事件流投影，不维护第二份状态。
+   * 审批卡片应答 → Controller。Controller 先落 `interaction.resolved(source:user)`，
+   * reduced pending 随即消失，再唤醒等待中的 Harness continuation。
    */
   resolveApproval(id: string, optionId: string): void {
-    const response = this.state.pendingHookTrusts.has(id)
-      ? ({ kind: "hook_trust", requestId: id, decision: optionId === "trust" ? "trust" : "skip" } as const)
-      : ({ kind: "permission", requestId: id, optionId } as const);
-    if (!this.controller.respond(response)) {
+    const interaction = this.state.interactions.get(id)?.interaction;
+    const resolution =
+      interaction?.kind === "hook_trust"
+        ? ({ kind: "hook_trust", outcome: optionId === "trust" ? "trusted" : "skipped" } as const)
+        : ({ kind: "permission", outcome: "selected", optionId } as const);
+    if (!this.controller.resolveInteraction(id, resolution)) {
       // 无 resolver：请求已被应答，或是崩溃残留（新进程没有等待中的 adapter）
       this.status = { text: "approval request is no longer pending", tone: "info" };
       this.changed();
@@ -486,7 +486,13 @@ export class BatonChatProtocol implements ChatProtocol {
   }
 
   resolveQuestion(id: string, answers: QuestionAnswers): void {
-    if (!this.controller.respond({ kind: "question", requestId: id, answers })) {
+    if (
+      !this.controller.resolveInteraction(id, {
+        kind: "question",
+        outcome: "answered",
+        answers,
+      })
+    ) {
       this.status = { text: "question is no longer pending", tone: "info" };
       this.changed();
     }
@@ -714,11 +720,21 @@ export class BatonChatProtocol implements ChatProtocol {
   private buildView(): ChatViewState {
     const v = this.state;
     const active = this.controller.activeHarness;
-    // pending 交互从事件流投影（Map 保插入序，取最早的一个）；id 即 requestId，
-    // 应答经 controller 的 resolver 注册表回到 adapter 的 await 点
-    const permission = v.pendingPermissions.values().next().value;
-    const hookTrust = v.pendingHookTrusts.values().next().value;
-    const question = v.pendingQuestions.values().next().value;
+    // Interaction 是统一持久对象；Map 保打开顺序，UI 各取最早的未解决 kind。
+    const pendingInteractions = [...v.interactions.values()].filter((item) => !item.resolution);
+    const interactions = pendingInteractions.map((item) => item.interaction);
+    const permission = interactions.find(
+      (interaction): interaction is Extract<Interaction, { kind: "permission" }> =>
+        interaction.kind === "permission",
+    );
+    const hookTrust = interactions.find(
+      (interaction): interaction is Extract<Interaction, { kind: "hook_trust" }> =>
+        interaction.kind === "hook_trust",
+    );
+    const question = interactions.find(
+      (interaction): interaction is Extract<Interaction, { kind: "question" }> =>
+        interaction.kind === "question",
+    );
     const observedRuns = [...v.activeTurns.values()].filter((turn) => turn.role === "observed");
     const observedRun = observedRuns.at(-1);
     // baton 当前只呈现一个 agent 的状态：driven turn 优先，其次是 harness 自发的
@@ -805,7 +821,7 @@ export class BatonChatProtocol implements ChatProtocol {
         : null,
       approval: permission
         ? {
-            id: permission.requestId,
+            id: permission.interactionId,
             title: permission.title,
             description: permission.description,
             options: permission.options.map((option) => ({
@@ -816,7 +832,7 @@ export class BatonChatProtocol implements ChatProtocol {
           }
         : hookTrust
           ? {
-              id: hookTrust.requestId,
+              id: hookTrust.interactionId,
               title: `Trust ${hookTrust.hooks.length} ${hookTrust.harnessName} hook${hookTrust.hooks.length === 1 ? "" : "s"}?`,
               description: hookTrustDescription(hookTrust),
               options: [
@@ -831,7 +847,7 @@ export class BatonChatProtocol implements ChatProtocol {
           : null,
       question: question
         ? {
-            id: question.requestId,
+            id: question.interactionId,
             questions: question.questions.map((prompt) => ({
               id: prompt.questionId,
               header: prompt.header,

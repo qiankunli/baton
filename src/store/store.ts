@@ -24,7 +24,7 @@ import { join } from "node:path";
 
 import type { DiagnosticEntry } from "../diagnostics.ts";
 import { diagnosticError } from "../diagnostics.ts";
-import { newId } from "../events/ids.ts";
+import { newId } from "../event/ids.ts";
 import {
   ENVELOPE_VERSION,
   textOf,
@@ -37,7 +37,7 @@ import {
   type TurnSummary,
   type TurnSummaryToolCall,
   type UsageUpdate,
-} from "../events/types.ts";
+} from "../event/types.ts";
 import type { HarnessLaunchSnapshot } from "../harness/target.ts";
 import { reduceEvents, type SessionState } from "./reduce.ts";
 
@@ -264,9 +264,10 @@ export class SessionStore {
 
   /**
    * Fork 一个 BatonSession：把 throughSeq（默认 head）之前的事件历史复制进新会话。
-   * 复制的前缀与源是同一段逻辑历史（git-branch 语义）：seq 与 turn/message/toolCall ID
-   * 原样保留，只换 batonSessionId——不做 ID remap（toolCallId 等本就是 harness 原生
-   * ID，remap 只会破坏与 raw 的对照），谱系由 meta.forkedFrom 表达。
+   * 复制的前缀与源是同一段逻辑历史（git-branch 语义）：seq 与 turn/message/toolCall/
+   * interaction 等领域对象 ID 原样保留，只换 session scope。Event 是 ledger append 的身份，
+   * 换 scope 时重新签发 eventId，保证一个 eventId 只属于一个权威 ledger。
+   * 谱系由 meta.forkedFrom 表达。
    * harnessSessions 只保留 target identity、Harness 与 model / effort 偏好：child 不得
    * 继承原生 session 绑定或 launch snapshot（否则两个 BatonSession 会写进同一份 harness
    * 历史）；child 首 turn 由 controller 走 fresh native + 全量补课（syncedSeq 缺省=0）重建上下文。
@@ -287,7 +288,13 @@ export class SessionStore {
     const dir = join(this.projectsDir(), projectDirName(cwd), id);
     mkdirSync(dir, { recursive: true });
     if (events.length > 0) {
-      const lines = events.map((ev) => JSON.stringify({ ...ev, batonSessionId: id }));
+      const lines = events.map((ev) =>
+        JSON.stringify({
+          ...ev,
+          eventId: newId("ev"),
+          scope: { type: "session", batonSessionId: id },
+        }),
+      );
       writeFileSync(join(dir, "session.jsonl"), `${lines.join("\n")}\n`);
     }
     const harnessSessions: Record<string, HarnessSessionMeta> = {};
@@ -448,7 +455,7 @@ export class SessionHandle {
     truncateSync(path, cut);
   }
 
-  /** 补齐 v/ts/seq/batonSessionId 并追加一行。seq 以文件为准（重开进程后继续单调）。 */
+  /** 补齐 v/eventId/ts/seq/scope 并追加一行。seq 以文件为准（重开进程后继续单调）。 */
   append<K extends EventKind>(ev: NewEvent<K>): EventEnvelope<K> {
     if (this.nextSeq === undefined) {
       this.repairTail();
@@ -458,9 +465,10 @@ export class SessionHandle {
     }
     const envelope: EventEnvelope<K> = {
       v: ENVELOPE_VERSION,
+      eventId: newId("ev"),
       ts: new Date().toISOString(),
       seq: this.nextSeq++,
-      batonSessionId: this.id,
+      scope: { type: "session", batonSessionId: this.id },
       ...ev,
     };
     const line = `${JSON.stringify(envelope)}\n`;

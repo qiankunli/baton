@@ -94,7 +94,7 @@ Path A（持写令牌）── Turn N running ─── Turn N done ── ...
 
 pi 的单文件树不是"更好的设计"，是它架构的必然产物：pi 每次调用模型都沿树从 active leaf 到根**从零组装 messages[]**，完全自持上下文组装，树上任意跳转零成本。baton 的前提相反：上下文活在各 harness 的 native session 里（线性、只追加、不可回退），catch-up 的语义是"已见 seq 前缀 + 增量注入"。树上跳转后"已见集合"不再是前缀，且灌进 native session 的旧路径上下文收不回来——唯一干净做法是丢弃 harness session 按新路径重建，而这正是 `forkSession` 已经在做的事。**单文件树在 harness 层什么都买不到。**
 
-更重要的是 baton 已经有这棵树：fork 复制的前缀与源**共享对象 ID**（git-branch 语义），"哪些 turn 是同一节点"良定义。pi 是邻接表表示，baton 是物化路径表示（每个 session 文件 = 根到某叶的一条路径），**差别是物理表示，不是逻辑模型**，`/tree` 视图可直接从 forkedFrom + 共享前缀推导渲染。且物化路径对多 path 并发反而更优：一条路径一个文件，会话锁、并发 append、crash recovery、harness session 天然按 path 隔离；pi 的单文件 + 单 active leaf 无法让两条分支同时运行。
+更重要的是 baton 已经有这棵树：fork 复制的前缀与源共享 turn / interaction / message 等**领域对象 ID**（git-branch 语义；Event envelope 因换 ledger 重新签发），"哪些 turn 是同一节点"良定义。pi 是邻接表表示，baton 是物化路径表示（每个 session 文件 = 根到某叶的一条路径），**差别是物理表示，不是逻辑模型**，`/tree` 视图可直接从 forkedFrom + 共享前缀推导渲染。且物化路径对多 path 并发反而更优：一条路径一个文件，会话锁、并发 append、crash recovery、harness session 天然按 path 隔离；pi 的单文件 + 单 active leaf 无法让两条分支同时运行。
 
 反向代价清单（如果硬改）：`seq` 是地基假设，reduce、syncedSeq/catch-up、崩溃恢复、turn-summary、会话锁、`@` 消歧全要重写，外加存量迁移；改完 harness 层收益为零、并发更难。结论：**抄 pi 的行为（树导航、切走时摘要），不抄它的表示。**
 

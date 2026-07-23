@@ -198,19 +198,20 @@ describe("BatonChatProtocol streaming projection", () => {
       });
       session.append({
         source: { type: "baton" },
-        kind: "permission_request",
+        kind: "interaction.opened",
         harness: "codex",
         turnId: "t1",
         payload: {
           kind: "permission",
-          requestId: "ar_stream",
+          interactionId: "ix_stream",
+          requester: { type: "harness", harnessTargetId: "codex" },
           title: "Run command?",
           options: [],
         },
       });
 
       expect(notifications).toBe(1);
-      expect(protocol.getView().approval?.id).toBe("ar_stream");
+      expect(protocol.getView().approval?.id).toBe("ix_stream");
       expect(protocol.getView().transcript).toContainEqual(
         expect.objectContaining({ id: "m_stream", text: "latest output" }),
       );
@@ -769,22 +770,23 @@ describe("interaction eventization: pending projects from the event stream", () 
     { optionId: "deny", name: "Deny", polarity: "reject" as const, lifetime: "once" as const },
   ];
 
-  test("approval card follows permission_request/resolved events; stale answer is a hint, not a crash", async () => {
+  test("approval card follows Interaction opened/resolved events; stale answer is a hint, not a crash", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-interaction-"));
     try {
       const store = new SessionStore(root);
       const session = store.createSession({ cwd: "/repo" });
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
 
-      // 事件流是 pending 交互的唯一真相源：request 落盘即出卡片，id = requestId
+      // 事件流是 pending 交互的唯一真相源：opened 落盘即出卡片，id = interactionId
       session.append({
         source: { type: "baton" },
-        kind: "permission_request",
+        kind: "interaction.opened",
         harness: "claude-code",
         turnId: "t1",
         payload: {
           kind: "permission",
-          requestId: "ar_1",
+          interactionId: "ix_1",
+          requester: { type: "harness", harnessTargetId: "claude-code" },
           title: "Write file?",
           description: "/repo/output.txt",
           options: APPROVAL_OPTIONS,
@@ -792,13 +794,13 @@ describe("interaction eventization: pending projects from the event stream", () 
       });
       let view = protocol.getView();
       expect(view.approval).toMatchObject({
-        id: "ar_1",
+        id: "ix_1",
         title: "Write file?",
         description: "/repo/output.txt",
       });
 
       // 无 live resolver（如崩溃残留）：应答提示 stale，不静默吞掉
-      protocol.resolveApproval("ar_1", "allow");
+      protocol.resolveApproval("ix_1", "allow");
       view = protocol.getView();
       expect(view.approval).not.toBeNull(); // 卡片消失只由 resolved 事件驱动
       expect(view.status?.text).toContain("no longer pending");
@@ -806,9 +808,12 @@ describe("interaction eventization: pending projects from the event stream", () 
       // resolved 落盘 → 卡片消失
       session.append({
         source: { type: "baton" },
-        kind: "permission_resolved",
+        kind: "interaction.resolved",
         harness: "baton",
-        payload: { requestId: "ar_1", outcome: "cancelled" },
+        payload: {
+          interactionId: "ix_1",
+          resolution: { kind: "cancelled", reason: "recovery" },
+        },
       });
       expect(protocol.getView().approval).toBeNull();
       await protocol.exit();
@@ -817,7 +822,7 @@ describe("interaction eventization: pending projects from the event stream", () 
     }
   });
 
-  test("question card follows question_request/resolved events", async () => {
+  test("question card follows Interaction opened/resolved events", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-question-"));
     try {
       const store = new SessionStore(root);
@@ -826,22 +831,26 @@ describe("interaction eventization: pending projects from the event stream", () 
 
       session.append({
         source: { type: "baton" },
-        kind: "question_request",
+        kind: "interaction.opened",
         harness: "codex",
         turnId: "t1",
         payload: {
           kind: "question",
-          requestId: "qr_1",
+          interactionId: "ix_2",
+          requester: { type: "harness", harnessTargetId: "codex" },
           questions: [{ questionId: "q1", header: "Scope", question: "Which scope?" }],
         },
       });
-      expect(protocol.getView().question).toMatchObject({ id: "qr_1" });
+      expect(protocol.getView().question).toMatchObject({ id: "ix_2" });
 
       session.append({
         source: { type: "baton" },
-        kind: "question_resolved",
+        kind: "interaction.resolved",
         harness: "baton",
-        payload: { requestId: "qr_1", outcome: "cancelled" },
+        payload: {
+          interactionId: "ix_2",
+          resolution: { kind: "cancelled", reason: "recovery" },
+        },
       });
       expect(protocol.getView().question).toBeNull();
       await protocol.exit();
@@ -850,7 +859,7 @@ describe("interaction eventization: pending projects from the event stream", () 
     }
   });
 
-  test("hook trust request uses the approval primitive but keeps its own response kind", async () => {
+  test("hook trust Interaction uses the approval primitive but keeps its own resolution kind", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-hook-trust-"));
     try {
       const store = new SessionStore(root);
@@ -858,12 +867,13 @@ describe("interaction eventization: pending projects from the event stream", () 
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
       session.append({
         source: { type: "baton" },
-        kind: "hook_trust_request",
+        kind: "interaction.opened",
         harness: "codex",
         turnId: "t1",
         payload: {
           kind: "hook_trust",
-          requestId: "htr_1",
+          interactionId: "ix_3",
+          requester: { type: "harness", harnessTargetId: "codex" },
           harnessName: "Codex",
           hooks: [
             {
@@ -878,17 +888,20 @@ describe("interaction eventization: pending projects from the event stream", () 
         },
       });
       expect(protocol.getView().approval).toMatchObject({
-        id: "htr_1",
+        id: "ix_3",
         title: "Trust 1 Codex hook?",
         options: [{ optionId: "trust" }, { optionId: "skip" }],
       });
-      protocol.resolveApproval("htr_1", "trust");
+      protocol.resolveApproval("ix_3", "trust");
       expect(protocol.getView().status?.text).toContain("no longer pending");
       session.append({
         source: { type: "baton" },
-        kind: "hook_trust_resolved",
+        kind: "interaction.resolved",
         harness: "baton",
-        payload: { requestId: "htr_1", outcome: "cancelled" },
+        payload: {
+          interactionId: "ix_3",
+          resolution: { kind: "cancelled", reason: "recovery" },
+        },
       });
       expect(protocol.getView().approval).toBeNull();
       await protocol.exit();
