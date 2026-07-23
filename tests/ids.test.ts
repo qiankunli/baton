@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { newId, ulid } from "../src/events/ids.ts";
+import { newId, ulid } from "../src/event/ids.ts";
 
 describe("ids", () => {
   test("ulid is 26 chars of crockford base32", () => {
@@ -17,5 +17,10 @@ describe("ids", () => {
     const ids = new Set(Array.from({ length: 1000 }, () => newId("bs")));
     expect(ids.size).toBe(1000);
     for (const id of ids) expect(id.startsWith("bs_")).toBe(true);
+  });
+
+  test("Event and Interaction identities have distinct prefixes", () => {
+    expect(newId("ev")).toMatch(/^ev_/);
+    expect(newId("ix")).toMatch(/^ix_/);
   });
 });

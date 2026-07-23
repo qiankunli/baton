@@ -14,7 +14,8 @@ import {
   hookStatePath,
   type HookTrustStore,
 } from "../src/config/hook.ts";
-import type { AnyEventDraft, HookTrustCandidate } from "../src/events/types.ts";
+import type { AnyEventDraft } from "../src/event/types.ts";
+import type { HookTrustCandidate } from "../src/interaction/types.ts";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -200,31 +201,30 @@ describe("Codex hook trust harness interaction", () => {
     const first = new CodexAdapter({
       command,
       hookTrustStore: trust,
-      requestHandler: async (request) => {
+      interactionHandler: async (request) => {
         questions++;
         if (request.kind !== "hook_trust") throw new Error(`unexpected request ${request.kind}`);
-        return { kind: "hook_trust", requestId: request.requestId, decision: "trust" };
+        return { kind: "hook_trust", outcome: "trusted" };
       },
     });
     const firstRef = await first.open({ cwd: "/tmp" }, (event) => firstEvents.push(event));
     expect(firstRef.harnessSessionId).toBe("thread");
     expect(readFileSync(launches, "utf8").trim().split("\n")).toHaveLength(2);
     expect(questions).toBe(1);
-    expect(firstEvents.map((event) => event.kind)).toEqual(["hook_trust_request", "hook_trust_resolved"]);
+    expect(firstEvents).toEqual([]);
     await first.close(firstRef);
 
     const secondEvents: AnyEventDraft[] = [];
     const second = new CodexAdapter({
       command,
       hookTrustStore: trust,
-      requestHandler: async (request) => {
+      interactionHandler: async (request) => {
         throw new Error(`should not ask again: ${request.kind}`);
       },
     });
     const secondRef = await second.open({ cwd: "/tmp" }, (event) => secondEvents.push(event));
     expect(secondRef.harnessSessionId).toBe("thread");
     expect(readFileSync(launches, "utf8").trim().split("\n")).toHaveLength(4);
-    expect(secondEvents.some((event) => event.kind === "hook_trust_request")).toBe(false);
     expect(secondEvents.find((event) => event.kind === "_baton_notice")?.payload).toMatchObject({
       title: "Enabled 2 previously trusted Codex hooks",
       detail: "devloop@devloop (2 hooks)",
@@ -232,7 +232,7 @@ describe("Codex hook trust harness interaction", () => {
     await second.close(secondRef);
   });
 
-  test("resolves the request and kills the startup process when persistence fails", async () => {
+  test("kills the startup process when persistence fails after trust is granted", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-hook-trust-write-failure-"));
     roots.push(root);
     const killed = join(root, "killed.log");
@@ -259,24 +259,21 @@ describe("Codex hook trust harness interaction", () => {
       },
     };
     const events: AnyEventDraft[] = [];
+    let questions = 0;
     const adapter = new CodexAdapter({
       command: ["bun", "-e", script, "app-server"],
       hookTrustStore: failingStore,
-      requestHandler: async (request) => ({
-        kind: "hook_trust",
-        requestId: request.requestId,
-        decision: "trust",
-      }),
+      interactionHandler: async () => {
+        questions++;
+        return { kind: "hook_trust", outcome: "trusted" };
+      },
     });
 
     await expect(adapter.open({ cwd: "/tmp" }, (event) => events.push(event))).rejects.toThrow("disk full");
     for (let attempt = 0; attempt < 20 && !existsSync(killed); attempt++) await Bun.sleep(5);
 
     expect(readFileSync(killed, "utf8")).toBe("killed\n");
-    expect(events.filter((event) => event.kind === "hook_trust_resolved")).toHaveLength(1);
-    expect(events.find((event) => event.kind === "hook_trust_resolved")?.payload).toMatchObject({
-      outcome: "failed",
-    });
+    expect(questions).toBe(1);
     expect(events.find((event) => event.kind === "_baton_notice")?.payload).toMatchObject({
       level: "warning",
       title: "Could not load saved hook trust",

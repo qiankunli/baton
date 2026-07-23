@@ -178,15 +178,16 @@ describe("crash recovery on open", () => {
     expect(state.turnSummaries[0]!.stopReason).toBe("end_turn");
   });
 
-  test("dangling permission requests are cancelled", () => {
+  test("dangling permission Interactions are cancelled", () => {
     const h = store.createSession({ cwd: "/repo" });
     h.append({ source: { type: "baton" }, kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
     h.append({
       source: { type: "baton" },
-      kind: "permission_request",
+      kind: "interaction.opened",
       payload: {
         kind: "permission",
-        requestId: "pr1",
+        interactionId: "ix1",
+        requester: { type: "harness", harnessTargetId: "codex" },
         title: "Run rm -rf?",
         options: [{ optionId: "yes", name: "Yes", polarity: "allow", lifetime: "once" }],
       },
@@ -196,18 +197,22 @@ describe("crash recovery on open", () => {
 
     const result = openBatonSession(store, { cwd: "/repo", sessionId: h.id });
     expect(result.recovered).toBe(true);
-    expect(result.session.loadState().pendingPermissions.size).toBe(0);
+    expect(result.session.loadState().interactions.get("ix1")?.resolution).toEqual({
+      kind: "cancelled",
+      reason: "recovery",
+    });
   });
 
-  test("dangling question requests are cancelled", () => {
+  test("dangling question Interactions are cancelled", () => {
     const h = store.createSession({ cwd: "/repo" });
     h.append({ source: { type: "baton" }, kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
     h.append({
       source: { type: "baton" },
-      kind: "question_request",
+      kind: "interaction.opened",
       payload: {
         kind: "question",
-        requestId: "qr1",
+        interactionId: "ix2",
+        requester: { type: "harness", harnessTargetId: "codex" },
         questions: [{ questionId: "mode", header: "Mode", question: "Which mode?" }],
       },
       harness: "codex",
@@ -216,18 +221,22 @@ describe("crash recovery on open", () => {
 
     const result = openBatonSession(store, { cwd: "/repo", sessionId: h.id });
     expect(result.recovered).toBe(true);
-    expect(result.session.loadState().pendingQuestions.size).toBe(0);
+    expect(result.session.loadState().interactions.get("ix2")?.resolution).toEqual({
+      kind: "cancelled",
+      reason: "recovery",
+    });
   });
 
-  test("dangling hook trust requests are cancelled", () => {
+  test("dangling hook trust Interactions are cancelled", () => {
     const h = store.createSession({ cwd: "/repo" });
     h.append({ source: { type: "baton" }, kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
     h.append({
       source: { type: "baton" },
-      kind: "hook_trust_request",
+      kind: "interaction.opened",
       payload: {
         kind: "hook_trust",
-        requestId: "htr1",
+        interactionId: "ix3",
+        requester: { type: "harness", harnessTargetId: "codex" },
         harnessName: "Codex",
         hooks: [
           {
@@ -245,7 +254,10 @@ describe("crash recovery on open", () => {
 
     const result = openBatonSession(store, { cwd: "/repo", sessionId: h.id });
     expect(result.recovered).toBe(true);
-    expect(result.session.loadState().pendingHookTrusts.size).toBe(0);
+    expect(result.session.loadState().interactions.get("ix3")?.resolution).toEqual({
+      kind: "cancelled",
+      reason: "recovery",
+    });
   });
 
   test("clean session is untouched", () => {

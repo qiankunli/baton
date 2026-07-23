@@ -1,13 +1,13 @@
-import type { RequestHandler } from "../src/adapters/types.ts";
+import type { InteractionHandler } from "../src/adapters/types.ts";
 import { describe, expect, test } from "bun:test";
 
 import { ClaudeAdapter, type ClaudeAdapterOptions } from "../src/adapters/claude/adapter.ts";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
 
-const requestHandler: RequestHandler = async (req) =>
+const interactionHandler: InteractionHandler = async (req) =>
   req.kind === "permission"
-    ? { kind: "permission", requestId: req.requestId, optionId: "deny" }
-    : { kind: "question", requestId: req.requestId, answers: {} };
+    ? { kind: "permission", outcome: "selected", optionId: "deny" }
+    : { kind: "question", outcome: "answered", answers: {} };
 
 describe("Claude model capability", () => {
   test("discovers models before the first turn without sending a user message", async () => {
@@ -44,7 +44,7 @@ describe("Claude model capability", () => {
         close: () => closes++,
       } as unknown as ReturnType<NonNullable<ClaudeAdapterOptions["queryFactory"]>>;
     }) as NonNullable<ClaudeAdapterOptions["queryFactory"]>;
-    const adapter = new ClaudeAdapter({ requestHandler, queryFactory });
+    const adapter = new ClaudeAdapter({ interactionHandler, queryFactory });
     const ref = await adapter.open({ cwd: "/tmp" }, () => {});
 
     expect((await adapter.listModels(ref)).map((model) => model.id)).toEqual([
@@ -67,20 +67,20 @@ describe("Claude model capability", () => {
   });
 
   test("records a native session id for resume", async () => {
-    const adapter = new ClaudeAdapter({ requestHandler });
+    const adapter = new ClaudeAdapter({ interactionHandler });
     const ref = await adapter.open({ cwd: "/tmp", resumeSessionId: "claude-session-1" }, () => {});
     expect(ref.resumed).toBe(true);
     expect(adapter.nativeSessionId(ref)).toBe("claude-session-1");
   });
 
   test("requires an existing native conversation before compacting", async () => {
-    const adapter = new ClaudeAdapter({ requestHandler });
+    const adapter = new ClaudeAdapter({ interactionHandler });
     const ref = await adapter.open({ cwd: "/tmp" }, () => {});
     await expect(adapter.compactContext(ref, "t_compact")).rejects.toThrow("no conversation to compact");
   });
 
   test("rejects efforts unsupported by the selected Claude model", async () => {
-    const adapter = new ClaudeAdapter({ requestHandler });
+    const adapter = new ClaudeAdapter({ interactionHandler });
     const ref = await adapter.open({ cwd: "/tmp" }, () => {});
     const runtime = (
       adapter as unknown as {
@@ -104,7 +104,7 @@ describe("Claude model capability", () => {
 
 describe("Codex model capability", () => {
   test("maps context compaction to thread/compact/start", async () => {
-    const adapter = new CodexAdapter({ requestHandler });
+    const adapter = new CodexAdapter({ interactionHandler });
     const requests: Array<{ method: string; params: unknown }> = [];
     const runtime = {
       threadId: "thread-1",
@@ -125,7 +125,7 @@ describe("Codex model capability", () => {
   });
 
   test("normalizes model/list and sends the selected model on the next turn", async () => {
-    const adapter = new CodexAdapter({ requestHandler });
+    const adapter = new CodexAdapter({ interactionHandler });
     const turnRequests: Record<string, unknown>[] = [];
     const peer = {
       request: async (method: string, params: Record<string, unknown>) => {
@@ -176,7 +176,7 @@ describe("Codex model capability", () => {
   });
 
   test("rejects efforts unsupported by the selected Codex model", async () => {
-    const adapter = new CodexAdapter({ requestHandler });
+    const adapter = new CodexAdapter({ interactionHandler });
     const catalog = {
       data: [
         {
@@ -215,7 +215,7 @@ describe("Codex model capability", () => {
   test("delivers BatonSession catch-up via turn/start.additionalContext", async () => {
     // 曾走 thread/inject_items 注入独立 user message：会污染 codex 原生历史（悬空
     // user message），改为随本 turn 的 additionalContext side-channel 送达。
-    const adapter = new CodexAdapter({ requestHandler });
+    const adapter = new CodexAdapter({ interactionHandler });
     let turnParams: Record<string, unknown> | undefined;
     const peer = {
       request: async (method: string, params: Record<string, unknown>) => {
@@ -248,7 +248,7 @@ describe("Codex model capability", () => {
   });
 
   test("omits additionalContext when there is no catch-up", async () => {
-    const adapter = new CodexAdapter({ requestHandler });
+    const adapter = new CodexAdapter({ interactionHandler });
     let turnParams: Record<string, unknown> | undefined;
     const peer = {
       request: async (method: string, params: Record<string, unknown>) => {

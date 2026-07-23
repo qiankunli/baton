@@ -15,16 +15,17 @@ import {
 } from "../src/adapters/claude/adapter.ts";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
 import type { DiagnosticEntry } from "../src/diagnostics.ts";
-import type { AnyEventDraft } from "../src/events/types.ts";
-import type { RequestHandler } from "../src/adapters/types.ts";
+import type { AnyEventDraft } from "../src/event/types.ts";
+import type { InteractionDraft } from "../src/interaction/types.ts";
+import type { InteractionHandler } from "../src/adapters/types.ts";
 
-const requestHandler: RequestHandler = async (req) =>
+const interactionHandler: InteractionHandler = async (req) =>
   req.kind === "permission"
-    ? { kind: "permission", requestId: req.requestId, optionId: "deny" }
-    : { kind: "question", requestId: req.requestId, answers: {} };
+    ? { kind: "permission", outcome: "selected", optionId: "deny" }
+    : { kind: "question", outcome: "answered", answers: {} };
 
 function claudeHarness(): { events: AnyEventDraft[]; feed: (msg: unknown) => void } {
-  const adapter = new ClaudeAdapter({ requestHandler });
+  const adapter = new ClaudeAdapter({ interactionHandler });
   const events: AnyEventDraft[] = [];
   const rt = {
     cwd: "/tmp",
@@ -44,7 +45,7 @@ function claudeHarness(): { events: AnyEventDraft[]; feed: (msg: unknown) => voi
 }
 
 function codexHarness(): { events: AnyEventDraft[]; notify: (method: string, params: unknown) => void } {
-  const adapter = new CodexAdapter({ requestHandler });
+  const adapter = new CodexAdapter({ interactionHandler });
   const events: AnyEventDraft[] = [];
   const rt = { threadId: "th1", turnId: "t1", sink: (ev: AnyEventDraft) => events.push(ev) };
   const notify = (method: string, params: unknown) =>
@@ -59,7 +60,7 @@ function codexHarness(): { events: AnyEventDraft[]; notify: (method: string, par
 describe("codex: unmapped notifications", () => {
   test("writes a throttled diagnostic instead of entering the session timeline", () => {
     const diagnostics: DiagnosticEntry[] = [];
-    const adapter = new CodexAdapter({ requestHandler, diagnostic: (entry) => diagnostics.push(entry) });
+    const adapter = new CodexAdapter({ interactionHandler, diagnostic: (entry) => diagnostics.push(entry) });
     const rt = { threadId: "th1", activeTurn: { turnId: "t1", finalized: false } };
     const notify = () =>
       (adapter as unknown as { handleNotification: (r: unknown, m: string, p: unknown) => void }).handleNotification(
@@ -320,13 +321,16 @@ describe("claude: edit tools → diff content", () => {
 });
 
 describe("structured questions", () => {
-  test("Claude AskUserQuestion emits request/resolved and returns answers in updatedInput", async () => {
+  test("Claude AskUserQuestion opens an Interaction and returns answers in updatedInput", async () => {
     const events: AnyEventDraft[] = [];
+    const interactions: InteractionDraft[] = [];
     const adapter = new ClaudeAdapter({
-      requestHandler: async (req) =>
-        req.kind === "question"
-          ? { kind: "question", requestId: req.requestId, answers: { [req.questions[0]!.questionId]: ["Careful"] } }
-          : { kind: "permission", requestId: req.requestId, optionId: "deny" },
+      interactionHandler: async (interaction) => {
+        interactions.push(interaction);
+        return interaction.kind === "question"
+          ? { kind: "question", outcome: "answered", answers: { [interaction.questions[0]!.questionId]: ["Careful"] } }
+          : { kind: "permission", outcome: "selected", optionId: "deny" };
+      },
     });
     const result = await (
       adapter as unknown as {
@@ -353,7 +357,8 @@ describe("structured questions", () => {
       {},
     );
 
-    expect(events.map((event) => event.kind)).toEqual(["question_request", "question_resolved"]);
+    expect(events).toEqual([]);
+    expect(interactions[0]).toMatchObject({ kind: "question", questions: [{ questionId: "q0" }] });
     expect(result).toEqual({
       behavior: "allow",
       updatedInput: {
@@ -372,11 +377,14 @@ describe("structured questions", () => {
 
   test("Codex requestUserInput returns the app-server answer envelope", async () => {
     const events: AnyEventDraft[] = [];
+    const interactions: InteractionDraft[] = [];
     const adapter = new CodexAdapter({
-      requestHandler: async (req) =>
-        req.kind === "question"
-          ? { kind: "question", requestId: req.requestId, answers: { approach: ["Fast", "Safe"] } }
-          : { kind: "permission", requestId: req.requestId, optionId: "deny" },
+      interactionHandler: async (interaction) => {
+        interactions.push(interaction);
+        return interaction.kind === "question"
+          ? { kind: "question", outcome: "answered", answers: { approach: ["Fast", "Safe"] } }
+          : { kind: "permission", outcome: "selected", optionId: "deny" };
+      },
     });
     const result = await (
       adapter as unknown as {
@@ -399,7 +407,8 @@ describe("structured questions", () => {
       },
     );
 
-    expect(events.map((event) => event.kind)).toEqual(["question_request", "question_resolved"]);
+    expect(events).toEqual([]);
+    expect(interactions[0]).toMatchObject({ kind: "question", questions: [{ questionId: "approach" }] });
     expect(result).toEqual({ answers: { approach: { answers: ["Fast", "Safe"] } } });
   });
 });

@@ -1,4 +1,4 @@
-import type { RequestHandler } from "../src/adapters/types.ts";
+import type { InteractionHandler } from "../src/adapters/types.ts";
 import { describe, expect, test } from "bun:test";
 
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
@@ -14,10 +14,10 @@ import {
 } from "../src/harness/registry.ts";
 import { agentColorFor } from "../src/tui/theme.ts";
 
-const requestHandler: RequestHandler = async (req) =>
+const interactionHandler: InteractionHandler = async (req) =>
   req.kind === "permission"
-    ? { kind: "permission", requestId: req.requestId, optionId: "deny" }
-    : { kind: "question", requestId: req.requestId, answers: {} };
+    ? { kind: "permission", outcome: "selected", optionId: "deny" }
+    : { kind: "question", outcome: "answered", answers: {} };
 
 describe("harness registry", () => {
   test("registers the first bundled harnesses and their native session keys", () => {
@@ -29,7 +29,7 @@ describe("harness registry", () => {
   });
 
   test("constructs adapters without putting harness branches in the TUI or session controller", () => {
-    const options = { requestHandler, config: DEFAULT_CONFIG };
+    const options = { interactionHandler, config: DEFAULT_CONFIG };
     expect(createHarnessAdapter("codex", options).harness).toBe("codex");
     expect(createHarnessAdapter("claude", options).harness).toBe("claude-code");
   });

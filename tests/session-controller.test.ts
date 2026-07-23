@@ -14,8 +14,8 @@ import type {
   PromptReceipt,
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
-import type { AnyEventEnvelope, PermissionRequest, PromptBlock, QuestionRequest } from "../src/events/types.ts";
-import { textOf } from "../src/events/types.ts";
+import type { AnyEventEnvelope, PromptBlock } from "../src/event/types.ts";
+import { textOf } from "../src/event/types.ts";
 import { Controller, type InteractionHandlers } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
@@ -497,8 +497,8 @@ describe("Controller", () => {
   });
 });
 
-// ---- 交互 resolver 注册表：adapter 的 await 点由统一 respond() 唤醒（permission/question 同路由）----
-// 事件留痕（*_request / *_resolved）由 adapter 负责；controller 只持有 requestId → resolver 通道。
+// ---- Interaction 注册表：adapter 的 await 点由统一 resolveInteraction() 唤醒 ----
+// identity、opened / resolved 事件与 waiter 全部由 Controller 持有。
 
 describe("interaction resolver registry", () => {
   /** 先审批、后提问、再收口的交互式 fake adapter；handlers 由 controller 经 createAdapter 注入 */
@@ -518,42 +518,20 @@ describe("interaction resolver registry", () => {
       const emit = (ev: Parameters<EventSink>[0]) => this.sink?.({ ...ev, turnId: input.turnId });
       emit({ kind: "state_update", harness: this.harness, payload: { state: "running" } });
       void (async () => {
-        const request: PermissionRequest = {
+        const decision = await this.handlers.interactionHandler({
           kind: "permission",
-          requestId: "ar_1",
           title: "Run command?",
           options: [
             { optionId: "allow", name: "Allow", polarity: "allow" as const, lifetime: "once" as const },
           ],
-        };
-        emit({ kind: "permission_request", harness: this.harness, payload: request });
-        const decision = await this.handlers.requestHandler(request);
-        emit({
-          kind: "permission_resolved",
-          harness: this.harness,
-          payload: {
-            requestId: "ar_1",
-            outcome: "selected",
-            optionId: decision.kind === "permission" ? decision.optionId : "",
-          },
-        });
+        }, { turnId: input.turnId });
+        expect(decision).toMatchObject({ kind: "permission", optionId: "allow" });
 
-        const question: QuestionRequest = {
+        const answers = await this.handlers.interactionHandler({
           kind: "question",
-          requestId: "qr_1",
           questions: [{ questionId: "q1", header: "Scope", question: "Which scope?" }],
-        };
-        emit({ kind: "question_request", harness: this.harness, payload: question });
-        const answers = await this.handlers.requestHandler(question);
-        emit({
-          kind: "question_resolved",
-          harness: this.harness,
-          payload: {
-            requestId: "qr_1",
-            outcome: "answered",
-            answers: answers.kind === "question" ? answers.answers : {},
-          },
-        });
+        }, { turnId: input.turnId });
+        expect(answers).toMatchObject({ kind: "question", answers: { q1: ["prod"] } });
 
         emit({ kind: "state_update", harness: this.harness, payload: { state: "idle", stopReason: "end_turn" } });
       })();
@@ -572,27 +550,55 @@ describe("interaction resolver registry", () => {
     });
 
     const turn = controller.submit("codex", [{ type: "text", text: "do it" }]);
-    await Bun.sleep(5); // permission_request 已落盘、resolver 已注册
+    await Bun.sleep(5); // permission Interaction 已落盘、resolver 已注册
 
-    expect(controller.respond({ kind: "permission", requestId: "ar_unknown", optionId: "allow" })).toBe(false);
-    expect(controller.respond({ kind: "permission", requestId: "ar_1", optionId: "allow" })).toBe(true);
-    expect(controller.respond({ kind: "permission", requestId: "ar_1", optionId: "allow" })).toBe(false); // resolver 一次性
+    expect(controller.resolveInteraction("ix_unknown", {
+      kind: "permission",
+      outcome: "selected",
+      optionId: "allow",
+    })).toBe(false);
+    const permission = session.readEvents().find(
+      (event) => event.kind === "interaction.opened" && event.payload.kind === "permission",
+    );
+    expect(permission?.kind).toBe("interaction.opened");
+    const permissionId = permission?.kind === "interaction.opened" ? permission.payload.interactionId : "";
+    expect(controller.resolveInteraction(permissionId, {
+      kind: "permission",
+      outcome: "selected",
+      optionId: "allow",
+    })).toBe(true);
+    expect(controller.resolveInteraction(permissionId, {
+      kind: "permission",
+      outcome: "selected",
+      optionId: "allow",
+    })).toBe(false); // resolver 一次性
 
-    await Bun.sleep(5); // question_request 已落盘
-    expect(controller.respond({ kind: "question", requestId: "qr_1", answers: { q1: ["prod"] } })).toBe(true);
+    await Bun.sleep(5); // question Interaction 已落盘
+    const question = session.readEvents().find(
+      (event) => event.kind === "interaction.opened" && event.payload.kind === "question",
+    );
+    const questionId = question?.kind === "interaction.opened" ? question.payload.interactionId : "";
+    expect(controller.resolveInteraction(questionId, {
+      kind: "question",
+      outcome: "answered",
+      answers: { q1: ["prod"] },
+    })).toBe(true);
     await turn;
 
     const events = session.readEvents();
-    expect(
-      events.find((ev) => ev.kind === "permission_resolved")?.payload,
-    ).toMatchObject({ requestId: "ar_1", outcome: "selected", optionId: "allow" });
-    expect(
-      events.find((ev) => ev.kind === "question_resolved")?.payload,
-    ).toMatchObject({ requestId: "qr_1", outcome: "answered", answers: { q1: ["prod"] } });
-    // 事件流收支平衡：pending 投影最终为空
+    expect(events.find(
+      (event) => event.kind === "interaction.resolved" && event.payload.interactionId === permissionId,
+    )?.payload).toMatchObject({
+      resolution: { kind: "permission", outcome: "selected", optionId: "allow" },
+    });
+    expect(events.find(
+      (event) => event.kind === "interaction.resolved" && event.payload.interactionId === questionId,
+    )?.payload).toMatchObject({
+      resolution: { kind: "question", outcome: "answered", answers: { q1: ["prod"] } },
+    });
+    // 事件流收支平衡：所有 Interaction 最终 resolved
     const state = session.loadState();
-    expect(state.pendingPermissions.size).toBe(0);
-    expect(state.pendingQuestions.size).toBe(0);
+    expect([...state.interactions.values()].every((value) => value.resolution)).toBe(true);
   });
 
   test("a harness-startup hook trust request belongs to the preparing turn", async () => {
@@ -605,9 +611,8 @@ describe("interaction resolver registry", () => {
 
       async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
         this.sink = sink;
-        const request = {
+        const response = await this.handlers.interactionHandler({
           kind: "hook_trust" as const,
-          requestId: "htr_start",
           harnessName: "Codex",
           hooks: [
             {
@@ -618,17 +623,8 @@ describe("interaction resolver registry", () => {
               command: "python hook.py",
             },
           ],
-        };
-        sink({ kind: "hook_trust_request", harness: this.harness, payload: request });
-        const response = await this.handlers.requestHandler(request);
-        sink({
-          kind: "hook_trust_resolved",
-          harness: this.harness,
-          payload: {
-            requestId: request.requestId,
-            outcome: response.kind === "hook_trust" && response.decision === "trust" ? "trusted" : "skipped",
-          },
         });
+        expect(response).toEqual({ kind: "hook_trust", outcome: "trusted" });
         return { harness: this.harness, harnessSessionId: "startup-trust", resumed: false };
       }
 
@@ -653,15 +649,24 @@ describe("interaction resolver registry", () => {
     });
     const outcome = controller.submit("codex", [{ type: "text", text: "go" }]);
     await Bun.sleep(5);
-    const request = session.readEvents().find((event) => event.kind === "hook_trust_request");
-    expect(request?.turnId).toBeDefined();
-    expect(controller.respond({ kind: "hook_trust", requestId: "htr_start", decision: "trust" })).toBe(true);
+    const interaction = session.readEvents().find(
+      (event) => event.kind === "interaction.opened" && event.payload.kind === "hook_trust",
+    );
+    expect(interaction?.turnId).toBeDefined();
+    const interactionId = interaction?.kind === "interaction.opened" ? interaction.payload.interactionId : "";
+    expect(controller.resolveInteraction(interactionId, {
+      kind: "hook_trust",
+      outcome: "trusted",
+    })).toBe(true);
     await outcome;
-    expect(session.loadState().pendingHookTrusts.size).toBe(0);
+    expect(session.loadState().interactions.get(interactionId)?.resolution).toEqual({
+      kind: "hook_trust",
+      outcome: "trusted",
+    });
   });
 
-  test("setup-phase attribution covers any request kind, not just hook trust", async () => {
-    // setup 阶段（slot 创建 → open 完成）的归属规则按"是不是 request"判断：
+  test("setup-phase attribution covers any Interaction kind, not just hook trust", async () => {
+    // setup 阶段（slot 创建 → open 完成）的归属规则按 Interaction 判断：
     // 新 harness 的冷启动若阻塞征询 permission / question，不需要再回 controller 加 kind 特判。
     class SetupPermissionAdapter implements HarnessAdapter {
       readonly harness = "codex";
@@ -672,25 +677,14 @@ describe("interaction resolver registry", () => {
 
       async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
         this.sink = sink;
-        const request = {
+        const response = await this.handlers.interactionHandler({
           kind: "permission" as const,
-          requestId: "ar_setup",
           title: "Allow launch profile?",
           options: [
             { optionId: "allow", name: "Allow once", polarity: "allow" as const, lifetime: "once" as const },
           ],
-        };
-        sink({ kind: "permission_request", harness: this.harness, payload: request });
-        const response = await this.handlers.requestHandler(request);
-        sink({
-          kind: "permission_resolved",
-          harness: this.harness,
-          payload: {
-            requestId: request.requestId,
-            outcome: "selected",
-            optionId: response.kind === "permission" ? response.optionId : "allow",
-          },
         });
+        expect(response).toMatchObject({ kind: "permission", optionId: "allow" });
         return { harness: this.harness, harnessSessionId: "setup-permission", resumed: false };
       }
 
@@ -715,11 +709,22 @@ describe("interaction resolver registry", () => {
     });
     const outcome = controller.submit("codex", [{ type: "text", text: "go" }]);
     await Bun.sleep(5);
-    const request = session.readEvents().find((event) => event.kind === "permission_request");
-    expect(request?.turnId).toBeDefined();
-    expect(controller.respond({ kind: "permission", requestId: "ar_setup", optionId: "allow" })).toBe(true);
+    const interaction = session.readEvents().find(
+      (event) => event.kind === "interaction.opened" && event.payload.kind === "permission",
+    );
+    expect(interaction?.turnId).toBeDefined();
+    const interactionId = interaction?.kind === "interaction.opened" ? interaction.payload.interactionId : "";
+    expect(controller.resolveInteraction(interactionId, {
+      kind: "permission",
+      outcome: "selected",
+      optionId: "allow",
+    })).toBe(true);
     await outcome;
-    expect(session.loadState().pendingPermissions.size).toBe(0);
+    expect(session.loadState().interactions.get(interactionId)?.resolution).toEqual({
+      kind: "permission",
+      outcome: "selected",
+      optionId: "allow",
+    });
   });
 });
 

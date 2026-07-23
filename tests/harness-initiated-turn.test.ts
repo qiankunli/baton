@@ -19,7 +19,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
-import type { AnyEventDraft } from "../src/events/types.ts";
+import type { AnyEventDraft } from "../src/event/types.ts";
 import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 import { BatonChatProtocol } from "../src/tui/protocol.ts";
@@ -250,7 +250,7 @@ describe("claude adapter observed-turn minting", () => {
   });
 
   test("mintObservedTurn opens with running under a fresh turn id", async () => {
-    const adapter = new ClaudeAdapter({ requestHandler: async (req) => ({ kind: "permission", requestId: req.requestId, optionId: "deny" }) });
+    const adapter = new ClaudeAdapter({ interactionHandler: async (req) => ({ kind: "permission", outcome: "selected", optionId: "deny" }) });
     const events: Array<{ kind: string; turnId?: string; payload: Record<string, unknown> }> = [];
     const ref = await adapter.open({ cwd: "/tmp" }, (ev) => events.push(ev as never));
     const seams = adapter as unknown as {

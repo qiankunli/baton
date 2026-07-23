@@ -16,8 +16,8 @@ import type {
   PromptReceipt,
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
-import type { PromptBlock } from "../src/events/types.ts";
-import { textOf } from "../src/events/types.ts";
+import type { PromptBlock } from "../src/event/types.ts";
+import { textOf } from "../src/event/types.ts";
 import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 

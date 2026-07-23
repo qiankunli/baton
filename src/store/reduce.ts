@@ -11,9 +11,6 @@ import type {
   EventEnvelope,
   MessageRole,
   Notice,
-  PermissionRequest,
-  HookTrustRequest,
-  QuestionRequest,
   PlanUpdate,
   SessionConfigOption,
   SessionRunState,
@@ -22,7 +19,11 @@ import type {
   ToolCallStatus,
   TurnSummary,
   UsageUpdate,
-} from "../events/types.ts";
+} from "../event/types.ts";
+import type {
+  Interaction,
+  InteractionResolution,
+} from "../interaction/types.ts";
 
 export interface MessageState {
   messageId: string;
@@ -97,8 +98,16 @@ export interface ActiveTurnState {
   phase?: { phase: string; title?: string };
 }
 
+export interface InteractionState {
+  interaction: Interaction;
+  /** 打开交互的 Event 执行坐标；用于 per-turn requires_action 与 cancel-cascade 投影。 */
+  turnId?: string;
+  /** 缺省即 pending；终结结果存在后不再要求用户动作。 */
+  resolution?: InteractionResolution;
+}
+
 export interface SessionState {
-  /** 派生值（每个事件后由 deriveRunState 重算）：pending blocking request 或任一 turn requires_action ⇒ requires_action；activeTurns 空 ⇒ idle；否则 running。保留字段兼容既有消费面 */
+  /** 派生值：pending Interaction 或任一 turn requires_action ⇒ requires_action；activeTurns 空 ⇒ idle；否则 running。 */
   runState: SessionRunState;
   lastStopReason?: StopReason;
   /**
@@ -112,12 +121,10 @@ export interface SessionState {
   messages: Map<string, MessageState>;
   toolCalls: Map<string, ToolCallState>;
   plans: Map<string, PlanState>;
-  /** 附带 envelope turnId（payload 本身不含）：request → 所属 turn 的 requires_action 派生需要归属关系 */
-  pendingPermissions: Map<string, PermissionRequest & { turnId?: string }>;
-  pendingQuestions: Map<string, QuestionRequest & { turnId?: string }>;
-  pendingHookTrusts: Map<string, HookTrustRequest & { turnId?: string }>;
+  /** Interaction 是统一持久对象；是否 pending 由 resolution 是否存在派生。 */
+  interactions: Map<string, InteractionState>;
   /**
-   * auto-review 回执，按回执自身的 `reviewId` 归档（kernel.md §6）。与 pendingPermissions
+   * auto-review 回执，按回执自身的 `reviewId` 归档（kernel.md §6）。与 Interaction
    * 正交：这是“已被 reviewer 决策”的留痕，不是待决，不派生 requires_action。每条回执是
    * timeline 的一等公民（首见即入 timeline），无 target 也留痕、同一操作多次决策各自成条。
    */
@@ -149,9 +156,7 @@ export function emptySessionState(): SessionState {
     messages: new Map(),
     toolCalls: new Map(),
     plans: new Map(),
-    pendingPermissions: new Map(),
-    pendingQuestions: new Map(),
-    pendingHookTrusts: new Map(),
+    interactions: new Map(),
     approvalReviews: new Map(),
     usage: {
       inputTokens: 0,
@@ -246,24 +251,21 @@ function applyToolCallUpdate(state: SessionState, ev: EventEnvelope<"tool_call_u
   if (p.rawOutput !== undefined) tc.rawOutput = p.rawOutput;
 }
 
-/** 该 turn 是否还有未决的 blocking request——per-turn requires_action 的派生依据 */
+/** 该 turn 是否还有未决 Interaction——per-turn requires_action 的派生依据。 */
 function hasPendingBlocking(state: SessionState, turnId: string): boolean {
-  for (const req of state.pendingPermissions.values()) if (req.turnId === turnId) return true;
-  for (const req of state.pendingQuestions.values()) if (req.turnId === turnId) return true;
-  for (const req of state.pendingHookTrusts.values()) if (req.turnId === turnId) return true;
+  for (const interaction of state.interactions.values()) {
+    if (interaction.turnId === turnId && !interaction.resolution) return true;
+  }
   return false;
 }
 
 /**
- * 会话级 runState 派生（harness-interaction-design：存在 pending blocking request 时
+ * 会话级 runState 派生（harness-interaction-design：存在 pending Interaction 时
  * projection 必须产出 requires_action）。requires_action 比 running 优先上浮——它意味着
- * "没有用户动作会话无法完整推进"；直接看各 pending request 集合，未能归属到 turn 的 request
- * （缺 turnId 的旧事件）也不会漏。每个事件后重算：派生纯函数，正确性不依赖事件顺序。
+ * "没有用户动作会话无法完整推进"；未归属 turn 的 setup Interaction 也不能漏。
  */
 function deriveRunState(state: SessionState): SessionRunState {
-  if (state.pendingPermissions.size > 0 || state.pendingQuestions.size > 0 || state.pendingHookTrusts.size > 0) {
-    return "requires_action";
-  }
+  if ([...state.interactions.values()].some((interaction) => !interaction.resolution)) return "requires_action";
   if (state.activeTurns.size === 0) return "idle";
   return [...state.activeTurns.values()].some((turn) => turn.state === "requires_action")
     ? "requires_action"
@@ -337,21 +339,28 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       if (harness) harnessScoped(state, harness).lastPlanId = p.planId;
       break;
     }
-    // request/resolved 驱动 per-turn requires_action ↔ running：不变量收在 reducer，
+    // Interaction opened/resolved 驱动 per-turn requires_action ↔ running：不变量收在 reducer，
     // 不要求 adapter 自觉配对 state_update（事件流是唯一真相源；design §4.1）。
     // 原生 state_update(requires_action) 仍然有效——覆盖登录、设备确认等没有结构化
-    // request 的场景（harness-interaction-design：反向不强制成立）。
-    case "permission_request": {
-      const p = ev.payload;
-      state.pendingPermissions.set(p.requestId, { ...p, turnId: ev.turnId });
+    // Interaction 的场景（harness-interaction-design：反向不强制成立）。
+    case "interaction.opened": {
+      const interaction = ev.payload;
+      const existing = state.interactions.get(interaction.interactionId);
+      // lifecycle 事实只认第一次：重复 opened 不能重写 requester/payload，更不能复活已 resolved 对象。
+      if (existing) break;
+      state.interactions.set(interaction.interactionId, {
+        interaction,
+        turnId: ev.turnId,
+      });
       flagRequiresAction(state, ev.turnId);
       break;
     }
-    case "permission_resolved": {
-      const p = ev.payload;
-      const turnId = state.pendingPermissions.get(p.requestId)?.turnId;
-      state.pendingPermissions.delete(p.requestId);
-      unflagRequiresAction(state, turnId);
+    case "interaction.resolved": {
+      const existing = state.interactions.get(ev.payload.interactionId);
+      // terminal 只收一次；迟到/重复 resolution 不得改写已经交付给 requester 的决定。
+      if (!existing || existing.resolution) break;
+      existing.resolution = ev.payload.resolution;
+      unflagRequiresAction(state, existing.turnId);
       break;
     }
     case "approval_review_update": {
@@ -362,30 +371,6 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
         state.timeline.push({ type: "approval_review", id: p.reviewId });
       }
       state.approvalReviews.set(p.reviewId, p);
-      break;
-    }
-    case "question_request": {
-      const p = ev.payload;
-      state.pendingQuestions.set(p.requestId, { ...p, turnId: ev.turnId });
-      flagRequiresAction(state, ev.turnId);
-      break;
-    }
-    case "question_resolved": {
-      const turnId = state.pendingQuestions.get(ev.payload.requestId)?.turnId;
-      state.pendingQuestions.delete(ev.payload.requestId);
-      unflagRequiresAction(state, turnId);
-      break;
-    }
-    case "hook_trust_request": {
-      const p = ev.payload;
-      state.pendingHookTrusts.set(p.requestId, { ...p, turnId: ev.turnId });
-      flagRequiresAction(state, ev.turnId);
-      break;
-    }
-    case "hook_trust_resolved": {
-      const turnId = state.pendingHookTrusts.get(ev.payload.requestId)?.turnId;
-      state.pendingHookTrusts.delete(ev.payload.requestId);
-      unflagRequiresAction(state, turnId);
       break;
     }
     case "usage_update":

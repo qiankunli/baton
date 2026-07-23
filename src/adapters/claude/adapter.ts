@@ -16,20 +16,21 @@ import {
   type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 
-import { newId } from "../../events/ids.ts";
+import { newId } from "../../event/ids.ts";
 import type { DiagnosticSink } from "../../diagnostics.ts";
 import { diagnosticError } from "../../diagnostics.ts";
 import type {
   ContentBlock,
   DiffBlock,
-  PermissionOption,
-  PermissionRequest,
   PlanEntry,
   PromptBlock,
+} from "../../event/types.ts";
+import { textOf } from "../../event/types.ts";
+import type {
+  InteractionDraft,
+  PermissionOption,
   QuestionPrompt,
-  QuestionRequest,
-} from "../../events/types.ts";
-import { textOf } from "../../events/types.ts";
+} from "../../interaction/types.ts";
 import type {
   AdapterCapabilities,
   HarnessAdapter,
@@ -40,7 +41,7 @@ import type {
   PromptInput,
   PromptReceipt,
   HarnessSessionRef,
-  RequestHandler,
+  InteractionHandler,
 } from "../types.ts";
 import { unsupportedPromptBlocks } from "../types.ts";
 
@@ -422,7 +423,7 @@ function claudeContextUsage(
 }
 
 export interface ClaudeAdapterOptions {
-  requestHandler: RequestHandler;
+  interactionHandler: InteractionHandler;
   diagnostic?: DiagnosticSink;
   /** claude 可执行文件路径；默认 BATON_CLAUDE_BIN 环境变量，再默认交给 SDK 自己找 */
   executablePath?: string;
@@ -599,7 +600,8 @@ export class ClaudeAdapter implements HarnessAdapter {
       ...(rt.model ? { model: rt.model } : {}),
       ...(rt.effort ? { effort: rt.effort } : {}),
       ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
-      canUseTool: (toolName, toolInput, meta) => this.handleCanUseTool(emit, toolName, toolInput, meta),
+      canUseTool: (toolName, toolInput, meta) =>
+        this.handleCanUseTool(() => current.turnId, toolName, toolInput, meta),
     };
 
     let q: Query | undefined;
@@ -730,37 +732,27 @@ export class ClaudeAdapter implements HarnessAdapter {
   }
 
   private async handleCanUseTool(
-    emit: EventSink,
+    turnId: () => string,
     toolName: string,
     input: Record<string, unknown>,
     meta: { title?: string; suggestions?: PermissionUpdate[] },
   ): Promise<PermissionResult> {
-    if (toolName === "AskUserQuestion") return this.handleQuestion(emit, input);
+    if (toolName === "AskUserQuestion") return this.handleQuestion(turnId, input);
     const suggestions = meta.suggestions ?? [];
-    const request: PermissionRequest = {
+    const interaction: InteractionDraft = {
       kind: "permission",
-      requestId: newId("ar"),
       title: meta.title ?? claudeToolTitle(toolName, input),
       options: claudeApprovalOptions(suggestions.length > 0),
     };
-    emit({ kind: "permission_request", harness: this.harness, payload: request });
-    const response = await this.options.requestHandler(request);
-    if (response.kind === "cancelled") {
-      // turn 被打断，request 随之收口：留痕 cancelled、拒绝执行（不静默、不当 allow）
-      emit({
-        kind: "permission_resolved",
-        harness: this.harness,
-        payload: { requestId: request.requestId, outcome: "cancelled" },
-      });
+    const resolution = await this.options.interactionHandler(interaction, {
+      turnId: turnId(),
+      raw: { toolName, input, meta },
+    });
+    if (resolution.kind === "cancelled") {
       return { behavior: "deny", message: "turn interrupted before approval" };
     }
-    // response 按 requestId 路由回来，kind 必配对 permission；意外不配一律保守拒绝（非 allow 即 deny）
-    const optionId = response.kind === "permission" ? response.optionId : "";
-    emit({
-      kind: "permission_resolved",
-      harness: this.harness,
-      payload: { requestId: request.requestId, outcome: "selected", optionId },
-    });
+    // resolution 按 interactionId 路由回来，kind 必配对 permission；意外不配一律保守拒绝。
+    const optionId = resolution.kind === "permission" ? resolution.optionId : "";
     if (optionId === "allow") return { behavior: "allow", updatedInput: input };
     if (optionId === "allowAlways") {
       // SDK 契约：把 canUseTool 收到的整组 suggestions 原样作为 updatedPermissions
@@ -770,7 +762,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     return { behavior: "deny", message: "denied by baton user" };
   }
 
-  private async handleQuestion(emit: EventSink, input: Record<string, unknown>): Promise<PermissionResult> {
+  private async handleQuestion(turnId: () => string, input: Record<string, unknown>): Promise<PermissionResult> {
     const source = Array.isArray(input.questions) ? input.questions : [];
     const questions: QuestionPrompt[] = source.map((value, index) => {
       const question = (value ?? {}) as Record<string, unknown>;
@@ -793,23 +785,15 @@ export class ClaudeAdapter implements HarnessAdapter {
         allowOther: true,
       };
     });
-    const request: QuestionRequest = { kind: "question", requestId: newId("qr"), questions };
-    emit({ kind: "question_request", harness: this.harness, payload: request });
-    const response = await this.options.requestHandler(request);
-    if (response.kind === "cancelled") {
-      emit({
-        kind: "question_resolved",
-        harness: this.harness,
-        payload: { requestId: request.requestId, outcome: "cancelled" },
-      });
+    const interaction: InteractionDraft = { kind: "question", questions };
+    const resolution = await this.options.interactionHandler(interaction, {
+      turnId: turnId(),
+      raw: input,
+    });
+    if (resolution.kind === "cancelled") {
       return { behavior: "deny", message: "turn interrupted before answer" };
     }
-    const decisionAnswers = response.kind === "question" ? response.answers : {};
-    emit({
-      kind: "question_resolved",
-      harness: this.harness,
-      payload: { requestId: request.requestId, outcome: "answered", answers: decisionAnswers },
-    });
+    const decisionAnswers = resolution.kind === "question" ? resolution.answers : {};
     const answers = Object.fromEntries(
       questions.map((question) => [question.question, (decisionAnswers[question.questionId] ?? []).join(", ")]),
     );

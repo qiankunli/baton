@@ -19,7 +19,7 @@ import {
   sessionPreview,
   type SessionMeta,
 } from "../src/store/store.ts";
-import { textOf, type TurnSummary } from "../src/events/types.ts";
+import { textOf, type TurnSummary } from "../src/event/types.ts";
 
 let root: string;
 let store: SessionStore;
@@ -192,8 +192,10 @@ describe("event append / read", () => {
     });
     expect(e1.seq).toBe(1);
     expect(e2.seq).toBe(2);
-    expect(e1.batonSessionId).toBe(h.id);
-    expect(e1.v).toBe(2);
+    expect(e1.eventId).toMatch(/^ev_/);
+    expect(e2.eventId).not.toBe(e1.eventId);
+    expect(e1.scope).toEqual({ type: "session", batonSessionId: h.id });
+    expect(e1.v).toBe(3);
     expect(e1.source).toEqual({ type: "baton" });
 
     // 重开进程（新 handle），seq 从文件续上
@@ -430,7 +432,7 @@ describe("forkSession", () => {
     h.summarizeTurn(turnId);
   }
 
-  test("copies history with new batonSessionId; seq and object ids preserved (git-branch 语义)", () => {
+  test("copies history with new Event identities/scope; domain object ids and seq preserved", () => {
     const source = store.createSession({ cwd: "/tmp/proj", title: "demo" });
     playTurn(source, "t1");
     const sourceEvents = source.readEvents();
@@ -449,7 +451,9 @@ describe("forkSession", () => {
     const childEvents = child.readEvents();
     expect(childEvents).toHaveLength(sourceEvents.length);
     for (let i = 0; i < childEvents.length; i++) {
-      expect(childEvents[i]!.batonSessionId).toBe(child.id);
+      expect(childEvents[i]!.scope).toEqual({ type: "session", batonSessionId: child.id });
+      expect(childEvents[i]!.eventId).toMatch(/^ev_/);
+      expect(childEvents[i]!.eventId).not.toBe(sourceEvents[i]!.eventId);
       expect(childEvents[i]!.seq).toBe(sourceEvents[i]!.seq);
     }
     // 对象 ID 不做 remap：同一段逻辑历史

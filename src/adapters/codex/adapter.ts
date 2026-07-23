@@ -7,21 +7,21 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { FileHookTrustStore, type HookTrustStore } from "../../config/hook.ts";
 import type { DiagnosticSink } from "../../diagnostics.ts";
 import { diagnosticError } from "../../diagnostics.ts";
-import { newId } from "../../events/ids.ts";
+import { newId } from "../../event/ids.ts";
 import { closedTerminal } from "../normalize.ts";
 import type {
   ContentBlock,
   DiffBlock,
-  HookTrustCandidate,
-  HookTrustRequest,
-  PermissionOption,
-  PermissionRequest,
-  QuestionPrompt,
-  QuestionRequest,
   StopReason,
   ToolCallStatus,
-} from "../../events/types.ts";
-import { textOf } from "../../events/types.ts";
+} from "../../event/types.ts";
+import { textOf } from "../../event/types.ts";
+import type {
+  HookTrustCandidate,
+  InteractionDraft,
+  PermissionOption,
+  QuestionPrompt,
+} from "../../interaction/types.ts";
 import type {
   AdapterCapabilities,
   HarnessAdapter,
@@ -32,7 +32,7 @@ import type {
   PromptInput,
   PromptReceipt,
   HarnessSessionRef,
-  RequestHandler,
+  InteractionHandler,
   SteerReceipt,
   ApprovalRoute,
 } from "../types.ts";
@@ -506,7 +506,7 @@ function stopReasonOf(turnStatus: string): StopReason {
 }
 
 export interface CodexAdapterOptions {
-  requestHandler: RequestHandler;
+  interactionHandler: InteractionHandler;
   diagnostic?: DiagnosticSink;
   /** 缺省由 auto-review 审批；显式 user 时请求进入 Baton TUI。 */
   approvalReviewer?: "user" | "auto_review";
@@ -536,8 +536,6 @@ const OUTPUT_EVENT_KINDS: ReadonlySet<string> = new Set([
   "tool_call_update",
   "tool_call_content_chunk",
   "plan_update",
-  "permission_request",
-  "question_request",
   "_baton_run_status",
 ]);
 
@@ -647,7 +645,7 @@ export class CodexAdapter implements HarnessAdapter {
     });
 
     const rt: ThreadRuntime = { child, peer, threadId: "", approvalRoute: null, sink };
-    // transport 终结 = 该 session 所有在途工作的终结点：pending request 全部 reject，
+    // transport 终结 = 该 session 所有在途工作的终结点：pending JSON-RPC request 全部 reject，
     // 活跃 turn 必须在此合成终态，否则 controller 永远等不到 idle（design §4.1 终态保证）。
     child.on("close", (code) => {
       if (code !== 0) {
@@ -721,41 +719,20 @@ export class CodexAdapter implements HarnessAdapter {
           });
         }
         if (hooksNeedingUserTrust.length > 0) {
-          const request: HookTrustRequest = {
+          const interaction: InteractionDraft = {
             kind: "hook_trust",
-            requestId: newId("htr"),
             harnessName: "Codex",
             hooks: hooksNeedingUserTrust,
           };
-          this.emit(rt, { kind: "hook_trust_request", harness: this.harness, payload: request }, hooksResult);
-          const response = await this.options.requestHandler(request);
-          if (response.kind === "cancelled") {
-            this.emit(rt, {
-              kind: "hook_trust_resolved",
-              harness: this.harness,
-              payload: { requestId: request.requestId, outcome: "cancelled" },
-            });
+          const resolution = await this.options.interactionHandler(interaction, { raw: hooksResult });
+          if (resolution.kind === "cancelled") {
             throw new Error("Codex hook trust request was cancelled");
           }
-          const trust = response.kind === "hook_trust" && response.decision === "trust";
+          const trust = resolution.kind === "hook_trust" && resolution.outcome === "trusted";
           if (trust) {
-            try {
-              this.hookTrustStore.trust(this.harness, hooksNeedingUserTrust);
-            } catch (error) {
-              this.emit(rt, {
-                kind: "hook_trust_resolved",
-                harness: this.harness,
-                payload: { requestId: request.requestId, outcome: "failed" },
-              });
-              throw error;
-            }
+            this.hookTrustStore.trust(this.harness, hooksNeedingUserTrust);
           }
           trustAll = trust;
-          this.emit(rt, {
-            kind: "hook_trust_resolved",
-            harness: this.harness,
-            payload: { requestId: request.requestId, outcome: trust ? "trusted" : "skipped" },
-          });
         }
         if (trustAll) {
           // app-server 没有写 trust 的 RPC。Baton 已持久校验精确 hash 后，用官方 bypass 参数
@@ -1411,35 +1388,25 @@ export class CodexAdapter implements HarnessAdapter {
           if (idField === undefined) continue;
           (rt.approvalSeenItemIds ??= new Set()).add(String(idField));
         }
-        const requestId = String(p.approvalId ?? p.itemId ?? p.callId ?? newId("ar"));
         const presentation = approvalPresentationOf(method, p);
         const { choices, unmapped, fellBack } = codexApprovalChoices(p);
         this.noticeUnmappedDecisions(rt, unmapped, fellBack, params);
-        const request: PermissionRequest = {
+        const interaction: InteractionDraft = {
           kind: "permission",
-          requestId,
           ...presentation,
           toolCallId: p.itemId !== undefined ? String(p.itemId) : undefined,
           options: choices.map((choice) => choice.option),
         };
-        this.emit(rt, { kind: "permission_request", harness: this.harness, payload: request }, params);
-        const response = await this.options.requestHandler(request);
-        if (response.kind === "cancelled") {
-          // turn 被打断，request 随之收口：留痕 cancelled，回 codex "cancel"（Deny and interrupt turn）
-          this.emit(
-            rt,
-            { kind: "permission_resolved", harness: this.harness, payload: { requestId, outcome: "cancelled" } },
-            params,
-          );
+        if (rt.activeTurn) rt.activeTurn.sawOutput = true;
+        const resolution = await this.options.interactionHandler(interaction, {
+          ...(rt.activeTurn?.turnId ? { turnId: rt.activeTurn.turnId } : {}),
+          raw: params,
+        });
+        if (resolution.kind === "cancelled") {
           return { decision: "cancel" };
         }
-        // response 按 requestId 路由回来，kind 必配对 permission；意外不配保守拒绝
-        const optionId = response.kind === "permission" ? response.optionId : "";
-        this.emit(rt, {
-          kind: "permission_resolved",
-          harness: this.harness,
-          payload: { requestId, outcome: "selected", optionId },
-        });
+        // resolution 按 interactionId 路由回来，kind 必配对 permission；意外不配保守拒绝。
+        const optionId = resolution.kind === "permission" ? resolution.optionId : "";
         // 选不中就回 decline，不把 optionId 原样透传：结构化候选的 optionId 是 baton 铸的
         // 合成 id（acceptWithExecpolicyAmendment:1），不是 codex wire 值；空串更不是"拒绝"，
         // 而是个非法 wire 值——曾经这里以为透传就等于 fail-closed，其实没有。
@@ -1465,31 +1432,19 @@ export class CodexAdapter implements HarnessAdapter {
             secret: question.isSecret === true,
           };
         });
-        const request: QuestionRequest = {
+        const interaction: InteractionDraft = {
           kind: "question",
-          requestId: String(p.itemId ?? newId("qr")),
           questions,
         };
-        this.emit(rt, { kind: "question_request", harness: this.harness, payload: request }, params);
-        const response = await this.options.requestHandler(request);
-        if (response.kind === "cancelled") {
-          this.emit(
-            rt,
-            {
-              kind: "question_resolved",
-              harness: this.harness,
-              payload: { requestId: request.requestId, outcome: "cancelled" },
-            },
-            params,
-          );
+        if (rt.activeTurn) rt.activeTurn.sawOutput = true;
+        const resolution = await this.options.interactionHandler(interaction, {
+          ...(rt.activeTurn?.turnId ? { turnId: rt.activeTurn.turnId } : {}),
+          raw: params,
+        });
+        if (resolution.kind === "cancelled") {
           return { answers: {} };
         }
-        const decisionAnswers = response.kind === "question" ? response.answers : {};
-        this.emit(rt, {
-          kind: "question_resolved",
-          harness: this.harness,
-          payload: { requestId: request.requestId, outcome: "answered", answers: decisionAnswers },
-        });
+        const decisionAnswers = resolution.kind === "question" ? resolution.answers : {};
         return {
           answers: Object.fromEntries(
             Object.entries(decisionAnswers).map(([questionId, answers]) => [questionId, { answers }]),
