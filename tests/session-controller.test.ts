@@ -227,8 +227,8 @@ describe("Controller", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
-      createAdapter: (harness) => {
-        expect(harness).toBe("example");
+      createAdapter: (target) => {
+        expect(target).toEqual({ id: "example", harness: "example" });
         return adapter;
       },
     });
@@ -245,13 +245,14 @@ describe("Controller", () => {
 
   test("isolates two targets backed by the same Harness and preserves launch provenance", async () => {
     const adapters: TargetedFakeAdapter[] = [];
+    const createdTargets: Array<{ id: string; harness: string }> = [];
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
       modelPreferences: { "codex-a": "fast" },
       resolveTarget: (harnessTargetId) => ({ id: harnessTargetId, harness: "codex" }),
-      createAdapter: (harness) => {
-        expect(harness).toBe("codex");
+      createAdapter: (target) => {
+        createdTargets.push(target);
         const adapter = new TargetedFakeAdapter(`instance-${adapters.length + 1}`);
         adapters.push(adapter);
         return adapter;
@@ -268,8 +269,14 @@ describe("Controller", () => {
     await controller.submit("codex-b", [{ type: "text", text: "second target" }]);
 
     expect(adapters).toHaveLength(2);
+    expect(createdTargets).toEqual([
+      { id: "codex-a", harness: "codex" },
+      { id: "codex-b", harness: "codex" },
+    ]);
     expect(adapters[0]?.prompts).toEqual(["first target"]);
     expect(adapters[1]?.prompts).toEqual(["second target"]);
+    expect(adapters[0]?.model).toBe("fast");
+    expect(adapters[1]?.model).toBeNull();
     expect(adapters[1]?.openOptions?.resumeSessionId).toBe("instance-2-old");
     expect(adapters[1]?.synced[0]).toContain("first target");
     expect(session.meta.harnessSessions["codex-a"]).toMatchObject({
@@ -335,20 +342,20 @@ describe("Controller", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
-      createAdapter: (harness) => {
-        const adapter = new FakeAdapter(harness === "claude" ? "claude-code" : harness, {
+      createAdapter: (target) => {
+        const adapter = new FakeAdapter(target.harness === "claude" ? "claude-code" : target.harness, {
           delayMs: 10,
           enter: () => {
             active++;
             maxActive = Math.max(maxActive, active);
-            order.push(`start:${harness}`);
+            order.push(`start:${target.id}`);
           },
           leave: () => {
-            order.push(`end:${harness}`);
+            order.push(`end:${target.id}`);
             active--;
           },
         });
-        adapters.set(harness, adapter);
+        adapters.set(target.id, adapter);
         return adapter;
       },
     });
@@ -435,7 +442,7 @@ describe("Controller", () => {
     expect(session.meta.harnessSessions.codex?.harnessSessionId).toBe("codex-native");
   });
 
-  test("uses the remembered harness model for a new BatonSession", async () => {
+  test("uses the remembered Target model for a new BatonSession", async () => {
     const codex = new FakeAdapter("codex");
     const controller = new Controller({
       session,
@@ -450,7 +457,7 @@ describe("Controller", () => {
     expect(session.meta.harnessSessions.codex?.model).toBe("fast");
   });
 
-  test("uses the remembered harness effort for a new BatonSession", async () => {
+  test("uses the remembered Target effort for a new BatonSession", async () => {
     const codex = new FakeAdapter("codex");
     const controller = new Controller({
       session,
@@ -546,7 +553,7 @@ describe("interaction resolver registry", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
-      createAdapter: (_name, handlers) => new InteractiveAdapter(handlers),
+      createAdapter: (_target, handlers) => new InteractiveAdapter(handlers),
     });
 
     const turn = controller.submit("codex", [{ type: "text", text: "do it" }]);
@@ -645,7 +652,7 @@ describe("interaction resolver registry", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
-      createAdapter: (_name, handlers) => new StartupTrustAdapter(handlers),
+      createAdapter: (_target, handlers) => new StartupTrustAdapter(handlers),
     });
     const outcome = controller.submit("codex", [{ type: "text", text: "go" }]);
     await Bun.sleep(5);
@@ -705,7 +712,7 @@ describe("interaction resolver registry", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
-      createAdapter: (_name, handlers) => new SetupPermissionAdapter(handlers),
+      createAdapter: (_target, handlers) => new SetupPermissionAdapter(handlers),
     });
     const outcome = controller.submit("codex", [{ type: "text", text: "go" }]);
     await Bun.sleep(5);

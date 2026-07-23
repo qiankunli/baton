@@ -79,7 +79,7 @@ describe("cancel cascades to pending Interactions", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
-      createAdapter: (_name, handlers) => new ApprovalHoldingAdapter(handlers),
+      createAdapter: (_target, handlers) => new ApprovalHoldingAdapter(handlers),
     });
 
     const turn = controller.submit("codex", text("do it"));

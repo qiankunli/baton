@@ -8,8 +8,9 @@ export interface HarnessTarget {
 }
 
 /**
- * 一次 Harness open 实际采用的不可变配置。它属于 Baton 控制面，不穿透 Adapter 边界；
- * controller 仍把其中需要的 cwd / model / effort 映射成 Adapter 的 OpenOptions 与能力调用。
+ * 一次 Harness open 实际采用的不可变配置。它属于 Baton 控制面，不穿透 Adapter 实例；
+ * Adapter 工厂只消费 HarnessTarget 来选择实现和 lowering 实例级依赖，controller 仍把
+ * cwd / model / effort 映射成 Adapter 的 OpenOptions 与能力调用。
  */
 export interface HarnessLaunchSnapshot {
   readonly harnessTargetId: string;

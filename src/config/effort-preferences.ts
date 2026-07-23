@@ -1,5 +1,5 @@
 // /effort 与 /model 一样是用户级运行偏好，不改写 config.yaml。session 自己已有的
-// effort 优先；这里仅让新 BatonSession / 新进程沿用各 harness 最近一次显式选择。
+// effort 优先；这里仅让新 BatonSession / 新进程沿用各 HarnessTarget 最近一次显式选择。
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -21,9 +21,9 @@ export function loadEffortPreferences(rootDir?: string): Record<string, string> 
     const persisted = JSON.parse(readFileSync(path, "utf8")) as PersistedEffortPreferences;
     if (!persisted.efforts || typeof persisted.efforts !== "object") return {};
     return Object.fromEntries(
-      Object.entries(persisted.efforts).flatMap(([harness, effort]) =>
-        harness.trim() && typeof effort === "string" && effort.trim() && effort !== "default"
-          ? [[harness, effort] as const]
+      Object.entries(persisted.efforts).flatMap(([harnessTargetId, effort]) =>
+        harnessTargetId.trim() && typeof effort === "string" && effort.trim() && effort !== "default"
+          ? [[harnessTargetId, effort] as const]
           : [],
       ),
     );
@@ -32,11 +32,11 @@ export function loadEffortPreferences(rootDir?: string): Record<string, string> 
   }
 }
 
-/** `default` 表示重新跟随 harness，因此删除该 harness 的持久偏好。 */
-export function saveEffortPreference(rootDir: string, harness: string, effort: string): void {
+/** `default` 表示重新跟随 Harness，因此删除该 Target 的持久偏好。 */
+export function saveEffortPreference(rootDir: string, harnessTargetId: string, effort: string): void {
   const efforts = loadEffortPreferences(rootDir);
-  if (!effort || effort === "default") delete efforts[harness];
-  else efforts[harness] = effort;
+  if (!effort || effort === "default") delete efforts[harnessTargetId];
+  else efforts[harnessTargetId] = effort;
 
   const path = effortPreferencesPath(rootDir);
   const temporary = `${path}.${process.pid}.tmp`;

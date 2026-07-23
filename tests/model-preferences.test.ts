@@ -24,18 +24,18 @@ describe("model preferences", () => {
     expect(modelPreferencesPath(root)).toBe(join(root, "state", "model.json"));
   });
 
-  test("remembers the latest explicit model per harness", () => {
-    saveModelPreference(root, "claude", "sonnet");
-    saveModelPreference(root, "codex", "gpt-5");
+  test("remembers the latest explicit model per HarnessTarget", () => {
+    saveModelPreference(root, "codex-a", "gpt-5");
+    saveModelPreference(root, "codex-b", "gpt-5-mini");
 
-    expect(loadModelPreferences(root)).toEqual({ claude: "sonnet", codex: "gpt-5" });
+    expect(loadModelPreferences(root)).toEqual({ "codex-a": "gpt-5", "codex-b": "gpt-5-mini" });
   });
 
-  test("selecting default clears only that harness preference", () => {
-    saveModelPreference(root, "claude", "sonnet");
-    saveModelPreference(root, "codex", "gpt-5");
-    saveModelPreference(root, "claude", "default");
+  test("selecting default clears only that Target preference", () => {
+    saveModelPreference(root, "codex-a", "gpt-5");
+    saveModelPreference(root, "codex-b", "gpt-5-mini");
+    saveModelPreference(root, "codex-a", "default");
 
-    expect(loadModelPreferences(root)).toEqual({ codex: "gpt-5" });
+    expect(loadModelPreferences(root)).toEqual({ "codex-b": "gpt-5-mini" });
   });
 });

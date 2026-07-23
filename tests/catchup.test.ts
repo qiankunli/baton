@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildCatchUpContext, buildHarnessCatchUpContext } from "../src/context/mention.ts";
+import { buildTargetCatchUpContext } from "../src/context/mention.ts";
+import type { HarnessTarget } from "../src/harness/target.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 let root: string;
@@ -20,68 +21,57 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function turn(harness: string, i: number, agentText: string): void {
-  const turnId = `t_${harness}_${i}`;
-  h.append({ source: { type: "baton" }, kind: "user_message", harness, turnId, payload: { messageId: `${turnId}_u`, content: [{ type: "text", text: `q${i}` }] } });
-  h.append({ source: { type: "baton" }, kind: "agent_message", harness, turnId, payload: { messageId: `${turnId}_a`, content: [{ type: "text", text: agentText }] } });
-  h.append({ source: { type: "baton" }, kind: "state_update", harness, turnId, payload: { state: "idle", stopReason: "end_turn" } });
+function turn(target: HarnessTarget, i: number, agentText: string): void {
+  const turnId = `t_${target.id}_${i}`;
+  const coordinate = { harness: target.harness, harnessTargetId: target.id, turnId };
+  h.append({
+    source: { type: "baton" },
+    kind: "user_message",
+    ...coordinate,
+    payload: { messageId: `${turnId}_u`, content: [{ type: "text", text: `q${i}` }] },
+  });
+  h.append({
+    source: { type: "baton" },
+    kind: "agent_message",
+    ...coordinate,
+    payload: { messageId: `${turnId}_a`, content: [{ type: "text", text: agentText }] },
+  });
+  h.append({
+    source: { type: "baton" },
+    kind: "state_update",
+    ...coordinate,
+    payload: { state: "idle", stopReason: "end_turn" },
+  });
   h.summarizeTurn(turnId);
 }
 
-describe("buildCatchUpContext", () => {
-  test("null when no turns from other harnesses", () => {
-    turn("codex", 1, "codex did a thing");
-    expect(buildCatchUpContext(h, "codex")).toBeNull();
-  });
-
-  test("includes other harnesses' turns for a newcomer", () => {
-    turn("codex", 1, "codex 决定用 pnpm");
-    const ctx = buildCatchUpContext(h, "claude-code");
-    expect(ctx).toContain("codex");
-    expect(ctx).toContain("pnpm");
-  });
-
-  test("only turns after my last participation", () => {
-    turn("codex", 1, "旧进展");
-    turn("claude-code", 1, "claude 参与过了");
-    turn("codex", 2, "新进展");
-    const ctx = buildCatchUpContext(h, "claude-code");
-    expect(ctx).toContain("新进展");
-    expect(ctx).not.toContain("旧进展");
-  });
-
-  test("null when I am fully caught up", () => {
-    turn("codex", 1, "x");
-    turn("claude-code", 1, "y");
-    expect(buildCatchUpContext(h, "claude-code")).toBeNull();
-  });
-});
-
-describe("buildHarnessCatchUpContext", () => {
+describe("buildTargetCatchUpContext", () => {
   test("fresh native session receives the complete BatonSession history", () => {
-    turn("codex", 1, "codex history");
-    turn("claude-code", 2, "claude history");
-    const result = buildHarnessCatchUpContext(h, {
-      harness: "codex",
+    turn({ id: "codex-a", harness: "codex" }, 1, "codex history");
+    turn({ id: "example", harness: "example" }, 2, "other history");
+    const result = buildTargetCatchUpContext(h, {
+      target: { id: "codex-a", harness: "codex" },
       sinceSeq: 0,
-      includeHarnessTurns: true,
+      includeTargetTurns: true,
     });
     expect(result?.text).toContain("codex history");
-    expect(result?.text).toContain("claude history");
+    expect(result?.text).toContain("other history");
     expect(result?.throughSeq).toBe(h.readEvents().at(-1)?.seq);
   });
 
-  test("resumed native session only receives other harnesses after its watermark", () => {
-    turn("codex", 1, "already native");
+  test("resumed native session excludes only its own Target, not a sibling using the same Harness", () => {
+    turn({ id: "codex-a", harness: "codex" }, 1, "already native");
     const watermark = h.readEvents().at(-1)!.seq;
-    turn("codex", 2, "also native");
-    turn("claude-code", 3, "missing context");
-    const result = buildHarnessCatchUpContext(h, {
-      harness: "codex",
+    turn({ id: "codex-a", harness: "codex" }, 2, "also native");
+    turn({ id: "codex-b", harness: "codex" }, 3, "sibling target context");
+    turn({ id: "claude", harness: "claude-code" }, 4, "other harness context");
+    const result = buildTargetCatchUpContext(h, {
+      target: { id: "codex-a", harness: "codex" },
       sinceSeq: watermark,
-      includeHarnessTurns: false,
+      includeTargetTurns: false,
     });
-    expect(result?.text).toContain("missing context");
+    expect(result?.text).toContain("sibling target context");
+    expect(result?.text).toContain("other harness context");
     expect(result?.text).not.toContain("already native");
     expect(result?.text).not.toContain("also native");
   });

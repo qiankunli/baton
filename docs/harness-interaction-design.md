@@ -240,7 +240,7 @@ type InteractionView = PermissionInteractionView | QuestionInteractionView | Eli
 #### Hook trust
 
 - harness 启动时发现 hook 定义尚未信任或已变化，打开 `kind:hook_trust` Interaction；它不是某次工具调用的 permission。
-- Baton 按 hook `key + currentHash` 把用户决定持久到 `~/.baton/state/hook.json` 的 `trust.harnesses` 区；hash 不变时后续启动自动启用，hash 改变时重新询问。该文件为后续 hook 级配置保留其他平级字段。
+- Baton 按 hook `key + currentHash` 把用户决定持久到 `~/.baton/state/hook.json` 的 `trust.targets` 区；同一 Target 内 hash 不变时后续启动自动启用，hash 改变时重新询问。该文件为后续 hook 级配置保留其他平级字段。
 - 这是 harness setup behavior：首次/变化时以 Interaction 阻塞询问，自动命中持久信任时以 timeline notice 留痕，不能静默 bypass。信任始终逐 hook 校验；notice 可按 plugin/source 聚合，避免同一 owner 的多条 hook 刷屏。
 - Codex app-server 当前只有 `hooks/list`、没有 trust 写 RPC；adapter 在 Baton 精确 hash 校验通过后，以官方一次性 bypass flag 重启 harness 进程。这个 wire 细节不进入 core Interaction 类型。
 
@@ -464,7 +464,7 @@ interface CommandDiscoverable {
 ```
 
 - Adapter 首次发现和中途变化都发完整 `available_commands_update`；
-- baton registry 合并 baton commands 与当前 harness commands，ID/owner 不冲突；
+- baton registry 合并 baton commands 与当前 HarnessTarget commands，ID/owner 不冲突；
 - 对齐 ACP，harness command 首期仍作为特殊 prompt text 执行，但必须通过已发现 command descriptor，不允许任意文本透传；
 - Claude 映射 SDK `supportedCommands()` / commands-changed；Codex 只映射 app-server 明确暴露的能力，不能假设原生 TUI slash command 在 app-server 中等价存在。
 

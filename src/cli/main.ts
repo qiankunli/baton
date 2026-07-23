@@ -120,7 +120,7 @@ async function main(): Promise<void> {
     });
     return resolution;
   };
-  const adapter = createHarnessAdapter(agentName, {
+  const adapter = createHarnessAdapter(target, {
     interactionHandler,
     diagnostic: (entry) => session.diagnostic(entry),
     config,

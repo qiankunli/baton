@@ -2,6 +2,7 @@
 // 以"用户提供的材料"身份拼进目标 agent 的 prompt。二期换 mention:// 句柄 + CLI 惰性回查。
 
 import type { TurnSummary } from "../event/types.ts";
+import type { HarnessTarget } from "../harness/target.ts";
 import { sessionDisplayTitle, type SessionHandle, type SessionStore } from "../store/store.ts";
 
 /** @bs_<ULID>：MVP 只支持引用整个 BatonSession */
@@ -14,7 +15,7 @@ export interface ParsedMention {
   batonSessionId: string;
 }
 
-interface HarnessSummary {
+interface TurnSummaryRecord {
   harness: string;
   harnessTargetId?: string;
   seq: number;
@@ -92,30 +93,7 @@ export function buildSessionContext(
   return parts.join("\n\n");
 }
 
-/**
- * 同会话多 agent 的"补课"上下文：目标 harness 上次参与之后、其它 harness 完成的 turn 摘要。
- * chat-first TUI 里切换 @agent 时自动注入，让新接手的 agent 无需手动 @ 就知道进展。
- * 无需补课时返回 null。
- */
-export function buildCatchUpContext(
-  handle: SessionHandle,
-  harness: string,
-  budgetChars: number = DEFAULT_MENTION_BUDGET_CHARS,
-): string | null {
-  const summaries = harnessSummaries(handle);
-  let lastMine = 0;
-  for (const s of summaries) {
-    if (s.harness === harness) lastMine = s.seq;
-  }
-  return buildHarnessCatchUpContext(handle, {
-    harness,
-    sinceSeq: lastMine,
-    includeHarnessTurns: false,
-    budgetChars,
-  })?.text ?? null;
-}
-
-function harnessSummaries(handle: SessionHandle): HarnessSummary[] {
+function turnSummaries(handle: SessionHandle): TurnSummaryRecord[] {
   return handle
     .readEvents()
     .filter((e) => e.kind === "_baton_turn_summary")
@@ -128,40 +106,36 @@ function harnessSummaries(handle: SessionHandle): HarnessSummary[] {
 }
 
 /**
- * 生成 harness 尚未同步的 BatonSession 历史，并返回本批覆盖到的事件水位。
- * 新建原生会话时 includeHarnessTurns=true，从零恢复完整逻辑历史；resume 时只补其它 harness 的增量。
+ * 生成 Target 尚未同步的 BatonSession 历史，并返回本批覆盖到的事件水位。
+ * 新建原生会话时 includeTargetTurns=true，从零恢复完整逻辑历史；resume 时只补其它 Target 的增量。
  *
  * 同步语义（与 controller 的注入时点水位配套，三条规则都有测试钉住）：
- * - **自身产出不注入**：harness 自己的 driven/observed turn（summary 的 envelope.harness
- *   等于目标 harness）是其亲历内容，注入即复读；
+ * - **自身产出不注入**：Target 自己的 driven/observed turn（summary 的
+ *   envelope.harnessTargetId 等于目标 id）是其亲历内容，注入即复读；
  * - **throughSeq = 全量 summary 尾 seq（含自己的）**：亲历即已同步，水位越过它是正确的。
  *   注意 summary 事件本身不进注入文本，其 userText 已由 summarize 时的
  *   stripBatonInjectedContext 剥掉 <baton-sync> 标签——sync 块不经 summary 递归放大；
  * - **预算裁剪是有意的有损压缩**：从最新往回装，装不下的早期 turn 以
  *   "(N earlier turns omitted)" 一句代偿且不回补（throughSeq 照常推进）。
  */
-export function buildHarnessCatchUpContext(
+export function buildTargetCatchUpContext(
   handle: SessionHandle,
   opts: {
-    harness: string;
-    harnessTargetId?: string;
+    target: HarnessTarget;
     sinceSeq: number;
-    includeHarnessTurns: boolean;
+    includeTargetTurns: boolean;
     budgetChars?: number;
   },
 ): HarnessCatchUpContext | null {
-  const summaries = harnessSummaries(handle);
+  const summaries = turnSummaries(handle);
   const missed = summaries.filter((item) => {
     if (item.seq <= opts.sinceSeq) return false;
-    if (opts.includeHarnessTurns) return true;
-    const isOwnTarget = opts.harnessTargetId
-      ? item.harnessTargetId === opts.harnessTargetId
-      : item.harness === opts.harness;
-    return !isOwnTarget;
+    if (opts.includeTargetTurns) return true;
+    return item.harnessTargetId !== opts.target.id;
   });
   if (missed.length === 0) return null;
 
-  const header = opts.includeHarnessTurns
+  const header = opts.includeTargetTurns
     ? "# BatonSession history (auto-restored by baton)"
     : "# Latest progress from other agents in this session (auto-synced by baton)";
   const budgetChars = opts.budgetChars ?? DEFAULT_MENTION_BUDGET_CHARS;

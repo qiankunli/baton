@@ -30,8 +30,8 @@ describe("harness registry", () => {
 
   test("constructs adapters without putting harness branches in the TUI or session controller", () => {
     const options = { interactionHandler, config: DEFAULT_CONFIG };
-    expect(createHarnessAdapter("codex", options).harness).toBe("codex");
-    expect(createHarnessAdapter("claude", options).harness).toBe("claude-code");
+    expect(createHarnessAdapter({ id: "codex-a", harness: "codex" }, options).harness).toBe("codex");
+    expect(createHarnessAdapter({ id: "claude-a", harness: "claude" }, options).harness).toBe("claude-code");
   });
 
   test("maps current commands to explicit default HarnessTargets", () => {
