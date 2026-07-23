@@ -14,12 +14,12 @@ import { join } from "node:path";
 
 import type {
   AdapterCapabilities,
-  AgentAdapter,
+  HarnessAdapter,
   EventSink,
   OpenOptions,
   PromptInput,
   PromptReceipt,
-  ProviderSessionRef,
+  HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
 import { BatonSessionRuntime } from "../src/session/runtime.ts";
@@ -41,11 +41,11 @@ afterEach(() => {
 
 /**
  * submit 后挂起、由测试显式驱动事件的 fake adapter（形态参考
- * provider-initiated-turn.test.ts 的 WakingAdapter）：admission 通过即暴露
+ * harness-initiated-turn.test.ts 的 WakingAdapter）：admission 通过即暴露
  * sink/turnId，流式事件与终态都由测试经 emit 逐个注入。
  */
-class StreamingAdapter implements AgentAdapter {
-  readonly provider = "claude-code";
+class StreamingAdapter implements HarnessAdapter {
+  readonly harness = "claude-code";
   readonly capabilities: AdapterCapabilities = { prompt: {} };
   sink?: EventSink;
   turnId?: string;
@@ -55,29 +55,29 @@ class StreamingAdapter implements AgentAdapter {
     this.admitted = resolve;
   });
 
-  async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+  async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
     this.sink = sink;
-    return { provider: this.provider, providerSessionId: "streaming-ref", resumed: false };
+    return { harness: this.harness, harnessSessionId: "streaming-ref", resumed: false };
   }
 
-  async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.turnId = input.turnId;
     this.admitted();
     return { accepted: true };
   }
 
-  /** 模拟 provider 在 turn 运行中经同一 sink 上报一个事件（走 runtime.onAdapterEvent） */
+  /** 模拟 harness 在 turn 运行中经同一 sink 上报一个事件（走 runtime.onAdapterEvent） */
   emit(ev: AnyNewEvent): void {
     this.sink?.(ev);
   }
 
-  async cancel(_ref: ProviderSessionRef): Promise<void> {}
-  async close(_ref: ProviderSessionRef): Promise<void> {}
+  async cancel(_ref: HarnessSessionRef): Promise<void> {}
+  async close(_ref: HarnessSessionRef): Promise<void> {}
 }
 
 // ---- 契约：普通流式事件 → 恰好一次视图通知 ----
 // 参数化覆盖 turn 运行中最高频的三类中间过程事件；对每一个事件断言"恰好 1"：
-// 0 = 事件到不了投影（丢更新，provider-initiated-turn.test.ts 钉住的那半边）；
+// 0 = 事件到不了投影（丢更新，harness-initiated-turn.test.ts 钉住的那半边）；
 // 2 = append 广播之外又走了 runtime onStateChange（#112 的双重建回归，这半边归本文件）。
 
 describe("single-channel view notification per streaming event", () => {
@@ -86,7 +86,7 @@ describe("single-channel view notification per streaming event", () => {
       name: "agent_message_chunk",
       event: (turnId) => ({
         kind: "agent_message_chunk",
-        provider: "claude-code",
+        harness: "claude-code",
         turnId,
         payload: { messageId: "m_stream", content: { type: "text", text: "chunk" } },
       }),
@@ -95,7 +95,7 @@ describe("single-channel view notification per streaming event", () => {
       name: "agent_thought_chunk",
       event: (turnId) => ({
         kind: "agent_thought_chunk",
-        provider: "claude-code",
+        harness: "claude-code",
         turnId,
         payload: { messageId: "m_thought", content: { type: "text", text: "pondering" } },
       }),
@@ -104,7 +104,7 @@ describe("single-channel view notification per streaming event", () => {
       name: "tool_call_update",
       event: (turnId) => ({
         kind: "tool_call_update",
-        provider: "claude-code",
+        harness: "claude-code",
         turnId,
         payload: { toolCallId: "tc_1", title: "Read file", kind: "read", status: "in_progress" },
       }),
@@ -143,7 +143,7 @@ describe("single-channel view notification per streaming event", () => {
       // 收口 turn，别让 pending 的 submit promise 泄漏到测试外
       adapter.emit({
         kind: "state_update",
-        provider: "claude-code",
+        harness: "claude-code",
         turnId: adapter.turnId!,
         payload: { state: "idle", stopReason: "end_turn" },
       });

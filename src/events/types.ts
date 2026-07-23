@@ -46,9 +46,9 @@ export interface DiffBlock {
 export type ContentBlock = TextBlock | ImageBlock | DiffBlock | { type: string; [key: string]: unknown };
 
 // ---- prompt input blocks ----
-// 输入与输出刻意不共用开放的 ContentBlock（见 docs/provider-interaction-design.md §4.2）：
+// 输入与输出刻意不共用开放的 ContentBlock（见 docs/harness-interaction-design.md §4.2）：
 // prompt 是 adapter 的入参契约，必须是可显式 admission 的闭合集合——不支持某 block 时
-// 报带类型的错误，而不是被 textOf() 之类静默降级；输出侧保持开放联合以容纳 provider 差异。
+// 报带类型的错误，而不是被 textOf() 之类静默降级；输出侧保持开放联合以容纳 harness 差异。
 // 词汇对齐 ACP/MCP content（text/image/audio/resource/resource_link）。
 
 // 以下三个用 type alias 而不是 interface：object literal type 有隐式 index signature，
@@ -87,10 +87,10 @@ export interface StateUpdate {
   stopReason?: StopReason;
   /**
    * running 的发起方。缺省 = baton 驱动的 driven turn（用户 submit 经队列串行执行）；
-   * "provider" = agent 自发开界的 observed turn（如 Claude Code 后台任务唤醒）——
+   * "harness" = agent 自发开界的 observed turn（如 Claude Code 后台任务唤醒）——
    * baton 不控制其开始，只划界、记账、投影，不进 turn 队列。
    */
-  origin?: "provider";
+  origin?: "harness";
 }
 
 /**
@@ -123,7 +123,7 @@ export interface MessageChunk {
 /**
  * 工具终态词汇。declined 是一等成员而非 failed 的别名：它表示"被用户/策略拒绝、
  * 操作没有执行"，展示待遇（⊘/warning 色）与后续动作（重发并授权）都不同于执行出错。
- * adapter 边界负责把 provider 词汇翻译到这里，且必须白名单式映射——只有明确的成功值
+ * adapter 边界负责把 harness 词汇翻译到这里，且必须白名单式映射——只有明确的成功值
  * 才映射 completed，未知终态悲观归 failed；乐观兜底曾把 codex 的 declined 渲染成绿勾。
  */
 export type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed" | "declined" | (string & {});
@@ -180,17 +180,17 @@ export interface PlanUpdate {
  * 最危险的选项长得最安全。
  *
  * **两轴都只是渲染提示**（定色、排序、确认力度），**不是授权语义的真相**：
- * 授权"作用于什么"（本次调用 / 该工具 / 命令前缀 / host / 同一批文件）是 provider
+ * 授权"作用于什么"（本次调用 / 该工具 / 命令前缀 / host / 同一批文件）是 harness
  * 方言，闭不了包——codex 自己的 `acceptForSession` 对 command 是"session 审批缓存"、
- * 对 file change 是"同一批文件"。作用对象只由 `name` 承载（provider 原话，如
+ * 对 file change 是"同一批文件"。作用对象只由 `name` 承载（harness 原话，如
  * "Allow and remember: make -C devloop bump-version"）。**UI 不得用两轴合成标签**，
  * 合成出来的 "Allow · persistent" 必然丢掉作用对象。
  */
 export interface PermissionOption {
   optionId: string;
-  /** provider 原话标签——**唯一权威的语义来源**，含作用对象。UI 展示它，不要重造。 */
+  /** harness 原话标签——**唯一权威的语义来源**，含作用对象。UI 展示它，不要重造。 */
   name: string;
-  /** 极性：闭合、跨 provider 稳定。 */
+  /** 极性：闭合、跨 harness 稳定。 */
   polarity: "allow" | "reject";
   /**
    * 这次决定生效多久：闭合三档。**只表达"多久"，不表达"作用于什么"**——
@@ -201,7 +201,7 @@ export interface PermissionOption {
   lifetime: "once" | "session" | "persistent";
 }
 
-// Request ↔ Response 交互轴（provider 询问用户 ↔ 用户答复，见 provider-interaction-design.md
+// Request ↔ Response 交互轴（harness 询问用户 ↔ 用户答复，见 harness-interaction-design.md
 // §3.5）：permission / question / hook_trust / (elicitation) 是同轴不同 `kind`。各 request contract 各自
 // 独立（payload/终态不复用），只共享 requestId 路由与统一 respond()——不合成万能字段。
 // `kind` 是 InteractionRequest 联合的判别式（与 envelope kind 冗余但让 request 可独立传递）。
@@ -241,10 +241,10 @@ export interface ApprovalReviewUpdate {
    * 内部不再面对开放值。approved→留痕、denied→拒绝、aborted→未决/异常（投影呈 failed）。
    */
   decision: "approved" | "denied" | "aborted";
-  /** provider 给出时透传的风险等级 */
+  /** harness 给出时透传的风险等级 */
   riskLevel?: "low" | "medium" | "high" | "critical" | (string & {});
   /**
-   * provider 回吐的授权等级（非“回退给用户”，不改变委托语义）。Codex compact low-risk
+   * harness 回吐的授权等级（非“回退给用户”，不改变委托语义）。Codex compact low-risk
    * allow 可能合成 unknown；这是 wire 上的明确值，照常保真，只有字段缺失才表示未返回。
    */
   userAuthorization?: "unknown" | "low" | "medium" | "high" | (string & {});
@@ -291,18 +291,18 @@ export interface HookTrustCandidate {
 }
 
 /**
- * provider 启动前发现 hooks 尚未被信任：询问用户是否信任当前精确定义。Baton 按
+ * harness 启动前发现 hooks 尚未被信任：询问用户是否信任当前精确定义。Baton 按
  * definition hash 持久化，定义不变时后续进程自动放行；这是启动信任，不是单次
  * 工具执行权限，故不复用 PermissionRequest。
  */
 export interface HookTrustRequest {
   kind: "hook_trust";
   requestId: string;
-  providerName: string;
+  harnessName: string;
   hooks: HookTrustCandidate[];
 }
 
-/** InteractionRequest：provider→用户 request 的判别联合（按 `kind` 收窄）。elicitation 待接入 */
+/** InteractionRequest：harness→用户 request 的判别联合（按 `kind` 收窄）。elicitation 待接入 */
 export type InteractionRequest = PermissionRequest | QuestionRequest | HookTrustRequest;
 
 export interface QuestionResolved {
@@ -316,14 +316,14 @@ export interface HookTrustResolved {
   outcome: "trusted" | "skipped" | "cancelled" | (string & {});
 }
 
-/** provider 声明的可用 slash command（形状对齐 ACP available command） */
+/** harness 声明的可用 slash command（形状对齐 ACP available command） */
 export interface AvailableCommand {
   name: string;
   description?: string;
   input?: { hint: string };
 }
 
-/** 完整快照：每次整体替换当前 provider command 列表，不做增量合并（对齐 ACP） */
+/** 完整快照：每次整体替换当前 harness command 列表，不做增量合并（对齐 ACP） */
 export interface AvailableCommandsUpdate {
   commands: AvailableCommand[];
 }
@@ -369,7 +369,7 @@ export interface ContextUsageUpdate {
 }
 
 /**
- * 结构化错误，不能只塞 stopReason。willRetry=true 表示 provider 仍在重试，
+ * 结构化错误，不能只塞 stopReason。willRetry=true 表示 harness 仍在重试，
  * 此时 session 不得被切 idle（design §4.9）。
  */
 export interface ErrorUpdate {
@@ -460,7 +460,7 @@ export type EventPayloadMap = {
 export type EventKind = keyof EventPayloadMap;
 
 /**
- * Request↔Response 交互轴（kernel §6）的 request 事件 kinds：provider 阻塞征询用户、
+ * Request↔Response 交互轴（kernel §6）的 request 事件 kinds：harness 阻塞征询用户、
  * 等待带 requestId 的 Response。turn 归属、requires_action 派生、setup 阶段补归属等
  * 生命周期逻辑按"是不是 request"判断，不逐个枚举 kind——新增 kind 只扩这张表。
  */
@@ -480,8 +480,8 @@ export interface EventEnvelope<K extends EventKind = EventKind> {
   /** session 内单调递增，reduce 定序靠它（不靠 ID、不靠 ts） */
   seq: number;
   batonSessionId: string;
-  provider: string;
-  providerSessionId?: string;
+  harness: string;
+  harnessSessionId?: string;
   turnId?: string;
   kind: K;
   payload: EventPayloadMap[K];

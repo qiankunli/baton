@@ -8,42 +8,42 @@ import { join } from "node:path";
 
 import type {
   AdapterCapabilities,
-  AgentAdapter,
+  HarnessAdapter,
   EventSink,
   OpenOptions,
   PromptInput,
   PromptReceipt,
-  ProviderSessionRef,
+  HarnessSessionRef,
   SteerReceipt,
 } from "../src/adapters/types.ts";
 import { textOf, type PromptBlock } from "../src/events/types.ts";
 import { BatonSessionRuntime } from "../src/session/runtime.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
-/** turn 停在进行中，直到 finish() 或 cancel()；cancel 模拟 provider 的 cancelled 终态 */
-class HoldingAdapter implements AgentAdapter {
+/** turn 停在进行中，直到 finish() 或 cancel()；cancel 模拟 harness 的 cancelled 终态 */
+class HoldingAdapter implements HarnessAdapter {
   readonly capabilities: AdapterCapabilities = { prompt: {}, steer: { supported: true } };
   sink?: EventSink;
   prompts: string[] = [];
   private active?: PromptInput;
 
-  constructor(readonly provider: string) {}
+  constructor(readonly harness: string) {}
 
-  async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+  async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
     this.sink = sink;
-    return { provider: this.provider, providerSessionId: `${this.provider}-ref`, resumed: false };
+    return { harness: this.harness, harnessSessionId: `${this.harness}-ref`, resumed: false };
   }
 
-  async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.active = input;
     this.prompts.push(textOf(input.blocks));
     return { accepted: true };
   }
 
-  async steer(_ref: ProviderSessionRef, input: PromptInput): Promise<SteerReceipt> {
+  async steer(_ref: HarnessSessionRef, input: PromptInput): Promise<SteerReceipt> {
     this.sink?.({
       kind: "user_message",
-      provider: this.provider,
+      harness: this.harness,
       turnId: input.turnId,
       payload: { messageId: input.messageId, content: input.blocks, delivery: "steer" },
     });
@@ -56,16 +56,16 @@ class HoldingAdapter implements AgentAdapter {
     this.active = undefined;
     this.sink?.({
       kind: "state_update",
-      provider: this.provider,
+      harness: this.harness,
       turnId: input.turnId,
       payload: { state: "idle", stopReason },
     });
   }
 
-  async cancel(_ref: ProviderSessionRef): Promise<void> {
+  async cancel(_ref: HarnessSessionRef): Promise<void> {
     this.finish("cancelled");
   }
-  async close(_ref: ProviderSessionRef): Promise<void> {}
+  async close(_ref: HarnessSessionRef): Promise<void> {}
 }
 
 let root: string;
@@ -77,7 +77,7 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-function runtimeWith(adapter: AgentAdapter): BatonSessionRuntime {
+function runtimeWith(adapter: HarnessAdapter): BatonSessionRuntime {
   return new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 }
 const text = (t: string): PromptBlock[] => [{ type: "text", text: t }];
@@ -96,7 +96,7 @@ describe("Input lifecycle (InputRecord)", () => {
     const inputs = runtime.inputs;
     expect(inputs).toHaveLength(1);
     expect(inputs[0]?.messageId).toMatch(/^m_/);
-    expect(inputs[0]).toMatchObject({ status: "admitted", delivery: "prompt", provider: "codex" });
+    expect(inputs[0]).toMatchObject({ status: "admitted", delivery: "prompt", harness: "codex" });
 
     adapter.finish("end_turn");
     await turn;

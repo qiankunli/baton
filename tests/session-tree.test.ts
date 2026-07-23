@@ -12,7 +12,7 @@ function meta(
     cwd: "/repo",
     createdAt: opts.createdAt ?? "2026-07-01T00:00:00Z",
     ...(opts.updatedAt ? { updatedAt: opts.updatedAt } : {}),
-    providerSessions: {},
+    harnessSessions: {},
     ...(opts.forkedFrom ? { forkedFrom: { batonSessionId: opts.forkedFrom, throughSeq: 1 } } : {}),
   } as SessionMeta;
 }

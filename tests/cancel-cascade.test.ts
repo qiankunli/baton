@@ -1,4 +1,4 @@
-// cancel-cascade（provider-interaction-design §4.7）：turn 被打断时，仍挂起的 request 必须
+// cancel-cascade（harness-interaction-design §4.7）：turn 被打断时，仍挂起的 request 必须
 // 随之收口——adapter 的 await 解开、发 *_resolved(cancelled)、reduce 的 requires_action 落下，
 // 不留悬挂 waiter。参考 codex clear_pending_waiters→Abort、opencode interrupt 的 ensuring(delete)。
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -8,32 +8,32 @@ import { join } from "node:path";
 
 import type {
   AdapterCapabilities,
-  AgentAdapter,
+  HarnessAdapter,
   EventSink,
   OpenOptions,
   PromptInput,
   PromptReceipt,
-  ProviderSessionRef,
+  HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { PermissionRequest, PromptBlock } from "../src/events/types.ts";
 import { BatonSessionRuntime, type InteractionHandlers } from "../src/session/runtime.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** turn 阻塞在一个审批 request 上，直到 respond 或（cancel 时）级联取消；cancel() 合成 idle(cancelled) */
-class ApprovalHoldingAdapter implements AgentAdapter {
-  readonly provider = "codex";
+class ApprovalHoldingAdapter implements HarnessAdapter {
+  readonly harness = "codex";
   readonly capabilities: AdapterCapabilities = { prompt: {} };
   sink?: EventSink;
   private active?: PromptInput;
 
   constructor(private readonly handlers: InteractionHandlers) {}
 
-  async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+  async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
     this.sink = sink;
-    return { provider: this.provider, providerSessionId: "hold-ref", resumed: false };
+    return { harness: this.harness, harnessSessionId: "hold-ref", resumed: false };
   }
 
-  async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.active = input;
     const emit = (ev: Parameters<EventSink>[0]) => this.sink?.({ ...ev, turnId: input.turnId });
     void (async () => {
@@ -43,11 +43,11 @@ class ApprovalHoldingAdapter implements AgentAdapter {
         title: "Run command?",
         options: [{ optionId: "allow", name: "Allow", polarity: "allow", lifetime: "once" }],
       };
-      emit({ kind: "permission_request", provider: this.provider, payload: request });
+      emit({ kind: "permission_request", harness: this.harness, payload: request });
       const outcome = await this.handlers.requestHandler(request);
       emit({
         kind: "permission_resolved",
-        provider: this.provider,
+        harness: this.harness,
         payload:
           outcome.kind === "cancelled"
             ? { requestId: request.requestId, outcome: "cancelled" }
@@ -57,18 +57,18 @@ class ApprovalHoldingAdapter implements AgentAdapter {
     return { accepted: true };
   }
 
-  async cancel(_ref: ProviderSessionRef): Promise<void> {
+  async cancel(_ref: HarnessSessionRef): Promise<void> {
     const input = this.active;
     if (input) {
       this.sink?.({
         kind: "state_update",
-        provider: this.provider,
+        harness: this.harness,
         turnId: input.turnId,
         payload: { state: "idle", stopReason: "cancelled" },
       });
     }
   }
-  async close(_ref: ProviderSessionRef): Promise<void> {}
+  async close(_ref: HarnessSessionRef): Promise<void> {}
 }
 
 let root: string;

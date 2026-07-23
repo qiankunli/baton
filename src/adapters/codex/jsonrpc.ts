@@ -111,7 +111,7 @@ export class JsonRpcPeer {
       this.diagnostic({
         level: "warn",
         component: "codex.jsonrpc",
-        provider: "codex",
+        harness: "codex",
         message: "ignored non-JSON app-server output",
         error: diagnosticError(error),
         details: { line: line.slice(0, 4096) },
@@ -127,7 +127,7 @@ export class JsonRpcPeer {
         this.diagnostic({
           level: "error",
           component: "codex.notification",
-          provider: "codex",
+          harness: "codex",
           message: `notification handler failed: ${msg.method}`,
           error: diagnosticError(error),
           details: { method: msg.method },
@@ -151,7 +151,7 @@ export class JsonRpcPeer {
       this.diagnostic({
         level: "error",
         component: "codex.server-request",
-        provider: "codex",
+        harness: "codex",
         message: `server request handler failed: ${msg.method}`,
         error: diagnosticError(err),
         details: { method: msg.method },

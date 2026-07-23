@@ -1,4 +1,4 @@
-// 中间过程最大公约数规范的 provider 适配测试：两家 adapter 必须把各自原生形态
+// 中间过程最大公约数规范的 harness 适配测试：两家 adapter 必须把各自原生形态
 // 归一成同一套事件（plan_update / diff 内容块 / tool_call_content_chunk）。
 import { describe, expect, test } from "bun:test";
 

@@ -14,13 +14,13 @@ export interface ParsedMention {
   batonSessionId: string;
 }
 
-interface ProviderSummary {
-  provider: string;
+interface HarnessSummary {
+  harness: string;
   seq: number;
   summary: TurnSummary;
 }
 
-export interface ProviderCatchUpContext {
+export interface HarnessCatchUpContext {
   text: string;
   throughSeq: number;
 }
@@ -60,8 +60,8 @@ export function buildSessionContext(
   const session = store.openSession(batonSessionId);
   const summaries = session.loadState().turnSummaries;
   const title = sessionDisplayTitle(session.meta);
-  const providers = Object.keys(session.meta.providerSessions).join(", ") || "unknown";
-  const header = `# Session summary: ${title} (id: ${batonSessionId}, agent: ${providers})`;
+  const harnesses = Object.keys(session.meta.harnessSessions).join(", ") || "unknown";
+  const header = `# Session summary: ${title} (id: ${batonSessionId}, agent: ${harnesses})`;
 
   if (summaries.length === 0) {
     return `${header}\n(no completed turns in this session yet)`;
@@ -92,64 +92,64 @@ export function buildSessionContext(
 }
 
 /**
- * 同会话多 agent 的"补课"上下文：目标 provider 上次参与之后、其它 provider 完成的 turn 摘要。
+ * 同会话多 agent 的"补课"上下文：目标 harness 上次参与之后、其它 harness 完成的 turn 摘要。
  * chat-first TUI 里切换 @agent 时自动注入，让新接手的 agent 无需手动 @ 就知道进展。
  * 无需补课时返回 null。
  */
 export function buildCatchUpContext(
   handle: SessionHandle,
-  provider: string,
+  harness: string,
   budgetChars: number = DEFAULT_MENTION_BUDGET_CHARS,
 ): string | null {
-  const summaries = providerSummaries(handle);
+  const summaries = harnessSummaries(handle);
   let lastMine = 0;
   for (const s of summaries) {
-    if (s.provider === provider) lastMine = s.seq;
+    if (s.harness === harness) lastMine = s.seq;
   }
-  return buildProviderCatchUpContext(handle, {
-    provider,
+  return buildHarnessCatchUpContext(handle, {
+    harness,
     sinceSeq: lastMine,
-    includeProviderTurns: false,
+    includeHarnessTurns: false,
     budgetChars,
   })?.text ?? null;
 }
 
-function providerSummaries(handle: SessionHandle): ProviderSummary[] {
+function harnessSummaries(handle: SessionHandle): HarnessSummary[] {
   return handle
     .readEvents()
     .filter((e) => e.kind === "_baton_turn_summary")
-    .map((e) => ({ provider: e.provider, seq: e.seq, summary: e.payload as TurnSummary }));
+    .map((e) => ({ harness: e.harness, seq: e.seq, summary: e.payload as TurnSummary }));
 }
 
 /**
- * 生成 provider 尚未同步的 BatonSession 历史，并返回本批覆盖到的事件水位。
- * 新建原生会话时 includeProviderTurns=true，从零恢复完整逻辑历史；resume 时只补其它 provider 的增量。
+ * 生成 harness 尚未同步的 BatonSession 历史，并返回本批覆盖到的事件水位。
+ * 新建原生会话时 includeHarnessTurns=true，从零恢复完整逻辑历史；resume 时只补其它 harness 的增量。
  *
  * 同步语义（与 runtime 的注入时点水位配套，三条规则都有测试钉住）：
- * - **自身产出不注入**：provider 自己的 driven/observed turn（summary 的 envelope.provider
- *   等于目标 provider）是其亲历内容，注入即复读；
+ * - **自身产出不注入**：harness 自己的 driven/observed turn（summary 的 envelope.harness
+ *   等于目标 harness）是其亲历内容，注入即复读；
  * - **throughSeq = 全量 summary 尾 seq（含自己的）**：亲历即已同步，水位越过它是正确的。
  *   注意 summary 事件本身不进注入文本，其 userText 已由 summarize 时的
  *   stripBatonInjectedContext 剥掉 <baton-sync> 标签——sync 块不经 summary 递归放大；
  * - **预算裁剪是有意的有损压缩**：从最新往回装，装不下的早期 turn 以
  *   "(N earlier turns omitted)" 一句代偿且不回补（throughSeq 照常推进）。
  */
-export function buildProviderCatchUpContext(
+export function buildHarnessCatchUpContext(
   handle: SessionHandle,
   opts: {
-    provider: string;
+    harness: string;
     sinceSeq: number;
-    includeProviderTurns: boolean;
+    includeHarnessTurns: boolean;
     budgetChars?: number;
   },
-): ProviderCatchUpContext | null {
-  const summaries = providerSummaries(handle);
+): HarnessCatchUpContext | null {
+  const summaries = harnessSummaries(handle);
   const missed = summaries.filter(
-    (item) => item.seq > opts.sinceSeq && (opts.includeProviderTurns || item.provider !== opts.provider),
+    (item) => item.seq > opts.sinceSeq && (opts.includeHarnessTurns || item.harness !== opts.harness),
   );
   if (missed.length === 0) return null;
 
-  const header = opts.includeProviderTurns
+  const header = opts.includeHarnessTurns
     ? "# BatonSession history (auto-restored by baton)"
     : "# Latest progress from other agents in this session (auto-synced by baton)";
   const budgetChars = opts.budgetChars ?? DEFAULT_MENTION_BUDGET_CHARS;
@@ -158,7 +158,7 @@ export function buildProviderCatchUpContext(
   let dropped = 0;
   for (let i = missed.length - 1; i >= 0; i--) {
     const m = missed[i] as (typeof missed)[number];
-    const block = `[${m.provider}]\n${turnBlock(m.summary, i)}`;
+    const block = `[${m.harness}]\n${turnBlock(m.summary, i)}`;
     if (used + block.length + 2 > budgetChars && picked.length > 0) {
       dropped = i + 1;
       break;

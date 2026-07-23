@@ -1,7 +1,7 @@
 // 会话存储：~/.baton/projects/<cwd 转义>/<id>/session.jsonl + session.log + meta.json。
 // 与 Claude Code 一样按项目目录分组，方便按项目浏览与清理；项目目录名不可逆，
 // 真相源仍是 meta.json 里的 cwd。session.jsonl 承载 BatonSession 的统一逻辑历史；
-// ProviderSession 元数据只用于优先恢复 provider 私有状态，缺失时仍可从 BatonSession 重建上下文。
+// HarnessSession 元数据只用于优先恢复 harness 私有状态，缺失时仍可从 BatonSession 重建上下文。
 
 import {
   appendFileSync,
@@ -40,14 +40,14 @@ import {
 } from "../events/types.ts";
 import { reduceEvents, type SessionState } from "./reduce.ts";
 
-export interface ProviderSessionMeta {
-  provider: string;
-  providerSessionId?: string;
-  /** 该 provider session 后续 turn 使用的模型；缺省表示 provider 默认值。 */
+export interface HarnessSessionMeta {
+  harness: string;
+  harnessSessionId?: string;
+  /** 该 harness session 后续 turn 使用的模型；缺省表示 harness 默认值。 */
   model?: string;
-  /** 该 provider session 后续 turn 使用的推理强度；缺省表示 provider 默认值。 */
+  /** 该 harness session 后续 turn 使用的推理强度；缺省表示 harness 默认值。 */
   effort?: string;
-  /** provider 侧恢复所需的游标（如 Claude SDK resume cursor），语义归 adapter */
+  /** harness 侧恢复所需的游标（如 Claude SDK resume cursor），语义归 adapter */
   resumeCursor?: string;
   /** 该原生会话已同步到的 BatonSession 事件序号。 */
   syncedSeq?: number;
@@ -72,7 +72,7 @@ export interface SessionMeta {
   cwd: string;
   createdAt: string;
   updatedAt?: string;
-  providerSessions: Record<string, ProviderSessionMeta>;
+  harnessSessions: Record<string, HarnessSessionMeta>;
   forkedFrom?: SessionForkOrigin;
 }
 
@@ -107,8 +107,8 @@ export function sessionPreview(text: string): string | undefined {
 function explicitSessionTitle(meta: SessionMeta): string | undefined {
   const title = meta.title?.trim();
   if (!title) return undefined;
-  // 冻结的 legacy 集合：匹配的是历史版本写入的自动标题，刻意不从 provider registry
-  // 派生——将来新增 provider 不会产生这种标题，跟随 registry 反而会误伤同名用户标题。
+  // 冻结的 legacy 集合：匹配的是历史版本写入的自动标题，刻意不从 harness registry
+  // 派生——将来新增 harness 不会产生这种标题，跟随 registry 反而会误伤同名用户标题。
   const generated = ["chat", "codex", "claude", "claude-code"].flatMap((agent) => {
     const base = `${agent} @ ${meta.cwd}`;
     return [base, `${base} (fork)`];
@@ -209,7 +209,7 @@ export class SessionStore {
       cwd: opts.cwd,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      providerSessions: {},
+      harnessSessions: {},
     };
     writeMetaAtomic(dir, meta);
     return new SessionHandle(id, dir, meta);
@@ -260,10 +260,10 @@ export class SessionStore {
   /**
    * Fork 一个 BatonSession：把 throughSeq（默认 head）之前的事件历史复制进新会话。
    * 复制的前缀与源是同一段逻辑历史（git-branch 语义）：seq 与 turn/message/toolCall ID
-   * 原样保留，只换 batonSessionId——不做 ID remap（toolCallId 等本就是 provider 原生
+   * 原样保留，只换 batonSessionId——不做 ID remap（toolCallId 等本就是 harness 原生
    * ID，remap 只会破坏与 raw 的对照），谱系由 meta.forkedFrom 表达。
-   * providerSessions 只保留 provider 与 model / effort 偏好：child 不得 resume 源的原生
-   * ProviderSession（否则两个 BatonSession 会写进同一份 provider 历史）；child 首 turn
+   * harnessSessions 只保留 harness 与 model / effort 偏好：child 不得 resume 源的原生
+   * HarnessSession（否则两个 BatonSession 会写进同一份 harness 历史）；child 首 turn
    * 由 runtime 走 fresh native + 全量补课（syncedSeq 缺省=0）重建上下文。
    * opts.cwd 支持跨 project fork：历史跟源走，project 归属跟 fork 发起位置走；
    * 缺省沿用源 cwd。
@@ -285,12 +285,12 @@ export class SessionStore {
       const lines = events.map((ev) => JSON.stringify({ ...ev, batonSessionId: id }));
       writeFileSync(join(dir, "session.jsonl"), `${lines.join("\n")}\n`);
     }
-    const providerSessions: Record<string, ProviderSessionMeta> = {};
-    for (const [key, ps] of Object.entries(source.meta.providerSessions)) {
-      providerSessions[key] = {
-        provider: ps.provider,
-        ...(ps.model !== undefined ? { model: ps.model } : {}),
-        ...(ps.effort !== undefined ? { effort: ps.effort } : {}),
+    const harnessSessions: Record<string, HarnessSessionMeta> = {};
+    for (const [key, hs] of Object.entries(source.meta.harnessSessions)) {
+      harnessSessions[key] = {
+        harness: hs.harness,
+        ...(hs.model !== undefined ? { model: hs.model } : {}),
+        ...(hs.effort !== undefined ? { effort: hs.effort } : {}),
       };
     }
     const now = new Date().toISOString();
@@ -302,7 +302,7 @@ export class SessionStore {
       cwd,
       createdAt: now,
       updatedAt: now,
-      providerSessions,
+      harnessSessions,
       forkedFrom: { batonSessionId: sourceSessionId, throughSeq: events.at(-1)?.seq ?? 0 },
     };
     writeMetaAtomic(dir, meta);
@@ -337,7 +337,7 @@ export class SessionHandle {
 
   /**
    * 订阅本 handle 的事件追加。事件流是唯一合并真相源，UI 投影必须从这里走
-   * （而不是 per-turn 回调）——provider 自发回合（后台唤醒等）没有对应的
+   * （而不是 per-turn 回调）——harness 自发回合（后台唤醒等）没有对应的
    * submit 调用，任何旁路投影通道都会漏掉它们。返回取消订阅函数。
    */
   subscribe(listener: (ev: AnyEventEnvelope) => void): () => void {
@@ -530,8 +530,8 @@ export class SessionHandle {
     if (title) this.updateMeta({ title });
   }
 
-  setProviderSession(key: string, ps: ProviderSessionMeta): void {
-    this.meta.providerSessions = { ...this.meta.providerSessions, [key]: ps };
+  setHarnessSession(key: string, hs: HarnessSessionMeta): void {
+    this.meta.harnessSessions = { ...this.meta.harnessSessions, [key]: hs };
     writeMetaAtomic(this.dir, this.meta);
   }
 
@@ -591,8 +591,8 @@ export class SessionHandle {
       startedAt: turnEvents[0]?.ts,
       endedAt: turnEvents[turnEvents.length - 1]?.ts,
     };
-    const provider = turnEvents[0]?.provider ?? "baton";
-    const event = this.append({ kind: "_baton_turn_summary", payload: summary, provider, turnId }) as EventEnvelope<"_baton_turn_summary">;
+    const harness = turnEvents[0]?.harness ?? "baton";
+    const event = this.append({ kind: "_baton_turn_summary", payload: summary, harness, turnId }) as EventEnvelope<"_baton_turn_summary">;
     this.updateMeta({ updatedAt: summary.endedAt ?? new Date().toISOString() });
     return event;
   }

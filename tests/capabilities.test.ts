@@ -7,14 +7,14 @@ import { describe, expect, test } from "bun:test";
 
 import { ClaudeAdapter } from "../src/adapters/claude/adapter.ts";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
-import type { AgentAdapter } from "../src/adapters/types.ts";
+import type { HarnessAdapter } from "../src/adapters/types.ts";
 
 const requestHandler: RequestHandler = async (req) =>
   req.kind === "permission"
     ? { kind: "permission", requestId: req.requestId, optionId: "allow" }
     : { kind: "question", requestId: req.requestId, answers: {} };
 
-const adapters: AgentAdapter[] = [
+const adapters: HarnessAdapter[] = [
   new ClaudeAdapter({ requestHandler }),
   new CodexAdapter({ requestHandler }),
 ];
@@ -37,7 +37,7 @@ const CAPABILITY_CONTRACT: Record<string, string[]> = {
   "interactions.elicitation": ["respond"],
 };
 
-function capabilityAt(adapter: AgentAdapter, path: string): unknown {
+function capabilityAt(adapter: HarnessAdapter, path: string): unknown {
   let node: unknown = adapter.capabilities;
   for (const key of path.split(".")) {
     if (node === undefined || node === null || typeof node !== "object") return undefined;
@@ -60,7 +60,7 @@ function declaredMarkers(node: unknown, prefix = ""): string[] {
 
 describe("adapter capability contract", () => {
   for (const adapter of adapters) {
-    test(`${adapter.provider}: 声明的 capability 必须有对应实现`, () => {
+    test(`${adapter.harness}: 声明的 capability 必须有对应实现`, () => {
       for (const [path, methods] of Object.entries(CAPABILITY_CONTRACT)) {
         const marker = capabilityAt(adapter, path);
         if (marker === undefined) continue;
@@ -68,19 +68,19 @@ describe("adapter capability contract", () => {
         for (const method of methods) {
           expect(
             typeof (adapter as unknown as Record<string, unknown>)[method],
-            `${adapter.provider} declares "${path}" but is missing ${method}()`,
+            `${adapter.harness} declares "${path}" but is missing ${method}()`,
           ).toBe("function");
         }
       }
     });
 
-    test(`${adapter.provider}: marker 叶子必须是 { supported: true }，且不声明未登记的能力`, () => {
+    test(`${adapter.harness}: marker 叶子必须是 { supported: true }，且不声明未登记的能力`, () => {
       // prompt.* 是纯输入映射声明，没有对应方法要求，从检查中排除
       const declared = declaredMarkers(adapter.capabilities).filter((p) => !p.startsWith("prompt"));
       for (const path of declared) {
         expect(
           CAPABILITY_CONTRACT[path],
-          `${adapter.provider} declares unknown capability "${path}" — register it in CAPABILITY_CONTRACT with its required methods`,
+          `${adapter.harness} declares unknown capability "${path}" — register it in CAPABILITY_CONTRACT with its required methods`,
         ).toBeDefined();
       }
     });

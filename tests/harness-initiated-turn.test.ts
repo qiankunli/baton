@@ -1,4 +1,4 @@
-// provider 自发回合（observed turn）与投影单通道的契约测试（design §5.10）。
+// harness 自发回合（observed turn）与投影单通道的契约测试（design §5.10）。
 // 回归背景：后台任务唤醒的回复曾"只持久化、不投影"——事件落了 session.jsonl，
 // 但 TUI 的 SessionState 只从 per-turn 回调更新，唤醒发生在两个 driven turn 之间，
 // UI 上什么都没出现（真实事故：bs_01KXA2FP1J… seq 361 idle 之后的 551/556/631）。
@@ -10,13 +10,13 @@ import { join } from "node:path";
 import { ClaudeAdapter, startsObservedTurn } from "../src/adapters/claude/adapter.ts";
 import type {
   AdapterCapabilities,
-  AgentAdapter,
+  HarnessAdapter,
   EventSink,
   ModelOption,
   OpenOptions,
   PromptInput,
   PromptReceipt,
-  ProviderSessionRef,
+  HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
@@ -39,21 +39,21 @@ afterEach(() => {
 });
 
 // ---- 不变量：任何 append 进 store 的事件必然到达 UI 投影 ----
-// 参数化事件到达时机：无活跃 turn / driven turn 运行中（同 provider）/（异 provider）。
+// 参数化事件到达时机：无活跃 turn / driven turn 运行中（同 harness）/（异 harness）。
 // 投影正确性不允许依赖 runtime 的 turn 状态——这正是当年丢消息的机制。
 
 describe("projection invariant: every appended event reaches the view", () => {
   const arrivals: Array<{ name: string; before: AnyNewEvent[] }> = [
     { name: "while idle (between turns)", before: [] },
     {
-      name: "while a driven turn of the same provider is running",
+      name: "while a driven turn of the same harness is running",
       before: [
-        { kind: "state_update", provider: "claude-code", turnId: "t_driven", payload: { state: "running" } },
+        { kind: "state_update", harness: "claude-code", turnId: "t_driven", payload: { state: "running" } },
       ],
     },
     {
-      name: "while a driven turn of another provider is running",
-      before: [{ kind: "state_update", provider: "codex", turnId: "t_other", payload: { state: "running" } }],
+      name: "while a driven turn of another harness is running",
+      before: [{ kind: "state_update", harness: "codex", turnId: "t_other", payload: { state: "running" } }],
     },
   ];
 
@@ -63,7 +63,7 @@ describe("projection invariant: every appended event reaches the view", () => {
       for (const ev of arrival.before) session.append(ev);
       session.append({
         kind: "agent_message",
-        provider: "claude-code",
+        harness: "claude-code",
         turnId: "t_observed",
         payload: { messageId: "m_wake", content: [{ type: "text", text: "background result" }] },
       });
@@ -80,9 +80,9 @@ describe("observed turn presentation", () => {
     const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
     session.append({
       kind: "state_update",
-      provider: "claude-code",
+      harness: "claude-code",
       turnId: "t_obs",
-      payload: { state: "running", origin: "provider" },
+      payload: { state: "running", origin: "harness" },
     });
     let view = protocol.getView();
     expect(view.busy).toBe(true);
@@ -97,7 +97,7 @@ describe("observed turn presentation", () => {
 
     session.append({
       kind: "state_update",
-      provider: "claude-code",
+      harness: "claude-code",
       turnId: "t_obs",
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -116,9 +116,9 @@ describe("observed turn presentation", () => {
     for (const turnId of ["t_obs1", "t_obs2"]) {
       session.append({
         kind: "state_update",
-        provider: "claude-code",
+        harness: "claude-code",
         turnId,
-        payload: { state: "running", origin: "provider" },
+        payload: { state: "running", origin: "harness" },
       });
     }
     let view = protocol.getView();
@@ -129,7 +129,7 @@ describe("observed turn presentation", () => {
     // 一个收口不影响另一个（单槽时代任何 idle 都会全局清空）
     session.append({
       kind: "state_update",
-      provider: "claude-code",
+      harness: "claude-code",
       turnId: "t_obs1",
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -144,55 +144,55 @@ describe("observed turn presentation", () => {
 // ---- runtime：observed turn 只记账，不碰队列 ----
 
 /** driven turn 正常完成后，再在同一 sink 上补发一段 observed turn（模拟后台唤醒） */
-class WakingAdapter implements AgentAdapter {
-  readonly provider = "claude-code";
+class WakingAdapter implements HarnessAdapter {
+  readonly harness = "claude-code";
   readonly capabilities: AdapterCapabilities = { prompt: {} };
   sink?: EventSink;
   /** 只在首个 driven turn 后唤醒一次，避免测试结束后仍有 pending 的异步 append */
   private woken = false;
 
-  async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+  async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
     this.sink = sink;
-    return { provider: this.provider, providerSessionId: "waking-ref", resumed: false };
+    return { harness: this.harness, harnessSessionId: "waking-ref", resumed: false };
   }
 
-  async listModels(_ref: ProviderSessionRef): Promise<ModelOption[]> {
+  async listModels(_ref: HarnessSessionRef): Promise<ModelOption[]> {
     return [{ id: "default", label: "Default" }];
   }
 
-  async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.sink?.({
       kind: "user_message",
-      provider: this.provider,
+      harness: this.harness,
       turnId: input.turnId,
       payload: { messageId: input.messageId, content: input.blocks },
     });
     void (async () => {
       this.sink?.({
         kind: "state_update",
-        provider: this.provider,
+        harness: this.harness,
         turnId: input.turnId,
         payload: { state: "idle", stopReason: "end_turn" },
       });
-      // driven turn 已收界；稍后 provider 自发开界（后台任务唤醒）
+      // driven turn 已收界；稍后 harness 自发开界（后台任务唤醒）
       if (this.woken) return;
       this.woken = true;
       await Bun.sleep(5);
       this.sink?.({
         kind: "state_update",
-        provider: this.provider,
+        harness: this.harness,
         turnId: "t_wake",
-        payload: { state: "running", origin: "provider" },
+        payload: { state: "running", origin: "harness" },
       });
       this.sink?.({
         kind: "agent_message",
-        provider: this.provider,
+        harness: this.harness,
         turnId: "t_wake",
         payload: { messageId: "m_wake", content: [{ type: "text", text: "task finished" }] },
       });
       this.sink?.({
         kind: "state_update",
-        provider: this.provider,
+        harness: this.harness,
         turnId: "t_wake",
         payload: { state: "idle", stopReason: "end_turn" },
       });
@@ -200,8 +200,8 @@ class WakingAdapter implements AgentAdapter {
     return { accepted: true };
   }
 
-  async cancel(_ref: ProviderSessionRef): Promise<void> {}
-  async close(_ref: ProviderSessionRef): Promise<void> {}
+  async cancel(_ref: HarnessSessionRef): Promise<void> {}
+  async close(_ref: HarnessSessionRef): Promise<void> {}
 }
 
 describe("runtime observed-turn accounting", () => {
@@ -244,7 +244,7 @@ describe("claude adapter observed-turn minting", () => {
     expect(startsObservedTurn("result", done)).toBe(false);
   });
 
-  test("mintObservedTurn opens with running(origin: provider) under a fresh turn id", async () => {
+  test("mintObservedTurn opens with running(origin: harness) under a fresh turn id", async () => {
     const adapter = new ClaudeAdapter({ requestHandler: async (req) => ({ kind: "permission", requestId: req.requestId, optionId: "deny" }) });
     const events: Array<{ kind: string; turnId?: string; payload: Record<string, unknown> }> = [];
     const ref = await adapter.open({ cwd: "/tmp" }, (ev) => events.push(ev as never));
@@ -252,7 +252,7 @@ describe("claude adapter observed-turn minting", () => {
       sessions: Map<string, unknown>;
       mintObservedTurn(rt: unknown): { turnId: string; finalized: boolean };
     };
-    const rt = seams.sessions.get(ref.providerSessionId);
+    const rt = seams.sessions.get(ref.harnessSessionId);
 
     const observed = seams.mintObservedTurn(rt);
     expect(observed.finalized).toBe(false);
@@ -261,7 +261,7 @@ describe("claude adapter observed-turn minting", () => {
     expect(events[0]).toMatchObject({
       kind: "state_update",
       turnId: observed.turnId,
-      payload: { state: "running", origin: "provider" },
+      payload: { state: "running", origin: "harness" },
     });
   });
 });

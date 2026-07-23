@@ -4,9 +4,9 @@ import { sessionMentionCandidates } from "../src/tui/mentions.ts";
 import type { SessionMeta } from "../src/store/store.ts";
 
 const sessions: SessionMeta[] = [
-  { batonSessionId: "bs_01AAAAAAAAAAAAAAAAAAAAAAAA", title: "claude 设计会话", cwd: "/a", createdAt: "2026-07-09T00:00:00Z", providerSessions: {} },
-  { batonSessionId: "bs_01BBBBBBBBBBBBBBBBBBBBBBBB", title: "codex 实现会话", cwd: "/b", createdAt: "2026-07-09T01:00:00Z", providerSessions: {} },
-  { batonSessionId: "bs_01CCCCCCCCCCCCCCCCCCCCCCCC", preview: "resume 标题方案", cwd: "/c", createdAt: "2026-07-09T02:00:00Z", providerSessions: {} },
+  { batonSessionId: "bs_01AAAAAAAAAAAAAAAAAAAAAAAA", title: "claude 设计会话", cwd: "/a", createdAt: "2026-07-09T00:00:00Z", harnessSessions: {} },
+  { batonSessionId: "bs_01BBBBBBBBBBBBBBBBBBBBBBBB", title: "codex 实现会话", cwd: "/b", createdAt: "2026-07-09T01:00:00Z", harnessSessions: {} },
+  { batonSessionId: "bs_01CCCCCCCCCCCCCCCCCCCCCCCC", preview: "resume 标题方案", cwd: "/c", createdAt: "2026-07-09T02:00:00Z", harnessSessions: {} },
 ];
 
 describe("sessionMentionCandidates", () => {
@@ -19,7 +19,7 @@ describe("sessionMentionCandidates", () => {
     expect(byPreview.map((c) => c.insert)).toEqual(["@bs_01CCCCCCCCCCCCCCCCCCCCCCCC"]);
   });
 
-  test("lists sessions, not providers", () => {
+  test("lists sessions, not harnesses", () => {
     const all = sessionMentionCandidates(sessions, "");
     expect(all.some((c) => c.insert === "@codex" || c.insert === "@claude")).toBe(false);
     expect(all).toHaveLength(3);

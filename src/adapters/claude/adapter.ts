@@ -32,14 +32,14 @@ import type {
 import { textOf } from "../../events/types.ts";
 import type {
   AdapterCapabilities,
-  AgentAdapter,
+  HarnessAdapter,
   EffortOption,
   EventSink,
   ModelOption,
   OpenOptions,
   PromptInput,
   PromptReceipt,
-  ProviderSessionRef,
+  HarnessSessionRef,
   RequestHandler,
 } from "../types.ts";
 import { unsupportedPromptBlocks } from "../types.ts";
@@ -290,7 +290,7 @@ interface ClaudeTurn {
 }
 
 /**
- * result 之后同一条消息流上再出现的活动消息，属于 provider 自发回合（observed turn）：
+ * result 之后同一条消息流上再出现的活动消息，属于 harness 自发回合（observed turn）：
  * 后台任务（Agent tool 等）完成时 harness 会在无用户输入的情况下重新唤起模型，
  * 新回合的消息继续从同一条 SDK 流上到达。这里判定"该为它开一个新 turn 了"。
  * system/result 不开界：前者是瞬时相位（不构成回合），后者无活动时只是迟到终态。
@@ -430,8 +430,8 @@ export interface ClaudeAdapterOptions {
   queryFactory?: typeof query;
 }
 
-export class ClaudeAdapter implements AgentAdapter {
-  readonly provider = "claude-code";
+export class ClaudeAdapter implements HarnessAdapter {
+  readonly harness = "claude-code";
   // 当前 adapter 最终只发送 text（design.md §3.1）；可选能力接口落地并验证后才声明
   // 对应 marker——契约测试钉住"声明支持就必须实现对应接口"。
   readonly capabilities: AdapterCapabilities = { prompt: {}, compact: { supported: true } };
@@ -440,8 +440,8 @@ export class ClaudeAdapter implements AgentAdapter {
   constructor(private options: ClaudeAdapterOptions) {}
 
   /** SDK 无独立"启动"步骤：session 在首个 submit 时创建，这里登记运行时并绑定事件出口 */
-  async open(opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
-    const id = newId("ps");
+  async open(opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
+    const id = newId("hs");
     this.sessions.set(id, {
       cwd: opts.cwd,
       env: opts.env,
@@ -451,15 +451,15 @@ export class ClaudeAdapter implements AgentAdapter {
       tasks: new Map(),
       pendingTaskOps: new Map(),
     });
-    return { provider: this.provider, providerSessionId: id, resumed: Boolean(opts.resumeSessionId) };
+    return { harness: this.harness, harnessSessionId: id, resumed: Boolean(opts.resumeSessionId) };
   }
 
   /** 拿 Claude 原生 session id（宿主存入 meta 以支持将来 resume） */
-  nativeSessionId(ref: ProviderSessionRef): string | undefined {
-    return this.sessions.get(ref.providerSessionId)?.claudeSessionId;
+  nativeSessionId(ref: HarnessSessionRef): string | undefined {
+    return this.sessions.get(ref.harnessSessionId)?.claudeSessionId;
   }
 
-  async listModels(ref: ProviderSessionRef): Promise<ModelOption[]> {
+  async listModels(ref: HarnessSessionRef): Promise<ModelOption[]> {
     const rt = this.mustSession(ref);
     try {
       await this.ensureModelCatalog(rt);
@@ -469,7 +469,7 @@ export class ClaudeAdapter implements AgentAdapter {
     return rt.models ?? CLAUDE_FALLBACK_MODELS;
   }
 
-  async setModel(ref: ProviderSessionRef, modelId: string | null): Promise<void> {
+  async setModel(ref: HarnessSessionRef, modelId: string | null): Promise<void> {
     const rt = this.mustSession(ref);
     const model = !modelId || modelId === "default" ? undefined : modelId;
     if (rt.effort && !claudeEffortsForModel(rt, model).some((candidate) => candidate.id === rt.effort)) {
@@ -478,11 +478,11 @@ export class ClaudeAdapter implements AgentAdapter {
     rt.model = model;
   }
 
-  currentModel(ref: ProviderSessionRef): string | null {
+  currentModel(ref: HarnessSessionRef): string | null {
     return this.mustSession(ref).model ?? null;
   }
 
-  async listEfforts(ref: ProviderSessionRef): Promise<EffortOption[]> {
+  async listEfforts(ref: HarnessSessionRef): Promise<EffortOption[]> {
     const rt = this.mustSession(ref);
     try {
       await this.ensureModelCatalog(rt);
@@ -492,7 +492,7 @@ export class ClaudeAdapter implements AgentAdapter {
     return claudeEfforts(rt);
   }
 
-  async setEffort(ref: ProviderSessionRef, effortId: string | null): Promise<void> {
+  async setEffort(ref: HarnessSessionRef, effortId: string | null): Promise<void> {
     const rt = this.mustSession(ref);
     if (!effortId || effortId === "default") {
       rt.effort = undefined;
@@ -504,7 +504,7 @@ export class ClaudeAdapter implements AgentAdapter {
     rt.effort = effortId as EffortLevel;
   }
 
-  currentEffort(ref: ProviderSessionRef): string | null {
+  currentEffort(ref: HarnessSessionRef): string | null {
     return this.mustSession(ref).effort ?? null;
   }
 
@@ -547,7 +547,7 @@ export class ClaudeAdapter implements AgentAdapter {
     }
   }
 
-  async compactContext(ref: ProviderSessionRef, turnId: string): Promise<PromptReceipt> {
+  async compactContext(ref: HarnessSessionRef, turnId: string): Promise<PromptReceipt> {
     const rt = this.mustSession(ref);
     if (!rt.claudeSessionId) throw new Error("Claude has no conversation to compact yet");
     if (rt.activeTurn && !rt.activeTurn.finalized) {
@@ -564,7 +564,7 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   /** submit 只做 admission 并启动后台消费循环；turn 进展与终结全部经事件报告 */
-  async submit(ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  async submit(ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     const rt = this.mustSession(ref);
     if (rt.activeTurn && !rt.activeTurn.finalized) {
       throw new Error(`claude turn ${rt.activeTurn.turnId} still active; steer/parallel prompt unsupported`);
@@ -577,7 +577,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const turn: ClaudeTurn = { turnId: input.turnId, finalized: false, cancelRequested: false };
     rt.activeTurn = turn;
     // user_message / state_update(running) 由 runtime 在出队时落盘（用户输入是 BatonSession
-    // 的事实，不等 provider 就绪）；adapter 只报告 provider 执行过程与终态。
+    // 的事实，不等 harness 就绪）；adapter 只报告 harness 执行过程与终态。
 
     // 后台消费 SDK 消息流；submit 本身立即回执（design §4.1）
     void this.runQuery(rt, input, turn);
@@ -616,7 +616,7 @@ export class ClaudeAdapter implements AgentAdapter {
           this.options.diagnostic?.({
             level: "warn",
             component: "claude.initialization",
-            provider: this.provider,
+            harness: this.harness,
             turnId: current.turnId,
             message: "Claude SDK initialization result failed",
             error: diagnosticError(error),
@@ -632,7 +632,7 @@ export class ClaudeAdapter implements AgentAdapter {
       this.options.diagnostic?.({
         level: current.cancelRequested ? "info" : "error",
         component: "claude.query",
-        provider: this.provider,
+        harness: this.harness,
         turnId: current.turnId,
         message: current.cancelRequested ? "Claude SDK query stopped after cancellation" : "Claude SDK query failed",
         error: diagnosticError(error),
@@ -642,7 +642,7 @@ export class ClaudeAdapter implements AgentAdapter {
       } else {
         emit({
           kind: "_baton_error_update",
-          provider: this.provider,
+          harness: this.harness,
           payload: { message: error instanceof Error ? error.message : String(error) },
         });
         this.finishTurn(rt, emit, current, "error");
@@ -654,15 +654,15 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   /**
-   * 铸造 observed turn 并以 running(origin:"provider") 开界（design §5.10）。
+   * 铸造 observed turn 并以 running(origin:"harness") 开界（design §5.10）。
    * 刻意不写 rt.activeTurn：observed turn 不占 admission 槽——用户此刻仍可 submit
-   * 新 driven turn（走新 query），宿主队列语义不受 provider 自发活动影响。
+   * 新 driven turn（走新 query），宿主队列语义不受 harness 自发活动影响。
    */
   private mintObservedTurn(rt: ClaudeRuntime): ClaudeTurn {
     const observed: ClaudeTurn = { turnId: newId("t"), finalized: false, cancelRequested: false };
     this.emit(
       rt,
-      { kind: "state_update", provider: this.provider, payload: { state: "running", origin: "provider" } },
+      { kind: "state_update", harness: this.harness, payload: { state: "running", origin: "harness" } },
       observed,
     );
     return observed;
@@ -677,7 +677,7 @@ export class ClaudeAdapter implements AgentAdapter {
     turn.finalized = true;
     emit({
       kind: "state_update",
-      provider: this.provider,
+      harness: this.harness,
       payload: { state: "idle", stopReason },
       ...(raw !== undefined ? { raw } : {}),
     });
@@ -688,14 +688,14 @@ export class ClaudeAdapter implements AgentAdapter {
   private emit(rt: ClaudeRuntime, ev: Parameters<EventSink>[0], turn?: ClaudeTurn): void {
     rt.sink({
       ...ev,
-      provider: this.provider,
-      providerSessionId: rt.claudeSessionId,
+      harness: this.harness,
+      harnessSessionId: rt.claudeSessionId,
       turnId: (turn ?? rt.activeTurn)?.turnId,
     });
   }
 
-  async cancel(ref: ProviderSessionRef): Promise<void> {
-    const rt = this.sessions.get(ref.providerSessionId);
+  async cancel(ref: HarnessSessionRef): Promise<void> {
+    const rt = this.sessions.get(ref.harnessSessionId);
     if (!rt?.activeQuery) return;
     if (rt.activeTurn) rt.activeTurn.cancelRequested = true;
     // interrupt 与消息流会被 SDK 同时结束；最终 idle/cancelled 由 runQuery 的消费路径收口。
@@ -703,7 +703,7 @@ export class ClaudeAdapter implements AgentAdapter {
       this.options.diagnostic?.({
         level: "warn",
         component: "claude.cancel",
-        provider: this.provider,
+        harness: this.harness,
         turnId: rt.activeTurn?.turnId,
         message: "Claude SDK interrupt failed",
         error: diagnosticError(error),
@@ -711,10 +711,10 @@ export class ClaudeAdapter implements AgentAdapter {
     });
   }
 
-  async close(ref: ProviderSessionRef): Promise<void> {
-    const rt = this.sessions.get(ref.providerSessionId);
+  async close(ref: HarnessSessionRef): Promise<void> {
+    const rt = this.sessions.get(ref.harnessSessionId);
     if (!rt) return;
-    this.sessions.delete(ref.providerSessionId);
+    this.sessions.delete(ref.harnessSessionId);
     const turn = rt.activeTurn;
     if (turn) turn.cancelRequested = true;
     rt.modelDiscoveryQuery?.close();
@@ -723,9 +723,9 @@ export class ClaudeAdapter implements AgentAdapter {
     if (turn) this.finishTurn(rt, (ev) => this.emit(rt, ev, turn), turn, "cancelled");
   }
 
-  private mustSession(ref: ProviderSessionRef): ClaudeRuntime {
-    const rt = this.sessions.get(ref.providerSessionId);
-    if (!rt) throw new Error(`unknown claude session: ${ref.providerSessionId}`);
+  private mustSession(ref: HarnessSessionRef): ClaudeRuntime {
+    const rt = this.sessions.get(ref.harnessSessionId);
+    if (!rt) throw new Error(`unknown claude session: ${ref.harnessSessionId}`);
     return rt;
   }
 
@@ -743,13 +743,13 @@ export class ClaudeAdapter implements AgentAdapter {
       title: meta.title ?? claudeToolTitle(toolName, input),
       options: claudeApprovalOptions(suggestions.length > 0),
     };
-    emit({ kind: "permission_request", provider: this.provider, payload: request });
+    emit({ kind: "permission_request", harness: this.harness, payload: request });
     const response = await this.options.requestHandler(request);
     if (response.kind === "cancelled") {
       // turn 被打断，request 随之收口：留痕 cancelled、拒绝执行（不静默、不当 allow）
       emit({
         kind: "permission_resolved",
-        provider: this.provider,
+        harness: this.harness,
         payload: { requestId: request.requestId, outcome: "cancelled" },
       });
       return { behavior: "deny", message: "turn interrupted before approval" };
@@ -758,7 +758,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const optionId = response.kind === "permission" ? response.optionId : "";
     emit({
       kind: "permission_resolved",
-      provider: this.provider,
+      harness: this.harness,
       payload: { requestId: request.requestId, outcome: "selected", optionId },
     });
     if (optionId === "allow") return { behavior: "allow", updatedInput: input };
@@ -794,12 +794,12 @@ export class ClaudeAdapter implements AgentAdapter {
       };
     });
     const request: QuestionRequest = { kind: "question", requestId: newId("qr"), questions };
-    emit({ kind: "question_request", provider: this.provider, payload: request });
+    emit({ kind: "question_request", harness: this.harness, payload: request });
     const response = await this.options.requestHandler(request);
     if (response.kind === "cancelled") {
       emit({
         kind: "question_resolved",
-        provider: this.provider,
+        harness: this.harness,
         payload: { requestId: request.requestId, outcome: "cancelled" },
       });
       return { behavior: "deny", message: "turn interrupted before answer" };
@@ -807,7 +807,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const decisionAnswers = response.kind === "question" ? response.answers : {};
     emit({
       kind: "question_resolved",
-      provider: this.provider,
+      harness: this.harness,
       payload: { requestId: request.requestId, outcome: "answered", answers: decisionAnswers },
     });
     const answers = Object.fromEntries(
@@ -826,7 +826,7 @@ export class ClaudeAdapter implements AgentAdapter {
           // 归一成"无阶段"（回落默认 thinking），未来未知 status 同样安全降级。
           emit({
             kind: "_baton_run_status",
-            provider: this.provider,
+            harness: this.harness,
             payload:
               msg.status === "compacting"
                 ? { phase: "compacting", title: "Compacting context…" }
@@ -846,14 +846,14 @@ export class ClaudeAdapter implements AgentAdapter {
           if (event.delta.type === "text_delta" && event.delta.text) {
             emit({
               kind: "agent_message_chunk",
-              provider: this.provider,
+              harness: this.harness,
               payload: { messageId, content: { type: "text", text: event.delta.text } },
               raw: msg,
             });
           } else if (event.delta.type === "thinking_delta" && event.delta.thinking) {
             emit({
               kind: "agent_thought_chunk",
-              provider: this.provider,
+              harness: this.harness,
               payload: { messageId: `${messageId}_thought`, content: { type: "text", text: event.delta.thinking } },
               raw: msg,
             });
@@ -873,7 +873,7 @@ export class ClaudeAdapter implements AgentAdapter {
           turn.streamMessageId = undefined;
           emit({
             kind: "agent_message",
-            provider: this.provider,
+            harness: this.harness,
             payload: { messageId, content: [{ type: "text", text: texts }] },
             raw: msg,
           });
@@ -887,7 +887,7 @@ export class ClaudeAdapter implements AgentAdapter {
             rt.suppressedToolIds.add(String(b.id));
             emit({
               kind: "plan_update",
-              provider: this.provider,
+              harness: this.harness,
               // planId 用 per-turn（对齐 codex 的 pl_<turnId>）：卡片锚定在当前 turn 的位置，本 turn 内
               // 的 todo 更新原地 mark。per-session 会一直改写 session 首次出现的旧卡，进度在 scrollback 里不可见
               payload: { planId: `pl_${turn.turnId}`, entries: todoWritePlan(input) },
@@ -906,7 +906,7 @@ export class ClaudeAdapter implements AgentAdapter {
           const diff = claudeToolDiff(toolName, input);
           emit({
             kind: "tool_call_update",
-            provider: this.provider,
+            harness: this.harness,
             payload: {
               toolCallId: String(b.id),
               title: claudeToolTitle(toolName, input),
@@ -940,7 +940,7 @@ export class ClaudeAdapter implements AgentAdapter {
               applyTaskOp(rt.tasks, taskOp, text, String(b.tool_use_id));
               emit({
                 kind: "plan_update",
-                provider: this.provider,
+                harness: this.harness,
                 // planId per-turn，与 TodoWrite 一致：卡片锚定当前 turn，本 turn 内原地 mark
                 payload: { planId: `pl_${turn.turnId}`, entries: taskPlanEntries(rt.tasks) },
                 raw: msg,
@@ -951,7 +951,7 @@ export class ClaudeAdapter implements AgentAdapter {
           if (rt.suppressedToolIds.has(String(b.tool_use_id))) continue;
           emit({
             kind: "tool_call_update",
-            provider: this.provider,
+            harness: this.harness,
             payload: {
               toolCallId: String(b.tool_use_id),
               status: b.is_error ? "failed" : "completed",
@@ -967,7 +967,7 @@ export class ClaudeAdapter implements AgentAdapter {
           for (const output of claudeToolResultBlocks(b.content)) {
             emit({
               kind: "tool_call_content_chunk",
-              provider: this.provider,
+              harness: this.harness,
               payload: { toolCallId: String(b.tool_use_id), content: output },
               raw: msg,
             });
@@ -980,7 +980,7 @@ export class ClaudeAdapter implements AgentAdapter {
         if (usage) {
           emit({
             kind: "usage_update",
-            provider: this.provider,
+            harness: this.harness,
             payload: {
               inputTokens: usage.input_tokens ?? 0,
               outputTokens: usage.output_tokens ?? 0,
@@ -994,7 +994,7 @@ export class ClaudeAdapter implements AgentAdapter {
         if (context) {
           emit({
             kind: "context_usage_update",
-            provider: this.provider,
+            harness: this.harness,
             payload: { model: rt.model ?? "default", ...context },
             raw: msg,
           });

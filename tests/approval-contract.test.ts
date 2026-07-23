@@ -1,6 +1,6 @@
 // 审批/终态诚实性契约（对所有 adapter 参数化）：
-// 1. 审批闭环——provider 的审批请求必须成为 permission_request 事件、等待宿主决策、
-//    以 permission_resolved 留痕并把决定回传 provider；
+// 1. 审批闭环——harness 的审批请求必须成为 permission_request 事件、等待宿主决策、
+//    以 permission_resolved 留痕并把决定回传 harness；
 // 2. 终态白名单——只有明确的成功值可以映射 completed，declined 是一等终态，
 //    未知终态悲观归 failed（乐观兜底曾把 codex declined 渲染成绿勾）；
 // 3. 审批路由收权——codex 默认钉死 reviewer=auto_review 并留下权威回执；显式 user
@@ -129,7 +129,7 @@ describe("codex approval routing is pinned by the adapter", () => {
       item: { type: "commandExecution", id: "cmd1", status: "declined", command: "bun install" },
     });
     const notice = events.find((e) => e.kind === "_baton_notice");
-    expect(notice?.payload).toMatchObject({ level: "warning", title: "Approval bypassed by provider-side policy" });
+    expect(notice?.payload).toMatchObject({ level: "warning", title: "Approval bypassed by harness-side policy" });
   });
 
   test("declined after asking baton is the user's own decision: no notice", async () => {

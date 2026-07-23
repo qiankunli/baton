@@ -1,7 +1,7 @@
-// provider 同步水位（syncedSeq）契约：水位只在注入时前进到本批 throughSeq。
+// harness 同步水位（syncedSeq）契约：水位只在注入时前进到本批 throughSeq。
 // 回归背景（bug#5）：finalize 曾把水位无条件推到文件尾——driven turn 运行期间
-// 其它 provider 落盘的 summary（如并发 observed turn）被越过且永不回补，
-// 跨 provider 接力对这段进展永久盲区。
+// 其它 harness 落盘的 summary（如并发 observed turn）被越过且永不回补，
+// 跨 harness 接力对这段进展永久盲区。
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,12 +9,12 @@ import { join } from "node:path";
 
 import type {
   AdapterCapabilities,
-  AgentAdapter,
+  HarnessAdapter,
   EventSink,
   OpenOptions,
   PromptInput,
   PromptReceipt,
-  ProviderSessionRef,
+  HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { PromptBlock } from "../src/events/types.ts";
 import { textOf } from "../src/events/types.ts";
@@ -22,21 +22,21 @@ import { BatonSessionRuntime } from "../src/session/runtime.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** submit 只记账 + 报 running；终态由测试经 finish() 手动触发（确定性时序） */
-class ManualAdapter implements AgentAdapter {
+class ManualAdapter implements HarnessAdapter {
   readonly capabilities: AdapterCapabilities = { prompt: {} };
   sink?: EventSink;
   prompts: string[] = [];
   private activeTurn?: PromptInput;
 
-  constructor(readonly provider: string) {}
+  constructor(readonly harness: string) {}
 
-  async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+  async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
     this.sink = sink;
-    return { provider: this.provider, providerSessionId: `${this.provider}-ref`, resumed: false };
+    return { harness: this.harness, harnessSessionId: `${this.harness}-ref`, resumed: false };
   }
 
   // 新契约：user_message / running 由 runtime 出队时落盘，adapter submit 只做 admission
-  async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.activeTurn = input;
     this.prompts.push(textOf(input.blocks));
     return { accepted: true };
@@ -48,27 +48,27 @@ class ManualAdapter implements AgentAdapter {
     this.activeTurn = undefined;
     this.sink?.({
       kind: "agent_message",
-      provider: this.provider,
+      harness: this.harness,
       turnId: turn.turnId,
       payload: { messageId: `${turn.turnId}-agent`, content: [{ type: "text", text: "done" }] },
     });
     this.sink?.({
       kind: "state_update",
-      provider: this.provider,
+      harness: this.harness,
       turnId: turn.turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
   }
 
-  async cancel(_ref: ProviderSessionRef): Promise<void> {}
-  async close(_ref: ProviderSessionRef): Promise<void> {}
+  async cancel(_ref: HarnessSessionRef): Promise<void> {}
+  async close(_ref: HarnessSessionRef): Promise<void> {}
 }
 
 /** 支持 syncContext 的变体（急切注入形态：resolve 即送达，不占 prompt） */
 class SyncableManualAdapter extends ManualAdapter {
   synced: string[] = [];
 
-  async syncContext(_ref: ProviderSessionRef, blocks: PromptBlock[]): Promise<void> {
+  async syncContext(_ref: HarnessSessionRef, blocks: PromptBlock[]): Promise<void> {
     this.synced.push(textOf(blocks));
   }
 }
@@ -79,7 +79,7 @@ class SyncBlocksManualAdapter extends ManualAdapter {
   syncPayloads: string[] = [];
   failNextSubmit = false;
 
-  override async submit(ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  override async submit(ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     if (this.failNextSubmit) {
       this.failNextSubmit = false;
       throw new Error("admission down");
@@ -101,15 +101,15 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-/** 直接写入一个已收口、带 summary 的 turn（模拟另一 provider 的并发产出） */
-function completedTurn(handle: SessionHandle, provider: string, turnId: string, text: string): void {
+/** 直接写入一个已收口、带 summary 的 turn（模拟另一 harness 的并发产出） */
+function completedTurn(handle: SessionHandle, harness: string, turnId: string, text: string): void {
   handle.append({
     kind: "agent_message",
-    provider,
+    harness,
     turnId,
     payload: { messageId: `${turnId}-agent`, content: [{ type: "text", text }] },
   });
-  handle.append({ kind: "state_update", provider, turnId, payload: { state: "idle", stopReason: "end_turn" } });
+  handle.append({ kind: "state_update", harness, turnId, payload: { state: "idle", stopReason: "end_turn" } });
   handle.summarizeTurn(turnId);
 }
 
@@ -130,14 +130,14 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     // turn 1：无历史可注入
     const first = runtime.submit("codex", [{ type: "text", text: "one" }]);
     await Bun.sleep(1);
-    // driven turn 运行期间，另一 provider 的进展落盘（并发 observed turn 的等价形态）
+    // driven turn 运行期间，另一 harness 的进展落盘（并发 observed turn 的等价形态）
     completedTurn(session, "claude-code", "t_claude", "claude progress landed mid-turn");
     adapter.finish();
     await first;
 
     // 收口不推水位：不越过尚未注入的 claude summary
     const tailSeq = session.readEvents().at(-1)!.seq;
-    expect(session.meta.providerSessions["codex"]?.syncedSeq ?? 0).toBeLessThan(tailSeq);
+    expect(session.meta.harnessSessions["codex"]?.syncedSeq ?? 0).toBeLessThan(tailSeq);
 
     // turn 2：注入补上并发期间的 claude 进展，且不复读自己的 turn
     const second = runtime.submit("codex", [{ type: "text", text: "two" }]);
@@ -147,7 +147,7 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     expect(adapter.synced[0]).not.toContain("one");
     // 水位推进到注入时点的 summary 尾 seq（含自己的 turn-1 summary：亲历即已同步）
     const throughSeq = lastSummarySeq(session);
-    expect(session.meta.providerSessions["codex"]?.syncedSeq).toBe(throughSeq);
+    expect(session.meta.harnessSessions["codex"]?.syncedSeq).toBe(throughSeq);
     adapter.finish();
     await second;
 
@@ -172,12 +172,12 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     expect(adapter.prompts[0]).toContain("<baton-sync>");
     expect(adapter.prompts[0]).toContain("earlier claude work");
     // admission 通过即推进水位到注入时点（修复前 prepend 分支不更新，靠 finalize 推尾掩盖）
-    expect(session.meta.providerSessions["codex"]?.syncedSeq).toBe(injectionTail);
+    expect(session.meta.harnessSessions["codex"]?.syncedSeq).toBe(injectionTail);
     adapter.finish();
     await first;
 
     // finalize 后水位仍停在注入时点，不被推到文件尾
-    expect(session.meta.providerSessions["codex"]?.syncedSeq).toBe(injectionTail);
+    expect(session.meta.harnessSessions["codex"]?.syncedSeq).toBe(injectionTail);
 
     // 第二轮：无新的他方进展 → 不重复注入
     const second = runtime.submit("codex", [{ type: "text", text: "again" }]);
@@ -196,7 +196,7 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     // 第一次 submit admission 失败：sync 视为未送达，水位不动
     adapter.failNextSubmit = true;
     await expect(runtime.submit("codex", [{ type: "text", text: "hello" }])).rejects.toThrow("admission down");
-    expect(session.meta.providerSessions["codex"]?.syncedSeq ?? 0).toBe(0);
+    expect(session.meta.harnessSessions["codex"]?.syncedSeq ?? 0).toBe(0);
 
     // 重试：sync 走 side-channel（不混入 prompt 正文），admission 通过后水位推进到
     // 本次注入时点的 summary 尾（含失败 turn 自己的 summary：亲历即已同步）
@@ -206,7 +206,7 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     expect(adapter.prompts[0]).toBe("hello again");
     expect(adapter.syncPayloads[0]).toContain("<baton-sync>");
     expect(adapter.syncPayloads[0]).toContain("earlier claude work");
-    expect(session.meta.providerSessions["codex"]?.syncedSeq).toBe(injectionTail);
+    expect(session.meta.harnessSessions["codex"]?.syncedSeq).toBe(injectionTail);
     adapter.finish();
     await second;
 

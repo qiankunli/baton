@@ -24,14 +24,14 @@ import type {
 import { textOf } from "../../events/types.ts";
 import type {
   AdapterCapabilities,
-  AgentAdapter,
+  HarnessAdapter,
   EffortOption,
   EventSink,
   ModelOption,
   OpenOptions,
   PromptInput,
   PromptReceipt,
-  ProviderSessionRef,
+  HarnessSessionRef,
   RequestHandler,
   SteerReceipt,
   ApprovalRoute,
@@ -88,7 +88,7 @@ interface ThreadRuntime {
   prevUsage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningOutputTokens: number };
   /**
    * 收到过 requestApproval 的 item：declined 终态的对账依据——某 item 被拒但从未
-   * 问过 baton，说明有 provider 侧策略（如 auto-review）替用户做了决定，必须显式
+   * 问过 baton，说明有 harness 侧策略（如 auto-review）替用户做了决定，必须显式
    * 提示而不是静默渲染。启动参数注入（codexLaunchCommand）防已知配置，这里防未知。
    */
   approvalSeenItemIds?: Set<string>;
@@ -599,8 +599,8 @@ export async function openCodexThread(
   return { threadId: threadIdFrom(response, "thread/start"), resumed: false, route: routeFrom(response) };
 }
 
-export class CodexAdapter implements AgentAdapter {
-  readonly provider = "codex";
+export class CodexAdapter implements HarnessAdapter {
+  readonly harness = "codex";
   // 当前 adapter 最终只发送 text（design.md §3.1）；可选能力接口落地并验证后才声明
   // 对应 marker——契约测试钉住"声明支持就必须实现对应接口"。
   // sync：catch-up 走 turn/start.additionalContext（experimental API，initialize 已声明
@@ -640,7 +640,7 @@ export class CodexAdapter implements AgentAdapter {
       diagnostic({
         level: "warn",
         component: "codex.stderr",
-        provider: this.provider,
+        harness: this.harness,
         message: "codex app-server wrote to stderr",
         details: { output: message.slice(0, 4096) },
       });
@@ -654,7 +654,7 @@ export class CodexAdapter implements AgentAdapter {
         diagnostic({
           level: "error",
           component: "codex.process",
-          provider: this.provider,
+          harness: this.harness,
           message: `codex app-server exited (code ${code})`,
         });
       }
@@ -665,7 +665,7 @@ export class CodexAdapter implements AgentAdapter {
       diagnostic({
         level: "error",
         component: "codex.process",
-        provider: this.provider,
+        harness: this.harness,
         message: "codex app-server spawn error",
         error: diagnosticError(error),
       });
@@ -689,7 +689,7 @@ export class CodexAdapter implements AgentAdapter {
     rt.peer.notify("initialized", {});
   }
 
-  async open(opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+  async open(opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
     const command = codexLaunchCommand(this.options.command);
     let rt = this.launch(command, opts, sink);
     try {
@@ -699,12 +699,12 @@ export class CodexAdapter implements AgentAdapter {
         const hooksResult = await rt.peer.request("hooks/list", {});
         const hooks = codexHooksRequiringTrust(hooksResult);
         const hooksNeedingUserTrust = hooks.filter(
-          (hook) => !this.hookTrustStore.isTrusted(this.provider, hook),
+          (hook) => !this.hookTrustStore.isTrusted(this.harness, hook),
         );
         for (const warning of this.hookTrustStore.takeWarnings?.() ?? []) {
           this.emit(rt, {
             kind: "_baton_notice",
-            provider: this.provider,
+            harness: this.harness,
             payload: { level: "warning", title: "Could not load saved hook trust", detail: warning },
           });
         }
@@ -712,7 +712,7 @@ export class CodexAdapter implements AgentAdapter {
         if (trustAll) {
           this.emit(rt, {
             kind: "_baton_notice",
-            provider: this.provider,
+            harness: this.harness,
             payload: {
               level: "info",
               title: `Enabled ${hooks.length} previously trusted Codex hook${hooks.length === 1 ? "" : "s"}`,
@@ -724,15 +724,15 @@ export class CodexAdapter implements AgentAdapter {
           const request: HookTrustRequest = {
             kind: "hook_trust",
             requestId: newId("htr"),
-            providerName: "Codex",
+            harnessName: "Codex",
             hooks: hooksNeedingUserTrust,
           };
-          this.emit(rt, { kind: "hook_trust_request", provider: this.provider, payload: request }, hooksResult);
+          this.emit(rt, { kind: "hook_trust_request", harness: this.harness, payload: request }, hooksResult);
           const response = await this.options.requestHandler(request);
           if (response.kind === "cancelled") {
             this.emit(rt, {
               kind: "hook_trust_resolved",
-              provider: this.provider,
+              harness: this.harness,
               payload: { requestId: request.requestId, outcome: "cancelled" },
             });
             throw new Error("Codex hook trust request was cancelled");
@@ -740,11 +740,11 @@ export class CodexAdapter implements AgentAdapter {
           const trust = response.kind === "hook_trust" && response.decision === "trust";
           if (trust) {
             try {
-              this.hookTrustStore.trust(this.provider, hooksNeedingUserTrust);
+              this.hookTrustStore.trust(this.harness, hooksNeedingUserTrust);
             } catch (error) {
               this.emit(rt, {
                 kind: "hook_trust_resolved",
-                provider: this.provider,
+                harness: this.harness,
                 payload: { requestId: request.requestId, outcome: "failed" },
               });
               throw error;
@@ -753,13 +753,13 @@ export class CodexAdapter implements AgentAdapter {
           trustAll = trust;
           this.emit(rt, {
             kind: "hook_trust_resolved",
-            provider: this.provider,
+            harness: this.harness,
             payload: { requestId: request.requestId, outcome: trust ? "trusted" : "skipped" },
           });
         }
         if (trustAll) {
           // app-server 没有写 trust 的 RPC。Baton 已持久校验精确 hash 后，用官方 bypass 参数
-          // 重启；旧进程尚未创建 thread/turn，退出不会丢 provider 状态。
+          // 重启；旧进程尚未创建 thread/turn，退出不会丢 harness 状态。
           rt.child.kill();
           rt = this.launch(codexCommandWithHookTrustBypass(command), opts, sink);
           await this.initialize(rt);
@@ -771,25 +771,25 @@ export class CodexAdapter implements AgentAdapter {
       rt.threadId = threadId;
       rt.approvalRoute = opened.route;
       this.threads.set(threadId, rt);
-      return { provider: this.provider, providerSessionId: threadId, resumed: opened.resumed };
+      return { harness: this.harness, harnessSessionId: threadId, resumed: opened.resumed };
     } catch (error) {
-      // open() 尚未返回 ProviderSessionRef，runtime 无法调用 close()；adapter 必须清掉自己已启动的进程。
+      // open() 尚未返回 HarnessSessionRef，runtime 无法调用 close()；adapter 必须清掉自己已启动的进程。
       rt.child.kill();
       throw error;
     }
   }
 
   /** ApprovalRoutable：报告 codex 回吐的生效路由，而非 baton 请求的值（企业策略可能打回）。 */
-  approvalRoute(ref: ProviderSessionRef): ApprovalRoute | null {
-    return this.threads.get(ref.providerSessionId)?.approvalRoute ?? null;
+  approvalRoute(ref: HarnessSessionRef): ApprovalRoute | null {
+    return this.threads.get(ref.harnessSessionId)?.approvalRoute ?? null;
   }
 
-  async listModels(ref: ProviderSessionRef): Promise<ModelOption[]> {
+  async listModels(ref: HarnessSessionRef): Promise<ModelOption[]> {
     const rt = this.mustThread(ref);
     return codexModels(await rt.peer.request("model/list", { limit: 200 }));
   }
 
-  async setModel(ref: ProviderSessionRef, modelId: string | null): Promise<void> {
+  async setModel(ref: HarnessSessionRef, modelId: string | null): Promise<void> {
     const rt = this.mustThread(ref);
     const model = !modelId || modelId === "default" ? undefined : modelId;
     const catalog =
@@ -804,16 +804,16 @@ export class CodexAdapter implements AgentAdapter {
     rt.model = model;
   }
 
-  currentModel(ref: ProviderSessionRef): string | null {
+  currentModel(ref: HarnessSessionRef): string | null {
     return this.mustThread(ref).model ?? null;
   }
 
-  async listEfforts(ref: ProviderSessionRef): Promise<EffortOption[]> {
+  async listEfforts(ref: HarnessSessionRef): Promise<EffortOption[]> {
     const rt = this.mustThread(ref);
     return codexEfforts(await rt.peer.request("model/list", { limit: 200 }), rt.model);
   }
 
-  async setEffort(ref: ProviderSessionRef, effortId: string | null): Promise<void> {
+  async setEffort(ref: HarnessSessionRef, effortId: string | null): Promise<void> {
     const rt = this.mustThread(ref);
     if (!effortId || effortId === "default") {
       const catalog = await rt.peer.request("model/list", { limit: 200 });
@@ -832,11 +832,11 @@ export class CodexAdapter implements AgentAdapter {
     rt.effortUsesDefault = false;
   }
 
-  currentEffort(ref: ProviderSessionRef): string | null {
+  currentEffort(ref: HarnessSessionRef): string | null {
     return this.mustThread(ref).effortSelection ?? null;
   }
 
-  async compactContext(ref: ProviderSessionRef, turnId: string): Promise<PromptReceipt> {
+  async compactContext(ref: HarnessSessionRef, turnId: string): Promise<PromptReceipt> {
     const rt = this.mustThread(ref);
     if (rt.activeTurn && !rt.activeTurn.finalized) {
       throw new Error(`codex turn ${rt.activeTurn.turnId} still active; cannot compact`);
@@ -851,7 +851,7 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   /** submit 只做 admission 并发出 turn/start；进展与终结全部经通知/终态合成路径报告 */
-  async submit(ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  async submit(ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     const rt = this.mustThread(ref);
     if (rt.activeTurn && !rt.activeTurn.finalized) {
       throw new Error(`codex turn ${rt.activeTurn.turnId} still active; steer/parallel prompt unsupported`);
@@ -868,7 +868,7 @@ export class CodexAdapter implements AgentAdapter {
     // 的事实，且入参 blocks 可能含 <baton-sync> prepend，不能进正典历史）；adapter 只在
     // steer 成功时补 delivery:"steer" 的用户消息。
 
-    // 跨 provider catch-up 随本 turn 送达：additionalContext 按 key 的 contextual
+    // 跨 harness catch-up 随本 turn 送达：additionalContext 按 key 的 contextual
     // fragment（untrusted → user 语义）在 codex 侧与 prompt 同回合入史。admission 失败
     // 即未送达，runtime 水位不动、下次重注入（PromptInput.syncBlocks 契约）。
     const syncText = input.syncBlocks?.length ? textOf(input.syncBlocks) : undefined;
@@ -909,7 +909,7 @@ export class CodexAdapter implements AgentAdapter {
    * 当前 turn 的下一个安全边界被消费。stale turn、codex 侧拒绝（review/compact 等特殊
    * turn）与 wire 失败都归 rejected 交 runtime 降级——rejected 路径不发任何事件。
    */
-  async steer(ref: ProviderSessionRef, input: PromptInput, expectedTurnId: string): Promise<SteerReceipt> {
+  async steer(ref: HarnessSessionRef, input: PromptInput, expectedTurnId: string): Promise<SteerReceipt> {
     const rt = this.mustThread(ref);
     const turn = rt.activeTurn;
     // race 防线：用户提交时看到的 turn 已终结，或 codex turn id 尚未就位（turn/start
@@ -935,7 +935,7 @@ export class CodexAdapter implements AgentAdapter {
       rt,
       {
         kind: "user_message",
-        provider: this.provider,
+        harness: this.harness,
         payload: { messageId: input.messageId, content: input.blocks, delivery: "steer" },
       },
       undefined,
@@ -944,7 +944,7 @@ export class CodexAdapter implements AgentAdapter {
     return { effective: "steer" };
   }
 
-  async cancel(ref: ProviderSessionRef): Promise<void> {
+  async cancel(ref: HarnessSessionRef): Promise<void> {
     const rt = this.mustThread(ref);
     const turn = rt.activeTurn;
     if (!turn || turn.finalized) return;
@@ -964,18 +964,18 @@ export class CodexAdapter implements AgentAdapter {
     void rt.peer.request("turn/interrupt", { threadId: rt.threadId, turnId: rt.codexTurnId }).catch(() => {});
   }
 
-  async close(ref: ProviderSessionRef): Promise<void> {
-    const rt = this.threads.get(ref.providerSessionId);
+  async close(ref: HarnessSessionRef): Promise<void> {
+    const rt = this.threads.get(ref.harnessSessionId);
     if (!rt) return;
-    this.threads.delete(ref.providerSessionId);
+    this.threads.delete(ref.harnessSessionId);
     // 宿主主动关闭：活跃 turn 读作 cancelled；先终结再 kill，child close 回调就不会再合成 failed
     this.finishTurn(rt, rt.activeTurn, "interrupted");
     rt.child.kill();
   }
 
-  private mustThread(ref: ProviderSessionRef): ThreadRuntime {
-    const rt = this.threads.get(ref.providerSessionId);
-    if (!rt) throw new Error(`unknown codex thread: ${ref.providerSessionId}`);
+  private mustThread(ref: HarnessSessionRef): ThreadRuntime {
+    const rt = this.threads.get(ref.harnessSessionId);
+    if (!rt) throw new Error(`unknown codex thread: ${ref.harnessSessionId}`);
     return rt;
   }
 
@@ -984,7 +984,7 @@ export class CodexAdapter implements AgentAdapter {
     // 空回合判定的记账点：任何可见产出都经过这里，集中标记比在各通知分支手工标记可靠
     const owner = turn ?? rt.activeTurn;
     if (owner && !owner.finalized && OUTPUT_EVENT_KINDS.has(ev.kind)) owner.sawOutput = true;
-    rt.sink?.({ ...ev, provider: this.provider, providerSessionId: rt.threadId, turnId: turn?.turnId ?? rt.turnId, raw });
+    rt.sink?.({ ...ev, harness: this.harness, harnessSessionId: rt.threadId, turnId: turn?.turnId ?? rt.turnId, raw });
   }
 
   /**
@@ -1003,7 +1003,7 @@ export class CodexAdapter implements AgentAdapter {
         rt,
         {
           kind: "_baton_notice",
-          provider: this.provider,
+          harness: this.harness,
           payload: {
             level: "warning",
             title: "Codex returned an empty turn (no output)",
@@ -1020,7 +1020,7 @@ export class CodexAdapter implements AgentAdapter {
       rt,
       {
         kind: "state_update",
-        provider: this.provider,
+        harness: this.harness,
         payload: { state: "idle", stopReason: stopReasonOf(turnStatus) },
       },
       undefined,
@@ -1056,7 +1056,7 @@ export class CodexAdapter implements AgentAdapter {
       rt,
       {
         kind: "_baton_notice",
-        provider: this.provider,
+        harness: this.harness,
         payload: {
           level: "warning",
           title: "Unrecognized approval choices from codex",
@@ -1074,7 +1074,7 @@ export class CodexAdapter implements AgentAdapter {
   /** 错误路径终态：先留结构化 error，再合成 idle（design §4.9） */
   private failTurn(rt: ThreadRuntime, turn: CodexTurn | undefined, message: string): void {
     if (!turn || turn.finalized) return;
-    this.emit(rt, { kind: "_baton_error_update", provider: this.provider, payload: { message } }, undefined, turn);
+    this.emit(rt, { kind: "_baton_error_update", harness: this.harness, payload: { message } }, undefined, turn);
     this.finishTurn(rt, turn, "failed");
   }
 
@@ -1094,7 +1094,7 @@ export class CodexAdapter implements AgentAdapter {
           rt,
           {
             kind: "agent_message_chunk",
-            provider: this.provider,
+            harness: this.harness,
             payload: { messageId: String(p.itemId), content: { type: "text", text: String(p.delta) } },
           },
           params,
@@ -1110,7 +1110,7 @@ export class CodexAdapter implements AgentAdapter {
           rt,
           {
             kind: "agent_thought_chunk",
-            provider: this.provider,
+            harness: this.harness,
             payload: { messageId, content: { type: "text", text: String(p.delta) } },
           },
           params,
@@ -1128,7 +1128,7 @@ export class CodexAdapter implements AgentAdapter {
               rt,
               {
                 kind: "agent_message",
-                provider: this.provider,
+                harness: this.harness,
                 payload: { messageId: String(item.id), content: [{ type: "text", text: String(item.text ?? "") }] },
               },
               params,
@@ -1145,7 +1145,7 @@ export class CodexAdapter implements AgentAdapter {
                 rt,
                 {
                   kind: "agent_thought",
-                  provider: this.provider,
+                  harness: this.harness,
                   payload: {
                     messageId: `${String(item.id)}:summary:${index}`,
                     content: [{ type: "text", text: full }],
@@ -1163,7 +1163,7 @@ export class CodexAdapter implements AgentAdapter {
             rt,
             {
               kind: "_baton_run_status",
-              provider: this.provider,
+              harness: this.harness,
               payload:
                 method === "item/started"
                   ? { phase: "compacting", title: "Compacting context…" }
@@ -1173,7 +1173,7 @@ export class CodexAdapter implements AgentAdapter {
           );
         } else if (itemType) {
           const status = method === "item/started" ? "in_progress" : codexToolTerminalStatus(item.status);
-          // 对账：declined 却从未向 baton 发过 requestApproval → 决策权被 provider 侧
+          // 对账：declined 却从未向 baton 发过 requestApproval → 决策权被 harness 侧
           // 策略（auto-review 等）截走了，用户全程不知情。显式提示，不静默渲染。
           if (
             status === "declined" &&
@@ -1184,10 +1184,10 @@ export class CodexAdapter implements AgentAdapter {
               rt,
               {
                 kind: "_baton_notice",
-                provider: this.provider,
+                harness: this.harness,
                 payload: {
                   level: "warning",
-                  title: "Approval bypassed by provider-side policy",
+                  title: "Approval bypassed by harness-side policy",
                   detail: `codex declined "${toolTitleOf(item)}" without asking you — check approvals_reviewer / auto-review in codex config`,
                 },
               },
@@ -1198,7 +1198,7 @@ export class CodexAdapter implements AgentAdapter {
             rt,
             {
               kind: "tool_call_update",
-              provider: this.provider,
+              harness: this.harness,
               payload: {
                 toolCallId: String(item.id),
                 title: toolTitleOf(item),
@@ -1238,7 +1238,7 @@ export class CodexAdapter implements AgentAdapter {
             rt,
             {
               kind: "approval_review_update",
-              provider: this.provider,
+              harness: this.harness,
               payload: {
                 reviewId: newId("arv"),
                 ...(targetItemId ? { toolCallId: targetItemId } : {}),
@@ -1258,7 +1258,7 @@ export class CodexAdapter implements AgentAdapter {
           rt,
           {
             kind: "_baton_run_status",
-            provider: this.provider,
+            harness: this.harness,
             payload: method.endsWith("/started")
               ? { phase: "reviewing_approval", title: "Reviewing approval…" }
               : { phase: null },
@@ -1273,7 +1273,7 @@ export class CodexAdapter implements AgentAdapter {
           rt,
           {
             kind: "tool_call_content_chunk",
-            provider: this.provider,
+            harness: this.harness,
             payload: { toolCallId: String(p.itemId), content: { type: "text", text: String(p.delta) } },
           },
           params,
@@ -1290,7 +1290,7 @@ export class CodexAdapter implements AgentAdapter {
         });
         this.emit(
           rt,
-          { kind: "plan_update", provider: this.provider, payload: { planId: `pl_${rt.codexTurnId ?? "turn"}`, entries } },
+          { kind: "plan_update", harness: this.harness, payload: { planId: `pl_${rt.codexTurnId ?? "turn"}`, entries } },
           params,
         );
         break;
@@ -1314,7 +1314,7 @@ export class CodexAdapter implements AgentAdapter {
           reasoningTokens: Math.max(0, cur.reasoningOutputTokens - prev.reasoningOutputTokens),
         };
         if (delta.inputTokens || delta.outputTokens || delta.cacheReadTokens || delta.reasoningTokens) {
-          this.emit(rt, { kind: "usage_update", provider: this.provider, payload: delta }, params);
+          this.emit(rt, { kind: "usage_update", harness: this.harness, payload: delta }, params);
         }
         const contextSize = typeof usage.modelContextWindow === "number" ? usage.modelContextWindow : undefined;
         const contextUsed = typeof last.totalTokens === "number" ? last.totalTokens : undefined;
@@ -1323,7 +1323,7 @@ export class CodexAdapter implements AgentAdapter {
             rt,
             {
               kind: "context_usage_update",
-              provider: this.provider,
+              harness: this.harness,
               payload: {
                 model: rt.model ?? "default",
                 ...(contextUsed !== undefined ? { contextUsed } : {}),
@@ -1365,7 +1365,7 @@ export class CodexAdapter implements AgentAdapter {
           rt,
           {
             kind: "_baton_notice",
-            provider: this.provider,
+            harness: this.harness,
             payload: {
               level: "warning",
               title: `Codex ${eventName} hook blocked the prompt`,
@@ -1385,7 +1385,7 @@ export class CodexAdapter implements AgentAdapter {
             this.options.diagnostic?.({
               level: "warn",
               component: "codex.notification",
-              provider: this.provider,
+              harness: this.harness,
               turnId: rt.activeTurn?.turnId,
               message: `unmapped codex notification: ${method}`,
               details: { method, count },
@@ -1422,13 +1422,13 @@ export class CodexAdapter implements AgentAdapter {
           toolCallId: p.itemId !== undefined ? String(p.itemId) : undefined,
           options: choices.map((choice) => choice.option),
         };
-        this.emit(rt, { kind: "permission_request", provider: this.provider, payload: request }, params);
+        this.emit(rt, { kind: "permission_request", harness: this.harness, payload: request }, params);
         const response = await this.options.requestHandler(request);
         if (response.kind === "cancelled") {
           // turn 被打断，request 随之收口：留痕 cancelled，回 codex "cancel"（Deny and interrupt turn）
           this.emit(
             rt,
-            { kind: "permission_resolved", provider: this.provider, payload: { requestId, outcome: "cancelled" } },
+            { kind: "permission_resolved", harness: this.harness, payload: { requestId, outcome: "cancelled" } },
             params,
           );
           return { decision: "cancel" };
@@ -1437,7 +1437,7 @@ export class CodexAdapter implements AgentAdapter {
         const optionId = response.kind === "permission" ? response.optionId : "";
         this.emit(rt, {
           kind: "permission_resolved",
-          provider: this.provider,
+          harness: this.harness,
           payload: { requestId, outcome: "selected", optionId },
         });
         // 选不中就回 decline，不把 optionId 原样透传：结构化候选的 optionId 是 baton 铸的
@@ -1470,14 +1470,14 @@ export class CodexAdapter implements AgentAdapter {
           requestId: String(p.itemId ?? newId("qr")),
           questions,
         };
-        this.emit(rt, { kind: "question_request", provider: this.provider, payload: request }, params);
+        this.emit(rt, { kind: "question_request", harness: this.harness, payload: request }, params);
         const response = await this.options.requestHandler(request);
         if (response.kind === "cancelled") {
           this.emit(
             rt,
             {
               kind: "question_resolved",
-              provider: this.provider,
+              harness: this.harness,
               payload: { requestId: request.requestId, outcome: "cancelled" },
             },
             params,
@@ -1487,7 +1487,7 @@ export class CodexAdapter implements AgentAdapter {
         const decisionAnswers = response.kind === "question" ? response.answers : {};
         this.emit(rt, {
           kind: "question_resolved",
-          provider: this.provider,
+          harness: this.harness,
           payload: { requestId: request.requestId, outcome: "answered", answers: decisionAnswers },
         });
         return {

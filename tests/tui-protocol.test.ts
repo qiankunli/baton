@@ -96,7 +96,7 @@ describe("BatonChatProtocol status command", () => {
       session.setPreviewIfEmpty("Implement status command");
       session.append({
         kind: "context_usage_update",
-        provider: "codex",
+        harness: "codex",
         payload: { model: "default", contextUsed: 12_500, contextSize: 200_000 },
       });
       const eventCount = session.readEvents().length;
@@ -119,8 +119,8 @@ describe("BatonChatProtocol status command", () => {
   });
 
   test("context lookup keys by wire sessionKey, not canonical id (claude vs claude-code)", async () => {
-    // 回归：事件信封 provider 是 sessionKey（"claude-code"），曾用 canonical id（"claude"）
-    // 查 per-provider 槽，导致 claude 的 /status context 永远 unavailable。codex 两键相同，
+    // 回归：事件信封 harness 是 sessionKey（"claude-code"），曾用 canonical id（"claude"）
+    // 查 per-harness 槽，导致 claude 的 /status context 永远 unavailable。codex 两键相同，
     // 只有 claude 能暴露这个错位。
     const root = mkdtempSync(join(tmpdir(), "baton-tui-status-claude-"));
     try {
@@ -128,7 +128,7 @@ describe("BatonChatProtocol status command", () => {
       const session = store.createSession({ cwd: "/repo" });
       session.append({
         kind: "context_usage_update",
-        provider: "claude-code",
+        harness: "claude-code",
         payload: { model: "default", contextUsed: 40_000, contextSize: 200_000 },
       });
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
@@ -159,7 +159,7 @@ describe("BatonChatProtocol streaming projection", () => {
       for (const text of ["one ", "two ", "three"]) {
         session.append({
           kind: "agent_message_chunk",
-          provider: "codex",
+          harness: "codex",
           turnId: "t1",
           payload: { messageId: "m_stream", content: { type: "text", text } },
         });
@@ -188,13 +188,13 @@ describe("BatonChatProtocol streaming projection", () => {
 
       session.append({
         kind: "agent_message_chunk",
-        provider: "codex",
+        harness: "codex",
         turnId: "t1",
         payload: { messageId: "m_stream", content: { type: "text", text: "latest output" } },
       });
       session.append({
         kind: "permission_request",
-        provider: "codex",
+        harness: "codex",
         turnId: "t1",
         payload: {
           kind: "permission",
@@ -218,27 +218,27 @@ describe("BatonChatProtocol streaming projection", () => {
   });
 });
 
-describe("BatonChatProtocol provider commands", () => {
+describe("BatonChatProtocol harness commands", () => {
   test("switches the input target and sends a trailing message in one action", async () => {
-    const root = mkdtempSync(join(tmpdir(), "baton-tui-provider-command-"));
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-harness-command-"));
     try {
       const store = new SessionStore(root);
       const session = store.createSession({ cwd: "/repo" });
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
-      const submitted: Array<{ provider: string; text: string }> = [];
+      const submitted: Array<{ harness: string; text: string }> = [];
       const internals = protocol as unknown as {
         runtime: {
-          submit: (provider: string, blocks: Array<{ type: string; text?: string }>) => Promise<"completed">;
-          compactContext: (provider: string) => Promise<void>;
+          submit: (harness: string, blocks: Array<{ type: string; text?: string }>) => Promise<"completed">;
+          compactContext: (harness: string) => Promise<void>;
         };
       };
-      internals.runtime.submit = async (provider, blocks) => {
-        submitted.push({ provider, text: blocks[0]?.text ?? "" });
+      internals.runtime.submit = async (harness, blocks) => {
+        submitted.push({ harness, text: blocks[0]?.text ?? "" });
         return "completed";
       };
       const compacted: string[] = [];
-      internals.runtime.compactContext = async (provider) => {
-        compacted.push(provider);
+      internals.runtime.compactContext = async (harness) => {
+        compacted.push(harness);
       };
 
       await protocol.command("claude", "");
@@ -249,16 +249,16 @@ describe("BatonChatProtocol provider commands", () => {
 
       await protocol.submit("/cc review this");
       expect(protocol.getView().runStatus?.[0]).toMatchObject({ author: "claude" });
-      expect(submitted).toEqual([{ provider: "claude", text: "review this" }]);
+      expect(submitted).toEqual([{ harness: "claude", text: "review this" }]);
 
       await protocol.submit("/cx fix it");
-      expect(submitted.at(-1)).toEqual({ provider: "codex", text: "fix it" });
+      expect(submitted.at(-1)).toEqual({ harness: "codex", text: "fix it" });
 
       await protocol.command("claude", "explain it");
-      expect(submitted.at(-1)).toEqual({ provider: "claude", text: "explain it" });
+      expect(submitted.at(-1)).toEqual({ harness: "claude", text: "explain it" });
 
       await protocol.command("codex", "implement it");
-      expect(submitted.at(-1)).toEqual({ provider: "codex", text: "implement it" });
+      expect(submitted.at(-1)).toEqual({ harness: "codex", text: "implement it" });
 
       await protocol.command("compact", "");
       expect(compacted).toEqual(["codex"]);
@@ -267,9 +267,9 @@ describe("BatonChatProtocol provider commands", () => {
       await protocol.submit("/c ambiguous");
       expect(submitted).toHaveLength(4);
       expect(protocol.getView().transcript.at(-1)).toMatchObject({
-        id: "_baton_provider_route_error",
+        id: "_baton_harness_route_error",
         author: "baton",
-        text: expect.stringContaining('provider prefix "/c" is ambiguous; matches codex, claude'),
+        text: expect.stringContaining('harness prefix "/c" is ambiguous; matches codex, claude'),
       });
       await protocol.exit();
     } finally {
@@ -281,15 +281,15 @@ describe("BatonChatProtocol provider commands", () => {
 describe("BatonChatProtocol view projection", () => {
   type ViewInternals = {
     state: {
-      plans: Map<string, { planId: string; provider?: string; entries: Array<{ content: string; status: string }> }>;
-      perProvider: Map<string, { lastPlanId?: string }>;
+      plans: Map<string, { planId: string; harness?: string; entries: Array<{ content: string; status: string }> }>;
+      perHarness: Map<string, { lastPlanId?: string }>;
       timeline: Array<{ type: string; id: string }>;
       activeTurns: Map<
         string,
         {
           turnId: string;
-          provider?: string;
-          origin: "user" | "provider";
+          harness?: string;
+          origin: "user" | "harness";
           state: "running" | "requires_action";
           startedAt?: number;
         }
@@ -298,7 +298,7 @@ describe("BatonChatProtocol view projection", () => {
     changed: () => void;
   };
 
-  test("idle agent status explicitly confirms the provider is no longer running", async () => {
+  test("idle agent status explicitly confirms the harness is no longer running", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-agentstatus-"));
     try {
       const store = new SessionStore(root);
@@ -321,19 +321,19 @@ describe("BatonChatProtocol view projection", () => {
     }
   });
 
-  test("agent status shows context usage for its provider and model", async () => {
+  test("agent status shows context usage for its harness and model", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-context-status-"));
     try {
       const store = new SessionStore(root);
       const session = store.createSession({ cwd: "/repo" });
       session.append({
         kind: "context_usage_update",
-        provider: "codex",
+        harness: "codex",
         payload: { model: "default", contextUsed: 12_500, contextSize: 200_000 },
       });
       session.append({
         kind: "context_usage_update",
-        provider: "claude-code",
+        harness: "claude-code",
         payload: { model: "default", contextUsed: 80_000, contextSize: 200_000 },
       });
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
@@ -361,7 +361,7 @@ describe("BatonChatProtocol view projection", () => {
       const session = store.createSession({ cwd: "/repo" });
       session.append({
         kind: "context_usage_update",
-        provider: "codex",
+        harness: "codex",
         payload: { model: "gpt-old", contextUsed: 190_000, contextSize: 200_000 },
       });
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
@@ -386,17 +386,17 @@ describe("BatonChatProtocol view projection", () => {
 
       internals.state.plans.set("p1", {
         planId: "p1",
-        provider: "codex",
+        harness: "codex",
         entries: [
           { content: "step one", status: "completed" },
           { content: "step two", status: "in_progress" },
         ],
       });
       internals.state.timeline.push({ type: "plan", id: "p1" });
-      // 归属查询键在统一 per-provider 槽（reduce 里由 plan_update 维护；这里直接摆内部状态）
-      internals.state.perProvider.set("codex", { lastPlanId: "p1" });
+      // 归属查询键在统一 per-harness 槽（reduce 里由 plan_update 维护；这里直接摆内部状态）
+      internals.state.perHarness.set("codex", { lastPlanId: "p1" });
       // pin 是"现在时"层：需有回合在运行（observed run 也算）
-      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "codex", origin: "provider", state: "running" });
+      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", harness: "codex", origin: "harness", state: "running" });
       internals.changed();
       expect(protocol.getView().plan).toEqual([
         { content: "step one", status: "completed" },
@@ -406,7 +406,7 @@ describe("BatonChatProtocol view projection", () => {
       // 互补显示：进行中归 pin，transcript 不重复渲染（过去时区域不该有实时改写的块）
       expect(planInTranscript()).toBe(false);
 
-      // plan 跟随 provider：切到另一家后不再占用 pinned 层，切回则恢复。
+      // plan 跟随 harness：切到另一家后不再占用 pinned 层，切回则恢复。
       await protocol.command("claude", "");
       expect(protocol.getView().plan).toBeUndefined();
       expect(protocol.getView().footer).not.toContain("plan:");
@@ -423,7 +423,7 @@ describe("BatonChatProtocol view projection", () => {
       expect(planInTranscript()).toBe(true);
 
       // 回合重新开跑：未完成 plan 重新上 pin，transcript 卡随之撤下
-      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", provider: "codex", origin: "provider", state: "running" });
+      internals.state.activeTurns.set("t_obs", { turnId: "t_obs", harness: "codex", origin: "harness", state: "running" });
       internals.changed();
       expect(protocol.getView().plan).toHaveLength(2);
       expect(planInTranscript()).toBe(false);
@@ -431,7 +431,7 @@ describe("BatonChatProtocol view projection", () => {
       // 全部完成：即使仍在运行，pin 停发、footer 摘要撤下，终态卡在 transcript 原位供回看
       internals.state.plans.set("p1", {
         planId: "p1",
-        provider: "codex",
+        harness: "codex",
         entries: [
           { content: "step one", status: "completed" },
           { content: "step two", status: "completed" },
@@ -453,7 +453,7 @@ describe("BatonChatProtocol view projection", () => {
 
 describe("BatonChatProtocol transcript projection", () => {
   // 委托状态是否可见改由 adapter 报告的生效路由驱动（见 session-runtime.test.ts）：
-  // 投影不再读 config——config 是意图，且投影层不得按 provider 分支（不变量 #3）。
+  // 投影不再读 config——config 是意图，且投影层不得按 harness 分支（不变量 #3）。
   test("renders auto-review receipts beside the target tool", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-auto-review-"));
     try {
@@ -461,13 +461,13 @@ describe("BatonChatProtocol transcript projection", () => {
       const session = store.createSession({ cwd: "/repo" });
       session.append({
         kind: "tool_call_update",
-        provider: "codex",
+        harness: "codex",
         turnId: "t1",
         payload: { toolCallId: "tc1", title: "edit src/app.ts", kind: "edit", status: "completed" },
       });
       session.append({
         kind: "approval_review_update",
-        provider: "codex",
+        harness: "codex",
         turnId: "t1",
         payload: {
           reviewId: "arv_test1",
@@ -504,26 +504,26 @@ describe("BatonChatProtocol transcript projection", () => {
       const session = store.createSession({ cwd: "/repo" });
       session.append({
         kind: "user_message",
-        provider: "codex",
+        harness: "codex",
         turnId: "t1",
         payload: { messageId: "m_user", content: [{ type: "text", text: "## literal" }] },
       });
-      session.append({ kind: "state_update", provider: "codex", turnId: "t1", payload: { state: "running" } });
+      session.append({ kind: "state_update", harness: "codex", turnId: "t1", payload: { state: "running" } });
       session.append({
         kind: "agent_thought",
-        provider: "codex",
+        harness: "codex",
         turnId: "t1",
         payload: { messageId: "m_thought", content: [{ type: "text", text: "**Inspecting image**" }] },
       });
       session.append({
         kind: "agent_message_chunk",
-        provider: "codex",
+        harness: "codex",
         turnId: "t1",
         payload: { messageId: "m_stream", content: { type: "text", text: "## Streaming" } },
       });
       session.append({
         kind: "agent_message",
-        provider: "codex",
+        harness: "codex",
         turnId: "t1",
         payload: { messageId: "m_done", content: [{ type: "text", text: "**Done**" }] },
       });
@@ -594,7 +594,7 @@ describe("toolTranscriptItem", () => {
     expect(
       toolTranscriptItem({
         toolCallId: "tc_cmd",
-        provider: "codex",
+        harness: "codex",
         title: "Bash: git status --short",
         kind: "execute",
         status: "completed",
@@ -755,7 +755,7 @@ describe("interaction eventization: pending projects from the event stream", () 
       // 事件流是 pending 交互的唯一真相源：request 落盘即出卡片，id = requestId
       session.append({
         kind: "permission_request",
-        provider: "claude-code",
+        harness: "claude-code",
         turnId: "t1",
         payload: {
           kind: "permission",
@@ -781,7 +781,7 @@ describe("interaction eventization: pending projects from the event stream", () 
       // resolved 落盘 → 卡片消失
       session.append({
         kind: "permission_resolved",
-        provider: "baton",
+        harness: "baton",
         payload: { requestId: "ar_1", outcome: "cancelled" },
       });
       expect(protocol.getView().approval).toBeNull();
@@ -800,7 +800,7 @@ describe("interaction eventization: pending projects from the event stream", () 
 
       session.append({
         kind: "question_request",
-        provider: "codex",
+        harness: "codex",
         turnId: "t1",
         payload: {
           kind: "question",
@@ -812,7 +812,7 @@ describe("interaction eventization: pending projects from the event stream", () 
 
       session.append({
         kind: "question_resolved",
-        provider: "baton",
+        harness: "baton",
         payload: { requestId: "qr_1", outcome: "cancelled" },
       });
       expect(protocol.getView().question).toBeNull();
@@ -830,12 +830,12 @@ describe("interaction eventization: pending projects from the event stream", () 
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
       session.append({
         kind: "hook_trust_request",
-        provider: "codex",
+        harness: "codex",
         turnId: "t1",
         payload: {
           kind: "hook_trust",
           requestId: "htr_1",
-          providerName: "Codex",
+          harnessName: "Codex",
           hooks: [
             {
               key: "hook1",
@@ -857,7 +857,7 @@ describe("interaction eventization: pending projects from the event stream", () 
       expect(protocol.getView().status?.text).toContain("no longer pending");
       session.append({
         kind: "hook_trust_resolved",
-        provider: "baton",
+        harness: "baton",
         payload: { requestId: "htr_1", outcome: "cancelled" },
       });
       expect(protocol.getView().approval).toBeNull();
@@ -883,8 +883,8 @@ describe("BatonChatProtocol steer submit", () => {
       const internals = protocol as unknown as {
         runtime: {
           queueLength: number;
-          canSteer: (provider: string) => boolean;
-          steer: (provider: string, blocks: unknown) => Promise<{ effective: string }>;
+          canSteer: (harness: string) => boolean;
+          steer: (harness: string, blocks: unknown) => Promise<{ effective: string }>;
           submit: () => Promise<"completed">;
         };
       };
@@ -912,7 +912,7 @@ describe("BatonChatProtocol steer submit", () => {
       const protocol = protocolWith(root);
       const internals = protocol as unknown as {
         runtime: {
-          canSteer: (provider: string) => boolean;
+          canSteer: (harness: string) => boolean;
           steer: () => Promise<{ effective: string; outcome: Promise<string> }>;
         };
       };
@@ -944,7 +944,7 @@ describe("BatonChatProtocol steer submit", () => {
         runtime: {
           queueLength: number;
           isBusy: boolean;
-          canSteer: (provider: string) => boolean;
+          canSteer: (harness: string) => boolean;
           submit: () => Promise<"completed">;
         };
       };
@@ -1043,13 +1043,13 @@ describe("BatonChatProtocol input history", () => {
       const session = store.createSession({ cwd: "/repo" });
       session.append({
         kind: "user_message",
-        provider: "claude-code",
+        harness: "claude-code",
         turnId: "t_1",
         payload: { messageId: "m_1", content: [{ type: "text", text: "seeded one" }] },
       });
       session.append({
         kind: "user_message",
-        provider: "claude-code",
+        harness: "claude-code",
         turnId: "t_2",
         payload: { messageId: "m_2", content: [{ type: "text", text: "seeded two" }] },
       });

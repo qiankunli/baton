@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { parseSlashCommand } from "chat-tui";
 
-import { COMMANDS, parseProvider, parseProviderRoute } from "../src/commands/registry.ts";
+import { COMMANDS, parseHarness, parseHarnessRoute } from "../src/commands/registry.ts";
 
 // slash 解析实现在 chat-tui；这里锁的是"chat-tui 解析器 × baton 命令表"的组合行为。
 describe("baton command registry", () => {
-  test("parses direct provider commands and config arguments", () => {
+  test("parses direct harness commands and config arguments", () => {
     expect(parseSlashCommand("/claude", COMMANDS)).toEqual({ name: "claude", argument: "" });
     expect(parseSlashCommand("/codex", COMMANDS)).toEqual({ name: "codex", argument: "" });
     expect(parseSlashCommand("/codex fix this", COMMANDS)).toEqual({ name: "codex", argument: "fix this" });
@@ -34,40 +34,40 @@ describe("baton command registry", () => {
     expect(parseSlashCommand("/s", COMMANDS)).toBeNull();
   });
 
-  test("does not retain /provider or consume unknown slash prompts", () => {
-    expect(parseSlashCommand("/provider claude", COMMANDS)).toBeNull();
+  test("does not retain /harness or consume unknown slash prompts", () => {
+    expect(parseSlashCommand("/harness claude", COMMANDS)).toBeNull();
     expect(parseSlashCommand("/tmp/project", COMMANDS)).toBeNull();
   });
 
-  test("routes provider aliases without registering them as slash commands", () => {
+  test("routes harness aliases without registering them as slash commands", () => {
     expect(parseSlashCommand("/cc review this", COMMANDS)).toBeNull();
     expect(parseSlashCommand("/cx fix this", COMMANDS)).toBeNull();
     expect(COMMANDS.map((command) => command.name)).not.toContain("cc");
     expect(COMMANDS.map((command) => command.name)).not.toContain("cx");
-    expect(parseProviderRoute("/cc  review this")).toEqual({
+    expect(parseHarnessRoute("/cc  review this")).toEqual({
       kind: "matched",
-      provider: "claude",
+      harness: "claude",
       message: "review this",
     });
-    expect(parseProviderRoute("/cx fix this")).toEqual({ kind: "matched", provider: "codex", message: "fix this" });
-    expect(parseProviderRoute("/cla review this")).toEqual({
+    expect(parseHarnessRoute("/cx fix this")).toEqual({ kind: "matched", harness: "codex", message: "fix this" });
+    expect(parseHarnessRoute("/cla review this")).toEqual({
       kind: "matched",
-      provider: "claude",
+      harness: "claude",
       message: "review this",
     });
-    expect(parseProviderRoute("/cod fix this")).toEqual({ kind: "matched", provider: "codex", message: "fix this" });
-    expect(parseProviderRoute("/c ambiguous")).toEqual({
+    expect(parseHarnessRoute("/cod fix this")).toEqual({ kind: "matched", harness: "codex", message: "fix this" });
+    expect(parseHarnessRoute("/c ambiguous")).toEqual({
       kind: "ambiguous",
       token: "c",
-      providers: ["codex", "claude"],
+      harnesses: ["codex", "claude"],
     });
   });
 
-  test("currently bundled provider values are explicit", () => {
-    expect(parseProvider("Claude")).toBe("claude");
-    expect(parseProvider("codex")).toBe("codex");
-    expect(parseProvider("cc")).toBe("claude");
-    expect(parseProvider("cx")).toBe("codex");
-    expect(parseProvider("other")).toBeNull();
+  test("currently bundled harness values are explicit", () => {
+    expect(parseHarness("Claude")).toBe("claude");
+    expect(parseHarness("codex")).toBe("codex");
+    expect(parseHarness("cc")).toBe("claude");
+    expect(parseHarness("cx")).toBe("codex");
+    expect(parseHarness("other")).toBeNull();
   });
 });

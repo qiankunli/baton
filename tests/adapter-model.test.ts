@@ -86,7 +86,7 @@ describe("Claude model capability", () => {
       adapter as unknown as {
         sessions: Map<string, { modelInfos?: unknown[] }>;
       }
-    ).sessions.get(ref.providerSessionId);
+    ).sessions.get(ref.harnessSessionId);
     if (!runtime) throw new Error("missing Claude test runtime");
     runtime.modelInfos = [
       { value: "opus", displayName: "Opus", supportedEffortLevels: ["high"] },
@@ -116,7 +116,7 @@ describe("Codex model capability", () => {
       },
     };
     (adapter as unknown as { threads: Map<string, typeof runtime> }).threads.set("thread-1", runtime);
-    const ref = { provider: "codex", providerSessionId: "thread-1" };
+    const ref = { harness: "codex", harnessSessionId: "thread-1" };
 
     await adapter.compactContext(ref, "t_compact");
     await Bun.sleep(0);
@@ -157,7 +157,7 @@ describe("Codex model capability", () => {
     (
       adapter as unknown as { threads: Map<string, typeof runtime> }
     ).threads.set("thread-1", runtime);
-    const ref = { provider: "codex", providerSessionId: "thread-1" };
+    const ref = { harness: "codex", harnessSessionId: "thread-1" };
 
     expect((await adapter.listModels(ref)).map((model) => model.id)).toEqual(["default", "gpt-5"]);
     await adapter.setModel(ref, "gpt-5");
@@ -202,7 +202,7 @@ describe("Codex model capability", () => {
     (
       adapter as unknown as { threads: Map<string, typeof runtime> }
     ).threads.set("thread-1", runtime);
-    const ref = { provider: "codex", providerSessionId: "thread-1" };
+    const ref = { harness: "codex", harnessSessionId: "thread-1" };
 
     await adapter.setModel(ref, "gpt-5");
     await adapter.setEffort(ref, "high");
@@ -230,7 +230,7 @@ describe("Codex model capability", () => {
     (
       adapter as unknown as { threads: Map<string, typeof runtime> }
     ).threads.set("thread-1", runtime);
-    const ref = { provider: "codex", providerSessionId: "thread-1" };
+    const ref = { harness: "codex", harnessSessionId: "thread-1" };
 
     expect(adapter.capabilities.sync?.supported).toBe(true);
     await adapter.submit(ref, {
@@ -265,7 +265,7 @@ describe("Codex model capability", () => {
     ).threads.set("thread-1", runtime);
 
     await adapter.submit(
-      { provider: "codex", providerSessionId: "thread-1" },
+      { harness: "codex", harnessSessionId: "thread-1" },
       { turnId: "t_1", messageId: "m_1", blocks: [{ type: "text", text: "hello" }] },
     );
     await Bun.sleep(0);

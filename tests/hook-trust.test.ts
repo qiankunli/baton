@@ -48,7 +48,7 @@ describe("persisted hook trust", () => {
     expect(store.isTrusted("codex", candidate({ currentHash: "sha256:two" }))).toBe(false);
     expect(hookStatePath(root)).toBe(join(root, "state", "hook.json"));
     expect(JSON.parse(readFileSync(hookStatePath(root), "utf8"))).toEqual({
-      trust: { providers: { codex: { [hook.key]: "sha256:one" } } },
+      trust: { harnesses: { codex: { [hook.key]: "sha256:one" } } },
     });
   });
 
@@ -60,7 +60,7 @@ describe("persisted hook trust", () => {
     expect(hookTrustFingerprint(one)).not.toBe(hookTrustFingerprint(changed));
   });
 
-  test("preserves unrelated hook settings and trust fields when adding a provider", () => {
+  test("preserves unrelated hook settings and trust fields when adding a harness", () => {
     const root = mkdtempSync(join(tmpdir(), "baton-hook-state-preserve-"));
     roots.push(root);
     const path = hookStatePath(root);
@@ -69,7 +69,7 @@ describe("persisted hook trust", () => {
       path,
       `${JSON.stringify({
         display: { showStatus: true },
-        trust: { policy: "exact", providers: { claude: { existing: "sha256:claude" } } },
+        trust: { policy: "exact", harnesses: { claude: { existing: "sha256:claude" } } },
       })}\n`,
     );
 
@@ -79,7 +79,7 @@ describe("persisted hook trust", () => {
       display: { showStatus: true },
       trust: {
         policy: "exact",
-        providers: {
+        harnesses: {
           claude: { existing: "sha256:claude" },
           codex: { [candidate().key]: "sha256:one" },
         },
@@ -112,7 +112,7 @@ describe("persisted hook trust", () => {
 
     expect(existsSync(`${path}.lock`)).toBe(false);
     expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
-      trust: { providers: { codex: { [candidate().key]: "sha256:one" } } },
+      trust: { harnesses: { codex: { [candidate().key]: "sha256:one" } } },
     });
   });
 
@@ -142,22 +142,22 @@ describe("persisted hook trust", () => {
     expect(await holder.exited).toBe(0);
     expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
       display: { compact: true },
-      trust: { providers: { codex: { [candidate().key]: "sha256:one" } } },
+      trust: { harnesses: { codex: { [candidate().key]: "sha256:one" } } },
     });
   });
 });
 
 class MemoryHookTrustStore implements HookTrustStore {
   private trusted = new Map<string, string>();
-  isTrusted(provider: string, hook: HookTrustCandidate): boolean {
-    return this.trusted.get(`${provider}:${hook.key}`) === hookTrustFingerprint(hook);
+  isTrusted(harness: string, hook: HookTrustCandidate): boolean {
+    return this.trusted.get(`${harness}:${hook.key}`) === hookTrustFingerprint(hook);
   }
-  trust(provider: string, hooks: HookTrustCandidate[]): void {
-    for (const hook of hooks) this.trusted.set(`${provider}:${hook.key}`, hookTrustFingerprint(hook));
+  trust(harness: string, hooks: HookTrustCandidate[]): void {
+    for (const hook of hooks) this.trusted.set(`${harness}:${hook.key}`, hookTrustFingerprint(hook));
   }
 }
 
-describe("Codex hook trust provider interaction", () => {
+describe("Codex hook trust harness interaction", () => {
   test("places the official bypass flag before the app-server subcommand", () => {
     expect(codexCommandWithHookTrustBypass(["codex", "-c", "foo=true", "app-server", "--stdio"])).toEqual([
       "codex",
@@ -170,7 +170,7 @@ describe("Codex hook trust provider interaction", () => {
   });
 
   test("asks once, persists the exact hash, then auto-enables with a visible notice", async () => {
-    const root = mkdtempSync(join(tmpdir(), "baton-hook-trust-provider-"));
+    const root = mkdtempSync(join(tmpdir(), "baton-hook-trust-harness-"));
     roots.push(root);
     const launches = join(root, "launches.log");
     const script = `
@@ -207,7 +207,7 @@ describe("Codex hook trust provider interaction", () => {
       },
     });
     const firstRef = await first.open({ cwd: "/tmp" }, (event) => firstEvents.push(event));
-    expect(firstRef.providerSessionId).toBe("thread");
+    expect(firstRef.harnessSessionId).toBe("thread");
     expect(readFileSync(launches, "utf8").trim().split("\n")).toHaveLength(2);
     expect(questions).toBe(1);
     expect(firstEvents.map((event) => event.kind)).toEqual(["hook_trust_request", "hook_trust_resolved"]);
@@ -222,7 +222,7 @@ describe("Codex hook trust provider interaction", () => {
       },
     });
     const secondRef = await second.open({ cwd: "/tmp" }, (event) => secondEvents.push(event));
-    expect(secondRef.providerSessionId).toBe("thread");
+    expect(secondRef.harnessSessionId).toBe("thread");
     expect(readFileSync(launches, "utf8").trim().split("\n")).toHaveLength(4);
     expect(secondEvents.some((event) => event.kind === "hook_trust_request")).toBe(false);
     expect(secondEvents.find((event) => event.kind === "_baton_notice")?.payload).toMatchObject({

@@ -1,7 +1,7 @@
 // TurnLedger 契约测试：终态一律按 baton turn id 查表路由（不看 slot）。
-// 回归背景（bug#2）：旧路由先判"active 的 slot 是否命中"，同 provider 的 driven turn
+// 回归背景（bug#2）：旧路由先判"active 的 slot 是否命中"，同 harness 的 driven turn
 // 运行期间，observed turn 的 idle 会进 driven 分支、被 turnId 守卫拒绝后不再 fallthrough——
-// observed turn 永远得不到 summary，跨 provider catch-up 对它永久盲区。
+// observed turn 永远得不到 summary，跨 harness catch-up 对它永久盲区。
 // 另钉住（bug#4）：codex fast-submit 窗口内（codexTurnId 未就位）的 cancel 不得静默丢弃。
 import type { RequestHandler } from "../src/adapters/types.ts";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -13,12 +13,12 @@ import { ClaudeAdapter } from "../src/adapters/claude/adapter.ts";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
 import type {
   AdapterCapabilities,
-  AgentAdapter,
+  HarnessAdapter,
   EventSink,
   OpenOptions,
   PromptInput,
   PromptReceipt,
-  ProviderSessionRef,
+  HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
 import { BatonSessionRuntime } from "../src/session/runtime.ts";
@@ -44,25 +44,25 @@ afterEach(() => {
 });
 
 /** 只做 admission + 报 running 的 fake adapter；后续事件由测试直接经 sink 注入 */
-class OverlapAdapter implements AgentAdapter {
-  readonly provider = "claude-code";
+class OverlapAdapter implements HarnessAdapter {
+  readonly harness = "claude-code";
   readonly capabilities: AdapterCapabilities = { prompt: {} };
   sink?: EventSink;
   driven?: PromptInput;
 
-  async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+  async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
     this.sink = sink;
-    return { provider: this.provider, providerSessionId: "ov1", resumed: false };
+    return { harness: this.harness, harnessSessionId: "ov1", resumed: false };
   }
 
   // 新契约：user_message / running 由 runtime 出队时落盘，adapter submit 只做 admission
-  async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.driven = input;
     return { accepted: true };
   }
 
-  async cancel(_ref: ProviderSessionRef): Promise<void> {}
-  async close(_ref: ProviderSessionRef): Promise<void> {}
+  async cancel(_ref: HarnessSessionRef): Promise<void> {}
+  async close(_ref: HarnessSessionRef): Promise<void> {}
 }
 
 function summaryTurnIds(): string[] {
@@ -73,7 +73,7 @@ function summaryTurnIds(): string[] {
 }
 
 describe("terminal routing by turnId (bug#2 regression)", () => {
-  test("observed idle during a same-provider driven turn still closes the observed turn", async () => {
+  test("observed idle during a same-harness driven turn still closes the observed turn", async () => {
     const adapter = new OverlapAdapter();
     const runtime = new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 
@@ -83,19 +83,19 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
     // 同一 slot 上 observed turn 开界 → 收界，此刻 driven turn 仍在运行
     adapter.sink?.({
       kind: "state_update",
-      provider: adapter.provider,
+      harness: adapter.harness,
       turnId: "t_obs",
-      payload: { state: "running", origin: "provider" },
+      payload: { state: "running", origin: "harness" },
     });
     adapter.sink?.({
       kind: "agent_message",
-      provider: adapter.provider,
+      harness: adapter.harness,
       turnId: "t_obs",
       payload: { messageId: "m_obs", content: [{ type: "text", text: "background done" }] },
     });
     adapter.sink?.({
       kind: "state_update",
-      provider: adapter.provider,
+      harness: adapter.harness,
       turnId: "t_obs",
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -106,7 +106,7 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
     // driven turn 不受影响，照常收口
     adapter.sink?.({
       kind: "state_update",
-      provider: adapter.provider,
+      harness: adapter.harness,
       turnId: adapter.driven!.turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -123,14 +123,14 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
 
     adapter.sink?.({
       kind: "state_update",
-      provider: adapter.provider,
+      harness: adapter.harness,
       turnId: "t_obs",
-      payload: { state: "running", origin: "provider" },
+      payload: { state: "running", origin: "harness" },
     });
     // driven 先收口
     adapter.sink?.({
       kind: "state_update",
-      provider: adapter.provider,
+      harness: adapter.harness,
       turnId: adapter.driven!.turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -140,7 +140,7 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
     // observed 随后收口，恰好一次
     adapter.sink?.({
       kind: "state_update",
-      provider: adapter.provider,
+      harness: adapter.harness,
       turnId: "t_obs",
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -159,7 +159,7 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
     await Bun.sleep(1);
 
     // 无 turnId 的终态：留痕，但不能终结 driven turn
-    adapter.sink?.({ kind: "state_update", provider: adapter.provider, payload: { state: "idle" } });
+    adapter.sink?.({ kind: "state_update", harness: adapter.harness, payload: { state: "idle" } });
     await Bun.sleep(1);
     expect(done).toBe(false);
     expect(summaryTurnIds()).toEqual([]);
@@ -170,7 +170,7 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
     // 带 turnId 的正确终态仍能收口
     adapter.sink?.({
       kind: "state_update",
-      provider: adapter.provider,
+      harness: adapter.harness,
       turnId: adapter.driven!.turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -197,7 +197,7 @@ describe("finalized turn records are retired (memory retention regression)", () 
 
     adapter.sink?.({
       kind: "state_update",
-      provider: adapter.provider,
+      harness: adapter.harness,
       turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -214,7 +214,7 @@ describe("finalized turn records are retired (memory retention regression)", () 
     // 幂等钉子：重复终态 inert，不产生第二份 summary
     adapter.sink?.({
       kind: "state_update",
-      provider: adapter.provider,
+      harness: adapter.harness,
       turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -234,7 +234,7 @@ describe("adapter contract: terminal state_update carries a turnId", () => {
       emit(rt: unknown, ev: AnyNewEvent, turn?: unknown): void;
       finishTurn(rt: unknown, emit: (ev: AnyNewEvent) => void, turn: unknown, stopReason: string): void;
     };
-    const rt = seams.sessions.get(ref.providerSessionId);
+    const rt = seams.sessions.get(ref.harnessSessionId);
     if (!rt) throw new Error("runtime not registered by open()");
 
     for (const [turnId, stop] of [
@@ -286,7 +286,7 @@ describe("adapter contract: terminal state_update carries a turnId", () => {
     const turnC = { turnId: "t_close", finalized: false };
     rt.turnId = "t_close";
     rt.activeTurn = turnC;
-    void adapter.close({ provider: "codex", providerSessionId: "th1" });
+    void adapter.close({ harness: "codex", harnessSessionId: "th1" });
 
     const idles = events.filter(
       (ev) => ev.kind === "state_update" && (ev.payload as { state?: string }).state === "idle",
@@ -322,7 +322,7 @@ describe("codex pending cancel (bug#4 regression)", () => {
       finishTurn(rt: unknown, turn: unknown, turnStatus: string): void;
     };
     seams.threads.set("th1", rt);
-    const ref: ProviderSessionRef = { provider: "codex", providerSessionId: "th1" };
+    const ref: HarnessSessionRef = { harness: "codex", harnessSessionId: "th1" };
     return { adapter, seams, rt, calls, ref };
   }
 

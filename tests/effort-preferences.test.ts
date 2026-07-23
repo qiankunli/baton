@@ -24,14 +24,14 @@ describe("effort preferences", () => {
     expect(effortPreferencesPath(root)).toBe(join(root, "state", "effort.json"));
   });
 
-  test("remembers the latest explicit effort per provider", () => {
+  test("remembers the latest explicit effort per harness", () => {
     saveEffortPreference(root, "claude", "high");
     saveEffortPreference(root, "codex", "xhigh");
 
     expect(loadEffortPreferences(root)).toEqual({ claude: "high", codex: "xhigh" });
   });
 
-  test("selecting default clears only that provider preference", () => {
+  test("selecting default clears only that harness preference", () => {
     saveEffortPreference(root, "claude", "high");
     saveEffortPreference(root, "codex", "xhigh");
     saveEffortPreference(root, "claude", "default");

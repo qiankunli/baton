@@ -57,7 +57,7 @@ describe("session lifecycle", () => {
     const h = store.createSession({ cwd: "/tmp/proj", title: "chat @ /tmp/proj" });
     h.append({
       kind: "user_message",
-      provider: "codex",
+      harness: "codex",
       payload: {
         messageId: "m1",
         content: [{ type: "text", text: "<baton-context>old context</baton-context>\nAdd session previews" }],
@@ -74,12 +74,12 @@ describe("session lifecycle", () => {
     const h = store.createSession({ cwd: "/tmp/proj", title: "chat @ /tmp/proj" });
     h.append({
       kind: "user_message",
-      provider: "codex",
+      harness: "codex",
       payload: { messageId: "m1", content: [{ type: "text", text: "/tmp/image-123.png" }] },
     });
     h.append({
       kind: "user_message",
-      provider: "codex",
+      harness: "codex",
       payload: { messageId: "m2", content: [{ type: "text", text: "Explain this failure" }] },
     });
 
@@ -129,7 +129,7 @@ describe("session lifecycle", () => {
       batonSessionId: "bs_LEGACY1",
       cwd: "/tmp/proj",
       createdAt: "2026-01-01T00:00:00.000Z",
-      providerSessions: {},
+      harnessSessions: {},
     };
     writeFileSync(join(legacy, "meta.json"), JSON.stringify(meta));
     writeFileSync(join(legacy, "session.jsonl"), "");
@@ -149,31 +149,31 @@ describe("session lifecycle", () => {
     expect(existsSync(join(root, "sessions", "bs_BROKEN"))).toBe(true);
   });
 
-  test("provider session meta persists as a native resume optimization", () => {
+  test("harness session meta persists as a native resume optimization", () => {
     const h = store.createSession({ cwd: "/tmp/proj" });
-    h.setProviderSession("codex", {
-      provider: "codex",
-      providerSessionId: "thread_123",
+    h.setHarnessSession("codex", {
+      harness: "codex",
+      harnessSessionId: "thread_123",
       resumeCursor: "42",
       model: "gpt-5",
       effort: "high",
     });
     const reopened = store.openSession(h.id);
-    expect(reopened.meta.providerSessions["codex"]!.providerSessionId).toBe("thread_123");
-    expect(reopened.meta.providerSessions["codex"]!.resumeCursor).toBe("42");
-    expect(reopened.meta.providerSessions["codex"]!.model).toBe("gpt-5");
-    expect(reopened.meta.providerSessions["codex"]!.effort).toBe("high");
+    expect(reopened.meta.harnessSessions["codex"]!.harnessSessionId).toBe("thread_123");
+    expect(reopened.meta.harnessSessions["codex"]!.resumeCursor).toBe("42");
+    expect(reopened.meta.harnessSessions["codex"]!.model).toBe("gpt-5");
+    expect(reopened.meta.harnessSessions["codex"]!.effort).toBe("high");
   });
 });
 
 describe("event append / read", () => {
   test("append assigns envelope fields and seq is monotonic across reopen", () => {
     const h = store.createSession({ cwd: "/tmp/proj" });
-    const e1 = h.append({ kind: "state_update", payload: { state: "running" }, provider: "codex" });
+    const e1 = h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex" });
     const e2 = h.append({
       kind: "agent_message_chunk",
       payload: { messageId: "m1", content: { type: "text", text: "hi" } },
-      provider: "codex",
+      harness: "codex",
     });
     expect(e1.seq).toBe(1);
     expect(e2.seq).toBe(2);
@@ -182,7 +182,7 @@ describe("event append / read", () => {
 
     // 重开进程（新 handle），seq 从文件续上
     const reopened = store.openSession(h.id);
-    const e3 = reopened.append({ kind: "state_update", payload: { state: "idle" }, provider: "codex" });
+    const e3 = reopened.append({ kind: "state_update", payload: { state: "idle" }, harness: "codex" });
     expect(e3.seq).toBe(3);
     expect(reopened.readEvents()).toHaveLength(3);
   });
@@ -192,14 +192,14 @@ describe("event append / read", () => {
 
     const event = h.append({
       kind: "_baton_error_update",
-      provider: "codex",
+      harness: "codex",
       turnId: "t_1",
-      payload: { message: "provider failed" },
+      payload: { message: "harness failed" },
     });
     h.diagnostic({
       level: "error",
       component: "codex.jsonrpc",
-      provider: "codex",
+      harness: "codex",
       turnId: "t_1",
       message: "mapping failed",
       error: { name: "Error", message: "boom", stack: "stack" },
@@ -221,7 +221,7 @@ describe("event append / read", () => {
     h.append({
       kind: "agent_message_chunk",
       payload: { messageId: "m1", content: { type: "text", text: "x" } },
-      provider: "codex",
+      harness: "codex",
       raw,
     });
     expect(store.openSession(h.id).readEvents()[0]!.raw).toEqual(raw);
@@ -229,18 +229,18 @@ describe("event append / read", () => {
 
   test("incomplete trailing line is tolerated (崩溃后可恢复)", () => {
     const h = store.createSession({ cwd: "/tmp/proj" });
-    h.append({ kind: "state_update", payload: { state: "running" }, provider: "codex" });
+    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex" });
     appendFileSync(join(h.dir, "session.jsonl"), '{"v":1,"ts":"2026-'); // 模拟写到一半崩溃
     const reopened = store.openSession(h.id);
     expect(reopened.readEvents()).toHaveLength(1);
     // 追加从完好事件之后继续
-    const e = reopened.append({ kind: "state_update", payload: { state: "idle" }, provider: "codex" });
+    const e = reopened.append({ kind: "state_update", payload: { state: "idle" }, harness: "codex" });
     expect(e.seq).toBe(2);
   });
 
   test("append after a crash partial repairs the tail (截断残尾 + sidecar 留档)", () => {
     const h = store.createSession({ cwd: "/tmp/proj" });
-    h.append({ kind: "state_update", payload: { state: "running" }, provider: "codex" });
+    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex" });
     const partial = '{"v":1,"ts":"2026-';
     appendFileSync(join(h.dir, "session.jsonl"), partial); // 模拟写到一半崩溃
 
@@ -252,7 +252,7 @@ describe("event append / read", () => {
 
     // 首次 append 截断残尾：新事件不会拼接在残片后形成中间坏行
     const reopened = store.openSession(h.id);
-    const e = reopened.append({ kind: "state_update", payload: { state: "idle" }, provider: "codex" });
+    const e = reopened.append({ kind: "state_update", payload: { state: "idle" }, harness: "codex" });
     expect(e.seq).toBe(2); // 残行 seq 从未完整落盘，由新事件复用
     const events = store.openSession(h.id).readEvents();
     expect(events).toHaveLength(2);
@@ -267,28 +267,28 @@ describe("event append / read", () => {
   test("crash partial with no complete line at all truncates to empty", () => {
     const h = store.createSession({ cwd: "/tmp/proj" });
     writeFileSync(join(h.dir, "session.jsonl"), '{"v":1,"ts'); // 首行即残片
-    const e = store.openSession(h.id).append({ kind: "state_update", payload: { state: "running" }, provider: "codex" });
+    const e = store.openSession(h.id).append({ kind: "state_update", payload: { state: "running" }, harness: "codex" });
     expect(e.seq).toBe(1);
     expect(store.openSession(h.id).readEvents()).toHaveLength(1);
   });
 
   test("corrupt middle line throws instead of silently skipping", () => {
     const h = store.createSession({ cwd: "/tmp/proj" });
-    h.append({ kind: "state_update", payload: { state: "running" }, provider: "codex" });
+    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex" });
     appendFileSync(join(h.dir, "session.jsonl"), "garbage\n");
-    h.append({ kind: "state_update", payload: { state: "idle" }, provider: "codex" });
+    h.append({ kind: "state_update", payload: { state: "idle" }, harness: "codex" });
     expect(() => store.openSession(h.id).readEvents()).toThrow(/corrupt/);
   });
 
   test("loadState reduces the full stream", () => {
     const h = store.createSession({ cwd: "/tmp/proj" });
-    h.append({ kind: "state_update", payload: { state: "running" }, provider: "claude-code" });
+    h.append({ kind: "state_update", payload: { state: "running" }, harness: "claude-code" });
     h.append({
       kind: "agent_message_chunk",
       payload: { messageId: "m1", content: { type: "text", text: "hello" } },
-      provider: "claude-code",
+      harness: "claude-code",
     });
-    h.append({ kind: "state_update", payload: { state: "idle", stopReason: "end_turn" }, provider: "claude-code" });
+    h.append({ kind: "state_update", payload: { state: "idle", stopReason: "end_turn" }, harness: "claude-code" });
     const state = h.loadState();
     expect(state.runState).toBe("idle");
     expect(textOf(state.messages.get("m1")!.content)).toBe("hello");
@@ -297,27 +297,27 @@ describe("event append / read", () => {
 
 describe("turn summary", () => {
   function playTurn(h: ReturnType<SessionStore["createSession"]>, turnId: string): void {
-    h.append({ kind: "state_update", payload: { state: "running" }, provider: "codex", turnId });
+    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex", turnId });
     h.append({
       kind: "user_message",
       payload: { messageId: `${turnId}_u`, content: [{ type: "text", text: "do the thing" }] },
-      provider: "codex",
+      harness: "codex",
       turnId,
     });
     h.append({
       kind: "tool_call_update",
       payload: { toolCallId: `${turnId}_tc`, title: "Edit file", kind: "edit", status: "completed" },
-      provider: "codex",
+      harness: "codex",
       turnId,
     });
     h.append({
       kind: "agent_message_chunk",
       payload: { messageId: `${turnId}_a`, content: { type: "text", text: "done" } },
-      provider: "codex",
+      harness: "codex",
       turnId,
     });
-    h.append({ kind: "usage_update", payload: { inputTokens: 100, outputTokens: 20 }, provider: "codex", turnId });
-    h.append({ kind: "state_update", payload: { state: "idle", stopReason: "end_turn" }, provider: "codex", turnId });
+    h.append({ kind: "usage_update", payload: { inputTokens: 100, outputTokens: 20 }, harness: "codex", turnId });
+    h.append({ kind: "state_update", payload: { state: "idle", stopReason: "end_turn" }, harness: "codex", turnId });
   }
 
   test("summarizeTurn derives text, tool calls, usage, stop reason", () => {
@@ -338,7 +338,7 @@ describe("turn summary", () => {
     const turnId = "t_sync";
     h.append({
       kind: "user_message",
-      provider: "claude-code",
+      harness: "claude-code",
       turnId,
       payload: {
         messageId: "sync-user",
@@ -347,7 +347,7 @@ describe("turn summary", () => {
     });
     h.append({
       kind: "state_update",
-      provider: "claude-code",
+      harness: "claude-code",
       turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -387,20 +387,20 @@ describe("turn summary", () => {
 
 describe("forkSession", () => {
   function playTurn(h: ReturnType<SessionStore["createSession"]>, turnId: string): void {
-    h.append({ kind: "state_update", payload: { state: "running" }, provider: "codex", turnId });
+    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex", turnId });
     h.append({
       kind: "user_message",
       payload: { messageId: `${turnId}_u`, content: [{ type: "text", text: "do the thing" }] },
-      provider: "codex",
+      harness: "codex",
       turnId,
     });
     h.append({
       kind: "agent_message_chunk",
       payload: { messageId: `${turnId}_a`, content: { type: "text", text: "done" } },
-      provider: "codex",
+      harness: "codex",
       turnId,
     });
-    h.append({ kind: "state_update", payload: { state: "idle", stopReason: "end_turn" }, provider: "codex", turnId });
+    h.append({ kind: "state_update", payload: { state: "idle", stopReason: "end_turn" }, harness: "codex", turnId });
     h.summarizeTurn(turnId);
   }
 
@@ -430,7 +430,7 @@ describe("forkSession", () => {
     const userMsg = childEvents.find((e) => e.kind === "user_message");
     expect((userMsg!.payload as { messageId: string }).messageId).toBe("t1_u");
     // child 可独立续写
-    const next = child.append({ kind: "state_update", payload: { state: "idle" }, provider: "codex" });
+    const next = child.append({ kind: "state_update", payload: { state: "idle" }, harness: "codex" });
     expect(next.seq).toBe(sourceEvents.at(-1)!.seq + 1);
     // 源不受影响
     expect(source.readEvents()).toHaveLength(sourceEvents.length);
@@ -448,21 +448,21 @@ describe("forkSession", () => {
     expect(sessionDisplayTitle(child.meta)).toBe("Try the cache approach");
   });
 
-  test("providerSessions keep only provider config (child must not resume source native sessions)", () => {
+  test("harnessSessions keep only harness config (child must not resume source native sessions)", () => {
     const source = store.createSession({ cwd: "/tmp/proj" });
-    source.setProviderSession("codex", {
-      provider: "codex",
-      providerSessionId: "thread_123",
+    source.setHarnessSession("codex", {
+      harness: "codex",
+      harnessSessionId: "thread_123",
       resumeCursor: "42",
       syncedSeq: 7,
       model: "gpt-5",
       effort: "high",
     });
-    source.setProviderSession("claude-code", { provider: "claude-code", providerSessionId: "sess_9" });
+    source.setHarnessSession("claude-code", { harness: "claude-code", harnessSessionId: "sess_9" });
 
     const child = store.forkSession(source.id);
-    expect(child.meta.providerSessions["codex"]).toEqual({ provider: "codex", model: "gpt-5", effort: "high" });
-    expect(child.meta.providerSessions["claude-code"]).toEqual({ provider: "claude-code" });
+    expect(child.meta.harnessSessions["codex"]).toEqual({ harness: "codex", model: "gpt-5", effort: "high" });
+    expect(child.meta.harnessSessions["claude-code"]).toEqual({ harness: "claude-code" });
   });
 
   test("throughSeq bounds the copied prefix", () => {
