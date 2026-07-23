@@ -16,7 +16,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { PromptBlock } from "../src/event/types.ts";
-import { Controller, type InteractionHandlers } from "../src/session/controller.ts";
+import { Controller, type InteractionHandlers } from "../src/controller/index.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 import { resolveTestTarget } from "./harness-target.ts";
 

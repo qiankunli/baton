@@ -1,10 +1,6 @@
 import {
-  isApprovalRoutable,
   isContextSynchronizable,
   isContextCompactable,
-  isEffortConfigurable,
-  isModelConfigurable,
-  isNativeSessionIdentifiable,
   isSteerable,
   type HarnessAdapter,
   type ApprovalRoute,
@@ -12,7 +8,6 @@ import {
   type InteractionContext,
   type InteractionHandler,
   type ModelOption,
-  type HarnessSessionRef,
   type SteerReceipt,
 } from "../adapters/types.ts";
 import { buildTargetCatchUpContext } from "../context/mention.ts";
@@ -27,134 +22,30 @@ import {
   type PromptBlock,
   type StopReason,
 } from "../event/types.ts";
-import {
-  createHarnessLaunchSnapshot,
-  type HarnessTarget,
-} from "../harness/target.ts";
+import { HarnessBinding } from "../harness/binding.ts";
+import type { HarnessTarget } from "../harness/target.ts";
 import type {
-  Interaction,
   InteractionDraft,
   InteractionResolution,
 } from "../interaction/types.ts";
 import type { SessionHandle } from "../store/store.ts";
+import {
+  InputQueue,
+  inputSnapshot,
+  type InputRecord,
+  type InputSnapshot,
+  type QueuedTurnSnapshot,
+  type SubmitOutcome,
+} from "./input.ts";
+import { InteractionWaiters } from "./interaction.ts";
+import { TurnLedger, type TurnRecord } from "./turn.ts";
 
-interface HarnessSlot {
-  target: HarnessTarget;
-  adapter: HarnessAdapter;
-  ref?: HarnessSessionRef;
-  starting?: Promise<void>;
-  /**
-   * harness **setup 阶段**（slot 创建 → open 完成）由哪个 driven turn 触发。
-   * setup 是 turn 生命周期之外的活动窗口：adapter 可能打开 Interaction（hook trust）、
-   * 拉模型目录、失败自清资源；没有显式 turnId 的 setup Interaction 用本字段归属回
-   * 触发冷启动的 turn，不依赖 adapter 首个 await 时序。
-   */
-  setupTurnId?: string;
-  freshNative: boolean;
-}
-
-/**
- * 一条用户输入的生命周期状态（kernel.md §6 · user-input-lifecycle.md §1）。让 recall /
- * interrupt / steer / race 的迁移成为对同一 Input 的状态查询，而不是散落在 submit /
- * steer / Esc 里的时序特判。
- * - queued：排队中的 follow-up，可召回编辑；
- * - admitted：已出队形成 driven turn，user_message/running 已落盘；
- * - accepted_steer：harness 已接受为当前 turn 的追加消息；
- * - finalized：所属 turn 已正常收口；
- * - recalled：出队前被召回回 draft（永不入账）；
- * - interrupted：所属 turn 被 Esc 打断，本条输入未被静默丢弃、可查、不自动重发（S3）。
- */
-export type InputStatus =
-  | "queued"
-  | "admitted"
-  | "accepted_steer"
-  | "finalized"
-  | "recalled"
-  | "interrupted";
-
-/**
- * 一条输入的 controller 生命周期记录（与 `TurnRecord` 对称：TurnRecord 之于 turn，
- * InputRecord 之于 input）。**身份即 `messageId`**——一条输入的 durable 形态是事件流里的
- * `user_message`，live 形态就是这条记录，两者同一个 `m_` id，不另造平行身份。
- * queued/admitted 记录持有 resolve/reject（submit 的回执通道）；accepted_steer 是
- * fire-and-forget 注入当前 turn 的记录，无独立回执。
- *
- * 刻意叫 Input 而非 UserInput：input 有**来源**维度。当前只有
- * `user`（composer 键入）。未来自动工作先形成持久 HarnessWorkIntent，经过 policy 与路由
- * admit 后才物化为 Input/Turn；不能把可召回队列复用成易失的 monitor work queue。
- */
-interface InputRecord {
-  /** 身份：用户消息的 baton message id（`m_`）。user_message 由 controller 出队时落盘（见 runTurn） */
-  messageId: string;
-  /** 队列内展示排序用的自增号（与身份无关，仅供 QueuedTurnSnapshot） */
-  id: number;
-  /** baton turn id：入队时即分配（steer 的 expectedTurnId 引用它，design §4.3） */
-  turnId: string;
-  target: HarnessTarget;
-  blocks: PromptBlock[];
-  status: InputStatus;
-  /** 实际投递方式（accepted_steer→steer；queued/admitted→prompt） */
-  delivery: "prompt" | "steer";
-  /** queued/admitted 专属：submit 的回执通道；accepted_steer 无 */
-  resolve?: (outcome: SubmitOutcome) => void;
-  reject?: (error: unknown) => void;
-}
-
-type TurnRole = "driven" | "observed";
-
-/**
- * turn 台账记录：一个 turn 从进入执行（driven 被 drain 取走 / observed 开界）到
- * 逻辑终结的一等状态。所有终态通知按 turnId 查表路由到这里，status 保证逻辑终结
- * 每 turn 恰好一次（迟到/重复/未知终态一律 inert）。
- *
- * 合法迁移：
- * - （队列，不入台账）→ driven/active：drain 取走 QueuedTurn，runTurn **出队即登记**并由
- *   controller 落 user_message/running——用户输入是 BatonSession 的事实，不等 harness 冷启动；
- *   排队中的 turn 留在 queue（无事件可路由），被 recall 的永不入账。
- * - （无）→ observed/active：Harness 来源的 `state_update(running)` 开界登记，不进队列。
- * - active → finalized：`state_update(idle)` 按 envelope.turnId 命中；或 cancel 宽限期
- *   到期 / preparing 期间被取消 / driven 启动与 admission 失败时合成。此后记录保留在内存
- *   作幂等判定依据（会话级规模），但经 retire 瘦身——幂等判定只需 turnId+status，
- *   重负载字段不随 turn 数线性累积。
- */
-interface TurnRecord {
-  turnId: string;
-  role: TurnRole;
-  slot: HarnessSlot;
-  /** 事件 harness 字段同源（slot.adapter.harness，wire key） */
-  harness: string;
-  harnessTargetId: string;
-  status: "active" | "finalized";
-  startedAt: number;
-  stopReason?: StopReason;
-  /** driven 专属：admitted 输入记录（canSteer/steer 需要用户侧 harness 名）。finalize 后由 retire 释放 */
-  turn?: InputRecord;
-  /** driven 专属：本 turn 已接受的 accepted_steer 输入。cancel 时统一迁移 interrupted（S3） */
-  steers?: InputRecord[];
-  /** driven 专属：finalize 时 resolve，释放 drain 循环推进队列。finalize 后由 retire 释放 */
-  release?: () => void;
-  cancelGraceTimer?: ReturnType<typeof setTimeout>;
-}
-
-export interface QueuedTurnSnapshot {
-  id: number;
-  turnId: string;
-  harnessTargetId: string;
-  harness: string;
-  blocks: PromptBlock[];
-}
-
-/** Input 只读快照：投影 / 诊断消费 status，不触碰内部 resolve/reject。身份即 messageId */
-export interface InputSnapshot {
-  messageId: string;
-  turnId: string;
-  harnessTargetId: string;
-  harness: string;
-  status: InputStatus;
-  delivery: "prompt" | "steer";
-}
-
-export type SubmitOutcome = "completed" | "recalled";
+export type {
+  InputSnapshot,
+  InputStatus,
+  QueuedTurnSnapshot,
+  SubmitOutcome,
+} from "./input.ts";
 
 /**
  * Control：与 Input / Interaction resolution 并列的第三种用户信号
@@ -221,46 +112,32 @@ export const INTERRUPTED_NOTICE_TITLE = "Conversation interrupted — tell the a
  * 重复/迟到的物理终态（reconnect、transport race）不会二次终结，也不会关闭更新的 turn。
  *
  * TurnLedger：driven/observed 统一入 `turns` 台账，终态一律按 envelope.turnId 查表
- * 路由（不看 slot——按 slot 路由在同 harness driven+observed 并发时会吞掉 observed
- * 的终态）。driven ≤ 1 是**队列策略**（activeDrivenTurnId 指针 + drain 串行），不是
+ * 路由（不看 binding——按 binding 路由在同 harness driven+observed 并发时会吞掉 observed
+ * 的终态）。driven ≤ 1 是**队列策略**（TurnLedger 当前指针 + drain 串行），不是
  * 台账模型假设；将来放开并行 driven 只改 drain 取件策略，台账与路由不动。
  */
 export class Controller {
-  private readonly slots = new Map<string, HarnessSlot>();
-  private readonly queue: InputRecord[] = [];
-  private nextQueueId = 1;
+  private readonly bindings = new Map<string, HarnessBinding>();
+  private readonly inputQueue = new InputQueue();
+  private readonly turns = new TurnLedger<HarnessBinding>();
+  private readonly interactions: InteractionWaiters<HarnessBinding>;
   private draining = false;
   /** driven 工作从 Harness setup 开始即对 UI 可见；Target 是实例坐标，Harness 仅是协议类型。 */
   private processing?: { target: HarnessTarget; startedAt: number };
-  /** turn 台账：turnId → 记录。finalized 记录保留，作迟到终态的幂等判定依据 */
-  private readonly turns = new Map<string, TurnRecord>();
-  /** 队列策略指针：当前唯一 driven turn（本轮 driven ≤ 1；见类 docstring） */
-  private activeDrivenTurnId?: string;
-  /**
-   * 未决 Interaction 的活跃交付通道。状态真相仍是 Event 流；这里仅持有当前进程里
-   * 等待结果的 Harness continuation，崩溃恢复由 `interaction.resolved(recovery)` 收口。
-   */
-  private readonly pendingInteractions = new Map<
-    string,
-    {
-      interaction: Interaction;
-      slot: HarnessSlot;
-      turnId?: string;
-      resolve: (resolution: InteractionResolution) => void;
-    }
-  >();
 
-  constructor(private readonly options: ControllerOptions) {}
+  constructor(private readonly options: ControllerOptions) {
+    this.interactions = new InteractionWaiters(
+      (binding, event, source) => this.appendEvent(binding, event, source),
+      () => this.changed(),
+    );
+  }
 
   /**
    * 用户解决一个未决 Interaction。先把用户事实持久化，再唤醒 Harness；没有活跃 continuation
    * 时返回 false，UI 据此提示 stale，而不是把响应写进一个无人消费的内存通道。
    */
   resolveInteraction(interactionId: string, resolution: InteractionResolution): boolean {
-    const entry = this.pendingInteractions.get(interactionId);
-    if (!entry) return false;
-    if (resolution.kind !== "cancelled" && resolution.kind !== entry.interaction.kind) return false;
-    return this.settleInteraction(interactionId, resolution, { type: "user" });
+    return this.interactions.resolve(interactionId, resolution);
   }
 
   private openHarnessInteraction(
@@ -268,70 +145,17 @@ export class Controller {
     draft: InteractionDraft,
     context?: InteractionContext,
   ): Promise<InteractionResolution> {
-    const slot = this.slots.get(harnessTargetId);
-    if (!slot) return Promise.reject(new Error(`unknown harness target for interaction: ${harnessTargetId}`));
+    const binding = this.bindings.get(harnessTargetId);
+    if (!binding) return Promise.reject(new Error(`unknown harness target for interaction: ${harnessTargetId}`));
     const active = this.activeDriven();
     const turnId =
-      context?.turnId ?? (active?.slot === slot ? active.turnId : slot.setupTurnId);
-    const interaction: Interaction = {
-      ...draft,
-      interactionId: newId("ix"),
-      requester: { type: "harness", harnessTargetId },
-    };
-
-    return new Promise((resolve, reject) => {
-      this.pendingInteractions.set(interaction.interactionId, {
-        interaction,
-        slot,
-        turnId,
-        resolve,
-      });
-      try {
-        this.appendEvent(
-          slot,
-          {
-            kind: "interaction.opened",
-            ...(turnId ? { turnId } : {}),
-            payload: interaction,
-            ...(context?.raw !== undefined ? { raw: context.raw } : {}),
-          },
-          { type: "harness", harnessTargetId },
-        );
-      } catch (error) {
-        this.pendingInteractions.delete(interaction.interactionId);
-        reject(error);
-        return;
-      }
-      this.changed();
-    });
-  }
-
-  private settleInteraction(
-    interactionId: string,
-    resolution: InteractionResolution,
-    source: EventSource,
-  ): boolean {
-    const entry = this.pendingInteractions.get(interactionId);
-    if (!entry) return false;
-    this.appendEvent(
-      entry.slot,
-      {
-        kind: "interaction.resolved",
-        ...(entry.turnId ? { turnId: entry.turnId } : {}),
-        payload: { interactionId, resolution },
-      },
-      source,
-    );
-    this.pendingInteractions.delete(interactionId);
-    entry.resolve(resolution);
-    return true;
+      context?.turnId ?? (active?.binding === binding ? active.turnId : binding.setupTurnId);
+    return this.interactions.open(binding, draft, turnId, context);
   }
 
   /** 当前未终结的 driven turn 记录；无或已终结时 undefined */
-  private activeDriven(): TurnRecord | undefined {
-    if (!this.activeDrivenTurnId) return undefined;
-    const record = this.turns.get(this.activeDrivenTurnId);
-    return record && record.status === "active" ? record : undefined;
+  private activeDriven(): TurnRecord<HarnessBinding> | undefined {
+    return this.turns.activeDriven();
   }
 
   /** 当前 driven turn 的具体配置目标；Harness 类型只用于选择 Adapter。 */
@@ -350,11 +174,11 @@ export class Controller {
   }
 
   get queueLength(): number {
-    return this.queue.length;
+    return this.inputQueue.length;
   }
 
   get queuedTurns(): QueuedTurnSnapshot[] {
-    return this.queue.map((turn) => this.snapshot(turn));
+    return this.inputQueue.snapshots;
   }
 
   /**
@@ -364,11 +188,11 @@ export class Controller {
    */
   get inputs(): InputSnapshot[] {
     const out: InputSnapshot[] = [];
-    for (const input of this.queue) out.push(this.inputSnapshot(input));
+    for (const input of this.inputQueue.queued) out.push(inputSnapshot(input));
     for (const record of this.turns.values()) {
       if (record.status !== "active") continue;
-      if (record.turn) out.push(this.inputSnapshot(record.turn));
-      for (const steer of record.steers ?? []) out.push(this.inputSnapshot(steer));
+      if (record.turn) out.push(inputSnapshot(record.turn));
+      for (const steer of record.steers ?? []) out.push(inputSnapshot(steer));
     }
     return out;
   }
@@ -379,21 +203,10 @@ export class Controller {
 
   submit(harnessTargetId: string, blocks: PromptBlock[]): Promise<SubmitOutcome> {
     const target = this.targetFor(harnessTargetId);
-    return new Promise((resolve, reject) => {
-      this.queue.push({
-        id: this.nextQueueId++,
-        turnId: newId("t"),
-        messageId: newId("m"),
-        target,
-        blocks,
-        status: "queued",
-        delivery: "prompt",
-        resolve,
-        reject,
-      });
-      this.changed();
-      void this.drain();
-    });
+    const outcome = this.inputQueue.enqueue(target, blocks);
+    this.changed();
+    void this.drain();
+    return outcome;
   }
 
   /**
@@ -405,8 +218,11 @@ export class Controller {
     const active = this.activeDriven();
     if (!active?.turn) return false;
     if (active.turn.target.id !== harnessTargetId) return false;
-    if (!active.slot.ref) return false;
-    return Boolean(active.slot.adapter.capabilities.steer) && isSteerable(active.slot.adapter);
+    if (!active.binding.ref) return false;
+    return (
+      Boolean(active.binding.adapter.capabilities.steer) &&
+      isSteerable(active.binding.adapter)
+    );
   }
 
   /**
@@ -416,14 +232,14 @@ export class Controller {
    */
   async steer(harnessTargetId: string, blocks: PromptBlock[]): Promise<SteerOutcome> {
     const active = this.activeDriven();
-    if (!active || !this.canSteer(harnessTargetId) || !active.slot.ref) {
+    if (!active || !this.canSteer(harnessTargetId) || !active.binding.ref) {
       return { effective: "follow_up", outcome: this.submit(harnessTargetId, blocks) };
     }
     const activeInput = active.turn;
     if (!activeInput) {
       return { effective: "follow_up", outcome: this.submit(harnessTargetId, blocks) };
     }
-    const adapter = active.slot.adapter;
+    const adapter = active.binding.adapter;
     if (!isSteerable(adapter)) {
       return { effective: "follow_up", outcome: this.submit(harnessTargetId, blocks) };
     }
@@ -432,7 +248,7 @@ export class Controller {
     let receipt: SteerReceipt;
     try {
       receipt = await adapter.steer(
-        active.slot.ref,
+        active.binding.ref,
         // steer 消息归属被注入的 turn；messageId 照常由 controller 分配（design §4.10.1）
         { turnId: active.turnId, messageId, blocks },
         active.turnId,
@@ -448,103 +264,59 @@ export class Controller {
     // 已接受的 steer 是一等 Input（不再"无独立队列实体"）：挂到当前 turn，供 cancel 时
     // 统一迁移 interrupted（S3：不静默丢、不自动重发）。fire-and-forget，无独立回执。
     // 身份即 steer user_message 的 messageId（adapter 成功路径已用它落 delivery:"steer" 消息）。
-    (active.steers ??= []).push({
-      id: this.nextQueueId++,
-      turnId: active.turnId,
-      messageId,
-      target,
-      blocks,
-      status: "accepted_steer",
-      delivery: "steer",
-    });
+    (active.steers ??= []).push(
+      this.inputQueue.acceptSteer(target, active.turnId, messageId, blocks),
+    );
     this.changed();
     return { effective: "steer" };
   }
 
   /** 只允许撤回尚未开始执行的最新 turn；已被 drain 取走的 active turn 不在此列。 */
   recallLatestQueued(): QueuedTurnSnapshot | undefined {
-    const turn = this.queue.pop();
+    const turn = this.inputQueue.recallLatest();
     if (!turn) return undefined;
-    turn.status = "recalled";
-    turn.resolve?.("recalled");
     this.changed();
-    return this.snapshot(turn);
+    return turn;
   }
 
   async listModels(harnessTargetId: string): Promise<ModelOption[]> {
-    const slot = await this.ensureHarness(harnessTargetId);
-    if (!slot.ref || !isModelConfigurable(slot.adapter)) {
-      throw new Error(`${harnessTargetId} does not support /model`);
-    }
-    return slot.adapter.listModels(slot.ref);
+    return (await this.ensureHarness(harnessTargetId)).listModels();
   }
 
   async setModel(harnessTargetId: string, modelId: string | null): Promise<void> {
-    const slot = await this.ensureHarness(harnessTargetId);
-    if (!slot.ref || !isModelConfigurable(slot.adapter)) {
-      throw new Error(`${harnessTargetId} does not support /model`);
-    }
-    await slot.adapter.setModel(slot.ref, modelId);
-    const key = slot.target.id;
-    const existing = this.options.session.meta.harnessSessions[key] ?? {
-      harnessTargetId: key,
-      harness: slot.adapter.harness,
-    };
-    this.options.session.setHarnessSession(key, {
-      ...existing,
-      harnessTargetId: key,
-      harness: slot.adapter.harness,
-      harnessSessionId: existing.harnessSessionId ?? this.nativeSessionId(slot),
-      model: !modelId || modelId === "default" ? undefined : modelId,
-    });
+    await (await this.ensureHarness(harnessTargetId)).setModel(modelId);
     this.changed();
   }
 
   currentModel(harnessTargetId: string): string | null {
-    const slot = this.slots.get(harnessTargetId);
-    if (!slot?.ref || !isModelConfigurable(slot.adapter)) {
-      this.targetFor(harnessTargetId);
-      return this.preferredModel(harnessTargetId) ?? null;
-    }
-    return slot.adapter.currentModel(slot.ref);
+    const binding = this.bindings.get(harnessTargetId);
+    if (binding) return binding.currentModel();
+    this.targetFor(harnessTargetId);
+    return (
+      this.options.session.meta.harnessSessions[harnessTargetId]?.model ??
+      this.options.modelPreferences?.[harnessTargetId] ??
+      null
+    );
   }
 
   async listEfforts(harnessTargetId: string): Promise<EffortOption[]> {
-    const slot = await this.ensureHarness(harnessTargetId);
-    if (!slot.ref || !isEffortConfigurable(slot.adapter)) {
-      throw new Error(`${harnessTargetId} does not support /effort`);
-    }
-    return slot.adapter.listEfforts(slot.ref);
+    return (await this.ensureHarness(harnessTargetId)).listEfforts();
   }
 
   async setEffort(harnessTargetId: string, effortId: string | null): Promise<void> {
-    const slot = await this.ensureHarness(harnessTargetId);
-    if (!slot.ref || !isEffortConfigurable(slot.adapter)) {
-      throw new Error(`${harnessTargetId} does not support /effort`);
-    }
-    await slot.adapter.setEffort(slot.ref, effortId);
-    const key = slot.target.id;
-    const existing = this.options.session.meta.harnessSessions[key] ?? {
-      harnessTargetId: key,
-      harness: slot.adapter.harness,
-    };
-    this.options.session.setHarnessSession(key, {
-      ...existing,
-      harnessTargetId: key,
-      harness: slot.adapter.harness,
-      harnessSessionId: existing.harnessSessionId ?? this.nativeSessionId(slot),
-      effort: !effortId || effortId === "default" ? undefined : effortId,
-    });
+    await (await this.ensureHarness(harnessTargetId)).setEffort(effortId);
     this.changed();
   }
 
   currentEffort(harnessTargetId: string): string | null {
-    const slot = this.slots.get(harnessTargetId);
-    if (!slot?.ref || !isEffortConfigurable(slot.adapter)) {
-      this.targetFor(harnessTargetId);
-      return this.preferredEffort(harnessTargetId) ?? null;
-    }
-    return slot.adapter.currentEffort(slot.ref);
+    const binding = this.bindings.get(harnessTargetId);
+    if (binding) return binding.currentEffort();
+    this.targetFor(harnessTargetId);
+    return (
+      this.options.session.meta.harnessSessions[harnessTargetId]?.effort ??
+      this.options.effortPreferences?.[harnessTargetId] ??
+      null
+    );
   }
 
   /**
@@ -552,7 +324,7 @@ export class Controller {
    * 仍走统一 running → harness events → idle 流水线，因此 TUI、持久化与崩溃恢复不会旁路。
    */
   async compactContext(harnessTargetId: string): Promise<void> {
-    if (this.draining || this.queue.length > 0) {
+    if (this.draining || this.inputQueue.length > 0) {
       throw new Error("/compact requires an idle session");
     }
     this.draining = true;
@@ -561,27 +333,31 @@ export class Controller {
     } finally {
       this.draining = false;
       this.changed();
-      if (this.queue.length > 0) void this.drain();
+      if (this.inputQueue.length > 0) void this.drain();
     }
   }
 
   private async runContextCompaction(harnessTargetId: string): Promise<void> {
     const target = this.targetFor(harnessTargetId);
     this.processing = { target, startedAt: Date.now() };
-    let record: TurnRecord | undefined;
+    let record: TurnRecord<HarnessBinding> | undefined;
     try {
-      const slot = await this.ensureHarness(harnessTargetId);
-      if (!slot.ref || !slot.adapter.capabilities.compact?.supported || !isContextCompactable(slot.adapter)) {
+      const binding = await this.ensureHarness(harnessTargetId);
+      if (
+        !binding.ref ||
+        !binding.adapter.capabilities.compact?.supported ||
+        !isContextCompactable(binding.adapter)
+      ) {
         throw new Error(`${harnessTargetId} does not support /compact`);
       }
 
       const turnId = newId("t");
-      const admitted = this.admitDrivenTurn(slot, {
+      const admitted = this.admitDrivenTurn(binding, {
         turnId,
-        harnessSessionId: this.nativeSessionId(slot),
+        harnessSessionId: binding.nativeSessionId(),
       });
       record = admitted.record;
-      await slot.adapter.compactContext(slot.ref, turnId);
+      await binding.adapter.compactContext(binding.ref, turnId);
       await admitted.released;
     } catch (error) {
       this.options.session.diagnostic({
@@ -610,9 +386,7 @@ export class Controller {
    * 投影据此静默。不读 config：config 是意图，只有 harness 自己报的才是事实。
    */
   approvalRoute(harnessTargetId: string): ApprovalRoute | null {
-    const slot = this.slots.get(harnessTargetId);
-    if (!slot?.ref || !isApprovalRoutable(slot.adapter)) return null;
-    return slot.adapter.approvalRoute(slot.ref);
+    return this.bindings.get(harnessTargetId)?.approvalRoute() ?? null;
   }
 
   /**
@@ -635,8 +409,8 @@ export class Controller {
   private async interrupt(): Promise<void> {
     const active = this.activeDriven();
     if (!active) return;
-    if (!active.slot.ref) {
-      // preparing：Esc 立即生效，不被冷启动绑住。启动流程继续在后台完成——成功则 slot
+    if (!active.binding.ref) {
+      // preparing：Esc 立即生效，不被冷启动绑住。启动流程继续在后台完成——成功则 binding
       // 保留给后续 turn 复用；卡死由 adapter 的启动期超时兜底，不会永久占住队列。
       this.synthesizeTerminal(active, { stopReason: "cancelled" });
       return;
@@ -648,7 +422,7 @@ export class Controller {
       });
     }, this.options.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS);
     try {
-      await active.slot.adapter.cancel(active.slot.ref);
+      await active.binding.adapter.cancel(active.binding.ref);
     } catch (error) {
       this.options.session.diagnostic({
         level: "error",
@@ -669,15 +443,15 @@ export class Controller {
 
   async close(): Promise<void> {
     const closing: Promise<void>[] = [];
-    for (const slot of this.slots.values()) {
-      if (slot.ref) {
+    for (const binding of this.bindings.values()) {
+      if (binding.ref) {
         closing.push(
-          slot.adapter.close(slot.ref).catch((error) => {
+          binding.close().catch((error) => {
             this.options.session.diagnostic({
               level: "warn",
               component: "controller.close",
-              harness: slot.adapter.harness,
-              harnessTargetId: slot.target.id,
+              harness: binding.adapter.harness,
+              harnessTargetId: binding.target.id,
               message: "harness close failed",
               error: diagnosticError(error),
             });
@@ -692,9 +466,8 @@ export class Controller {
     if (this.draining) return;
     this.draining = true;
     try {
-      while (this.queue.length > 0) {
-        const turn = this.queue.shift() as InputRecord;
-        turn.status = "admitted"; // 出队即形成 driven turn（user_message/running 由 runTurn 落盘）
+      while (this.inputQueue.length > 0) {
+        const turn = this.inputQueue.dequeue() as InputRecord;
         this.changed();
         try {
           await this.runTurn(turn);
@@ -716,31 +489,13 @@ export class Controller {
    * 的开界序列只活在这里，不允许旁路再手搭一份。
    */
   private admitDrivenTurn(
-    slot: HarnessSlot,
+    binding: HarnessBinding,
     opts: { turnId: string; input?: InputRecord; harnessSessionId?: string },
-  ): { record: TurnRecord; released: Promise<void> } {
-    let release!: () => void;
-    const released = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const harnessKey = slot.adapter.harness;
-    const record: TurnRecord = {
-      turnId: opts.turnId,
-      role: "driven",
-      slot,
-      harness: harnessKey,
-      harnessTargetId: slot.target.id,
-      status: "active",
-      startedAt: Date.now(),
-      turn: opts.input,
-      steers: [],
-      release,
-    };
-    this.turns.set(opts.turnId, record);
-    this.activeDrivenTurnId = opts.turnId;
+  ): { record: TurnRecord<HarnessBinding>; released: Promise<void> } {
+    const admitted = this.turns.admitDriven(binding, opts.turnId, opts.input);
     if (opts.input) {
       this.appendEvent(
-        slot,
+        binding,
         {
           kind: "user_message",
           harnessSessionId: opts.harnessSessionId,
@@ -751,7 +506,7 @@ export class Controller {
       );
     }
     this.appendEvent(
-      slot,
+      binding,
       {
         kind: "state_update",
         harnessSessionId: opts.harnessSessionId,
@@ -760,7 +515,7 @@ export class Controller {
       },
       { type: "baton" },
     );
-    return { record, released };
+    return admitted;
   }
 
   private async runTurn(turn: InputRecord): Promise<void> {
@@ -770,20 +525,20 @@ export class Controller {
     // 不等 harness 冷启动（codex 首启要 spawn → initialize → thread resume/start，
     // 可达数秒，期间 Transcript 必须已能看到这条输入）。落盘的是**原始输入** turn.blocks：
     // <baton-sync> 注入只进 harness transport（syncContext / prepend），不进正典历史。
-    const slot = this.slotFor(turn.target.id, turn.turnId);
-    const harnessKey = slot.adapter.harness;
-    const targetKey = slot.target.id;
-    const { record, released } = this.admitDrivenTurn(slot, {
+    const binding = this.bindingFor(turn.target.id, turn.turnId);
+    const harnessKey = binding.adapter.harness;
+    const targetKey = binding.target.id;
+    const { record, released } = this.admitDrivenTurn(binding, {
       turnId: turn.turnId,
       input: turn,
       harnessSessionId: this.options.session.meta.harnessSessions[targetKey]?.harnessSessionId,
     });
-    const coldStart = !slot.ref;
+    const coldStart = !binding.ref;
     if (coldStart) {
       // 冷启动阶段对用户可见（否则 spinner 只能显示误导性的 thinking…）；
       // idle 终态会连带清掉 phase，失败/取消路径无需单独收尾
       this.appendEvent(
-        slot,
+        binding,
         {
           kind: "_baton_run_status",
           turnId: turn.turnId,
@@ -797,10 +552,10 @@ export class Controller {
       await this.ensureHarness(targetKey);
       // preparing 期间被取消：终态已合成、summary 已落，不再向 harness 提交
       if (record.status === "finalized") return;
-      if (!slot.ref) throw new Error(`${targetKey} failed to start`);
+      if (!binding.ref) throw new Error(`${targetKey} failed to start`);
       if (coldStart) {
         this.appendEvent(
-          slot,
+          binding,
           {
             kind: "_baton_run_status",
             turnId: turn.turnId,
@@ -813,9 +568,9 @@ export class Controller {
       const session = this.options.session;
       const meta = session.meta.harnessSessions[targetKey];
       const catchUp = buildTargetCatchUpContext(session, {
-        target: slot.target,
+        target: binding.target,
         sinceSeq: meta?.syncedSeq ?? 0,
-        includeTargetTurns: slot.freshNative,
+        includeTargetTurns: binding.freshNative,
         budgetChars: this.options.mentionBudgetChars,
       });
       let blocks = turn.blocks;
@@ -829,20 +584,20 @@ export class Controller {
           type: "text",
           text: `<baton-sync>\n${catchUp.text}\n</baton-sync>`,
         };
-        if (isContextSynchronizable(slot.adapter)) {
-          await slot.adapter.syncContext(slot.ref, [syncBlock]);
+        if (isContextSynchronizable(binding.adapter)) {
+          await binding.adapter.syncContext(binding.ref, [syncBlock]);
           session.setHarnessSession(targetKey, {
             ...meta,
             harnessTargetId: targetKey,
             harness: harnessKey,
-            harnessSessionId: meta?.harnessSessionId ?? this.nativeSessionId(slot),
+            harnessSessionId: meta?.harnessSessionId ?? binding.nativeSessionId(),
             syncedSeq: catchUp.throughSeq,
           });
-          slot.freshNative = false;
+          binding.freshNative = false;
         } else {
           // 随本 turn 的 submit 送达（原生 side-channel 或 prepend）；两种形态共享
           // 同一水位语义：admission 通过后才推进，失败则下次重注入
-          if (slot.adapter.capabilities.sync?.supported) {
+          if (binding.adapter.capabilities.sync?.supported) {
             syncBlocks = [syncBlock];
           } else {
             blocks = [syncBlock, { type: "text", text: "\n\n" }, ...blocks];
@@ -852,7 +607,7 @@ export class Controller {
       }
 
       // submit 只确认 admission；完成以 finalize 收到 idle 终态为准
-      await slot.adapter.submit(slot.ref, {
+      await binding.adapter.submit(binding.ref, {
         turnId: turn.turnId,
         messageId: turn.messageId,
         blocks,
@@ -867,10 +622,11 @@ export class Controller {
           harnessTargetId: targetKey,
           harness: harnessKey,
           harnessSessionId:
-            session.meta.harnessSessions[targetKey]?.harnessSessionId ?? this.nativeSessionId(slot),
+            session.meta.harnessSessions[targetKey]?.harnessSessionId ??
+            binding.nativeSessionId(),
           syncedSeq: submitCatchUp.throughSeq,
         });
-        slot.freshNative = false;
+        binding.freshNative = false;
       }
       await released;
     } catch (error) {
@@ -906,30 +662,24 @@ export class Controller {
    * 不变量：任何进入本方法的事件必然对订阅者可见——投影正确性由 append 广播
    * 单通道保证，不依赖"是否有活跃 turn"。
    */
-  private appendEvent(slot: HarnessSlot, ev: AnyEventDraft, source: EventSource): void {
+  private appendEvent(
+    binding: HarnessBinding,
+    ev: AnyEventDraft,
+    source: EventSource,
+  ): void {
     const envelope = this.options.session.append({
       ...ev,
       source,
-      harness: slot.adapter.harness,
-      harnessTargetId: slot.target.id,
+      harness: binding.adapter.harness,
+      harnessTargetId: binding.target.id,
     } as AnyNewEvent) as AnyEventEnvelope;
     if (envelope.kind === "state_update") {
       const p = envelope.payload;
       if (p.state === "running" && envelope.source.type === "harness" && envelope.turnId) {
         // observed turn 开界：登记入台账，不进队列（design §5.10）
-        if (!this.turns.has(envelope.turnId)) {
-          this.turns.set(envelope.turnId, {
-            turnId: envelope.turnId,
-            role: "observed",
-            slot,
-            harness: slot.adapter.harness,
-            harnessTargetId: slot.target.id,
-            status: "active",
-            startedAt: Date.now(),
-          });
-        }
+        this.turns.observe(binding, envelope.turnId);
       } else if (p.state === "idle") {
-        // 终态一律按 baton turn id 查表路由（不看 slot）。无 turnId 的终态：
+        // 终态一律按 baton turn id 查表路由（不看 binding）。无 turnId 的终态：
         // 已持久化留痕，但无法归属任何 turn，不驱动生命周期（adapter 契约要求
         // 终态必带 turnId，由契约测试钉住）。
         if (envelope.turnId) this.finalize(envelope.turnId, p.stopReason);
@@ -948,31 +698,15 @@ export class Controller {
    * 按 baton turn id 幂等：迟到/重复/未知终态一律 inert，不会关闭更新的 turn。
    */
   private finalize(turnId: string, stopReason: StopReason | undefined): void {
-    const record = this.turns.get(turnId);
-    if (!record || record.status === "finalized") return;
-    record.status = "finalized";
-    record.stopReason = stopReason;
+    const record = this.turns.beginFinalization(turnId, stopReason);
+    if (!record) return;
 
     // cancel-cascade：本 turn 仍挂起的 Interaction 随收口一并了结，绝不留悬挂 continuation。
     // Controller 先持久化 cancelled resolution，再唤醒 Adapter；参考 codex
     // clear_pending_waiters→Abort、opencode interrupt 的 ensuring(pending.delete)。
     // 顺序天然对：finalize 发生在 adapter.cancel 之后（先中断 turn，再收 pending），不会让取消以
     // model 可见的 tool rejection 抢在 turn 中断之前冒出来。
-    for (const [interactionId, entry] of this.pendingInteractions) {
-      if (entry.turnId !== turnId) continue;
-      this.settleInteraction(
-        interactionId,
-        { kind: "cancelled", reason: "turn" },
-        { type: "baton" },
-      );
-    }
-
-    // 输入实体随 turn 收口迁移终态：cancelled → interrupted（S3：不静默丢、可查、不自动重发），
-    // 否则 → finalized。admitted 输入与已接受的 steer 同迁移。之后由 retire 释放。
-    const inputTerminal: InputStatus =
-      record.role === "driven" && stopReason === "cancelled" ? "interrupted" : "finalized";
-    if (record.turn) record.turn.status = inputTerminal;
-    for (const steer of record.steers ?? []) steer.status = inputTerminal;
+    this.interactions.cancelForTurn(turnId);
 
     const session = this.options.session;
 
@@ -989,29 +723,11 @@ export class Controller {
     }
 
     session.summarizeTurnEvent(turnId);
-    if (record.role === "driven") record.slot.freshNative = false;
-    this.backfillHarnessSessionId(record.slot);
+    if (record.role === "driven") record.binding.freshNative = false;
+    this.backfillHarnessSessionId(record.binding);
 
-    if (record.role === "driven") {
-      if (this.activeDrivenTurnId === turnId) this.activeDrivenTurnId = undefined;
-      record.release?.();
-    }
-    this.retire(record);
+    this.turns.finish(record, stopReason);
     this.changed();
-  }
-
-  /**
-   * finalized 记录瘦身：迟到终态的幂等判定只需 turnId+status，其余重负载必须释放——
-   * turn 持有入队原件 PromptBlock[]（@ 展开注入后单条可达几十 KB），release 是闭包。
-   * 长会话 / 长期 loop 下若随 finalized 记录整体保留，内存会按 turn 数线性增长。
-   * 必须在 release?.() 之后调用（release 本身是要释放的字段之一）。
-   */
-  private retire(record: TurnRecord): void {
-    if (record.cancelGraceTimer) clearTimeout(record.cancelGraceTimer);
-    record.cancelGraceTimer = undefined;
-    record.turn = undefined;
-    record.steers = undefined;
-    record.release = undefined;
   }
 
   /**
@@ -1019,16 +735,16 @@ export class Controller {
    * 刻意**不**推进 syncedSeq——水位只在注入时前进（见 runTurn）：finalize 推尾水位
    * 会越过并发期间其它 harness 落盘、尚未注入本 harness 的事件，形成永久同步洞。
    */
-  private backfillHarnessSessionId(slot: HarnessSlot): void {
+  private backfillHarnessSessionId(binding: HarnessBinding): void {
     const session = this.options.session;
-    const key = slot.target.id;
+    const key = binding.target.id;
     const existing = session.meta.harnessSessions[key];
-    const nativeId = this.nativeSessionId(slot) ?? existing?.harnessSessionId;
+    const nativeId = binding.nativeSessionId() ?? existing?.harnessSessionId;
     if (nativeId === existing?.harnessSessionId) return; // 无变化不写盘
     session.setHarnessSession(key, {
       ...existing,
       harnessTargetId: key,
-      harness: slot.adapter.harness,
+      harness: binding.adapter.harness,
       harnessSessionId: nativeId,
     });
   }
@@ -1038,11 +754,14 @@ export class Controller {
    * 使用方：cancel 宽限期到期 / cancel 请求失败 / preparing 取消（无 error，纯 cancelled）/
    * 启动与 admission 失败（stopReason:"error"）。
    */
-  private synthesizeTerminal(record: TurnRecord, opts: { message?: string; stopReason: StopReason }): void {
+  private synthesizeTerminal(
+    record: TurnRecord<HarnessBinding>,
+    opts: { message?: string; stopReason: StopReason },
+  ): void {
     if (record.status === "finalized") return;
     if (opts.message !== undefined) {
       this.appendEvent(
-        record.slot,
+        record.binding,
         {
           kind: "_baton_error_update",
           turnId: record.turnId,
@@ -1052,7 +771,7 @@ export class Controller {
       );
     }
     this.appendEvent(
-      record.slot,
+      record.binding,
       {
         kind: "state_update",
         turnId: record.turnId,
@@ -1063,13 +782,12 @@ export class Controller {
   }
 
   /**
-   * 同步获取（创建即启动）harness slot：adapter 构造是同步的，wire key（adapter.harness）
-   * 与事件 sink 在这里就绪——runTurn 依赖这一点在 open() 完成**之前**落 user_message。
-   * 启动完成的等待在 ensureHarness。
+   * 同步获取（创建即启动）HarnessBinding：Adapter 构造和可信 Event sink 在这里绑定，
+   * runTurn 因此能在 open() 完成之前落 user_message。实际启动生命周期由 binding 拥有。
    */
-  private slotFor(harnessTargetId: string, setupTurnId?: string): HarnessSlot {
-    let slot = this.slots.get(harnessTargetId);
-    if (!slot) {
+  private bindingFor(harnessTargetId: string, setupTurnId?: string): HarnessBinding {
+    let binding = this.bindings.get(harnessTargetId);
+    if (!binding) {
       const target = this.targetFor(harnessTargetId);
       const adapter = this.options.createAdapter(target, {
         interactionHandler: (interaction, context) =>
@@ -1077,95 +795,40 @@ export class Controller {
         diagnostic: (entry) =>
           this.options.session.diagnostic({ ...entry, harnessTargetId: target.id }),
       });
-      const created: HarnessSlot = { target, adapter, freshNative: true, setupTurnId };
-      slot = created;
-      this.slots.set(target.id, created);
-      created.starting = (async () => {
-        try {
-          const existing = this.options.session.meta.harnessSessions[target.id];
-          const modelAdapter = isModelConfigurable(adapter) ? adapter : undefined;
-          const effortAdapter = isEffortConfigurable(adapter) ? adapter : undefined;
-          const model = modelAdapter ? this.preferredModel(target.id) : undefined;
-          const effort = effortAdapter ? this.preferredEffort(target.id) : undefined;
-          const launchSnapshot = createHarnessLaunchSnapshot({
-            target,
-            harnessSessionKey: adapter.harness,
-            cwd: this.options.session.meta.cwd,
-            model,
-            effort,
-          });
-          // open 前落下实际配置：即使进程在 spawn/initialize 期间崩溃，也能解释这次启动。
-          this.options.session.setHarnessSession(target.id, {
-            ...existing,
-            harnessTargetId: target.id,
-            harness: adapter.harness,
-            launchSnapshot,
-            ...(model ? { model } : {}),
-            ...(effort ? { effort } : {}),
-          });
-          created.ref = await adapter.open(
-            {
-              cwd: this.options.session.meta.cwd,
-              resumeSessionId: existing?.harnessSessionId,
-            },
-            (ev) =>
-              this.appendEvent(created, ev, {
-                type: "harness",
-                harnessTargetId: created.target.id,
-              }),
-          );
-          created.freshNative = !created.ref.resumed;
-          if (model) await modelAdapter?.setModel(created.ref, model);
-          if (effort) await effortAdapter?.setEffort(created.ref, effort);
-          this.options.session.setHarnessSession(target.id, {
-            ...this.options.session.meta.harnessSessions[target.id],
-            harnessTargetId: target.id,
-            harness: adapter.harness,
-            launchSnapshot,
-            harnessSessionId: this.nativeSessionId(created),
-            syncedSeq: created.ref.resumed ? existing?.syncedSeq : 0,
-            ...(model ? { model } : {}),
-            ...(effort ? { effort } : {}),
-          });
-        } finally {
-          created.setupTurnId = undefined; // setup 阶段结束：此后的无 turnId Interaction 不再归属该 turn
-        }
-      })();
-      // starting 的消费方（ensureHarness）可能晚一拍才 await：先挂空 handler 防
-      // "unhandled rejection"误报；真实错误仍由 await 侧感知并删除 slot
-      void created.starting.catch(() => {});
+      let created!: HarnessBinding;
+      created = new HarnessBinding({
+        target,
+        adapter,
+        session: this.options.session,
+        setupTurnId,
+        modelPreference: this.options.modelPreferences?.[target.id],
+        effortPreference: this.options.effortPreferences?.[target.id],
+        eventSink: (event) =>
+          this.appendEvent(created, event, {
+            type: "harness",
+            harnessTargetId: created.target.id,
+          }),
+      });
+      binding = created;
+      this.bindings.set(target.id, created);
+      created.start();
     }
-    return slot;
+    return binding;
   }
 
-  private preferredModel(harnessTargetId: string): string | undefined {
-    return (
-      this.options.session.meta.harnessSessions[harnessTargetId]?.model ??
-      this.options.modelPreferences?.[harnessTargetId]
-    );
-  }
-
-  private preferredEffort(harnessTargetId: string): string | undefined {
-    return (
-      this.options.session.meta.harnessSessions[harnessTargetId]?.effort ??
-      this.options.effortPreferences?.[harnessTargetId]
-    );
-  }
-
-  private async ensureHarness(harnessTargetId: string): Promise<HarnessSlot> {
-    const slot = this.slotFor(harnessTargetId);
-    if (slot.starting) {
+  private async ensureHarness(harnessTargetId: string): Promise<HarnessBinding> {
+    const binding = this.bindingFor(harnessTargetId);
+    if (binding.isStarting) {
       try {
-        await slot.starting;
+        await binding.ensure();
       } catch (error) {
-        this.slots.delete(harnessTargetId);
+        this.bindings.delete(harnessTargetId);
         throw error;
       } finally {
-        slot.starting = undefined;
         this.changed();
       }
     }
-    return slot;
+    return binding;
   }
 
   private targetFor(harnessTargetId: string): HarnessTarget {
@@ -1179,34 +842,6 @@ export class Controller {
       );
     }
     return Object.freeze({ id: resolved.id, harness: resolved.harness });
-  }
-
-  private nativeSessionId(slot: HarnessSlot): string | undefined {
-    if (!slot.ref) return undefined;
-    return isNativeSessionIdentifiable(slot.adapter)
-      ? slot.adapter.nativeSessionId(slot.ref)
-      : slot.ref.harnessSessionId;
-  }
-
-  private snapshot(turn: InputRecord): QueuedTurnSnapshot {
-    return {
-      id: turn.id,
-      turnId: turn.turnId,
-      harnessTargetId: turn.target.id,
-      harness: turn.target.harness,
-      blocks: [...turn.blocks],
-    };
-  }
-
-  private inputSnapshot(input: InputRecord): InputSnapshot {
-    return {
-      messageId: input.messageId,
-      turnId: input.turnId,
-      harnessTargetId: input.target.id,
-      harness: input.target.harness,
-      status: input.status,
-      delivery: input.delivery,
-    };
   }
 
   private changed(): void {

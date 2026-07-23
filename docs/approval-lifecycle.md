@@ -113,7 +113,7 @@ codex 报告生效 reviewer 为委托时，Target Status 常驻 `approvals:auto-
 - `src/adapters/codex/adapter.ts`：reviewer 下发与生效值回吐（`approvalRoute`）、`autoApprovalReview/*` 消费、归一与 §2.3 启发式 notice 收敛。
 - `src/interaction/types.ts`：permission draft / resolution 与统一 Interaction identity/requester。
 - `src/adapters/types.ts`：`InteractionHandler` 宿主交互契约。
-- `src/session/controller.ts`：Interaction identity、opened/resolved 与 waiter 生命周期。
+- `src/controller/interaction.ts`：Interaction identity、opened/resolved 与 waiter 生命周期。
 - `src/event/types.ts`：`interaction.opened` / `interaction.resolved` / `approval_review_update`。
 - `src/tui/protocol.ts`：审批卡、review 回执与 Target Status 委托提示投影。
 - chat-tui `src/types/index.ts`：`TranscriptBlockStatus.warning`；`components/transcript.tsx` 的状态图标/配色。

@@ -18,7 +18,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { AnyEventEnvelope, AnyEventDraft, StopReason } from "../src/event/types.ts";
-import { Controller, INTERRUPTED_NOTICE_TITLE } from "../src/session/controller.ts";
+import { Controller, INTERRUPTED_NOTICE_TITLE } from "../src/controller/index.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 import { resolveTestTarget } from "./harness-target.ts";
 

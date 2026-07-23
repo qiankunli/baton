@@ -126,7 +126,7 @@ completed 但整个 turn 零产出，说明 prompt 在进模型前被丢弃（ho
 - `src/adapters/types.ts`：`HarnessAdapter` 终态硬约定、`AdapterCapabilities`、`Reconcilable` / `ReconcileVerdict` / `isReconcilable`（L2）。
 - `src/adapters/codex/adapter.ts`：item/turn 通知归一、`finishTurn`/`failTurn` 终态合成、空回合上报、悲观 failed 映射、`reconcile` + `mapThreadStatus`（L2，`thread/read.status`）。
 - `src/adapters/claude/adapter.ts`：SDK 消息流归一、error 流、cancel 映射 interrupt；未声明 reconcile，回落 L1。
-- `src/session/controller.ts`：按 turn id 幂等 `finalize`、cancel 宽限 `synthesizeTerminal`、L1 `checkStalls`/`refreshActivity` 进展时钟、L2 `reconcileStalled`（idle 裁决才自愈收口）。
+- `src/controller/index.ts` 与 `src/controller/turn.ts`：按 turn id 幂等 `finalize`、cancel 宽限 `synthesizeTerminal`、L1 `checkStalls`/`refreshActivity` 进展时钟、L2 `reconcileStalled`（idle 裁决才自愈收口）。
 - `src/store/reduce.ts`：事件流 reduce 成会话状态，upsert 自愈与 id owner 不变量、`ActiveTurnState.stalled`（L1）。
 - `tests/harness-initiated-turn.test.ts`：observed turn 投影单通道契约。
 - `tests/lifecycle.test.ts`：终态合成与 finalize 幂等。

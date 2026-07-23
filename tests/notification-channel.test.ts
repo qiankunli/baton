@@ -4,7 +4,7 @@
 // 回归背景（PR #112）：普通流式事件曾同时走两条通知——session.append 的事件流广播
 // （投影订阅）+ controller appendEvent 末尾的 changed()（onChange），导致每个
 // streaming chunk 触发两次完整 view 重建。修复删掉了 appendEvent 末尾的 changed()，
-// 但这条"哪类变更走哪条通知通道"的分工只靠 controller.ts 里的一行注释守着——任何人
+// 但这条"哪类变更走哪条通知通道"的分工只靠 Controller 里的一行注释守着——任何人
 // 顺手加回 changed() 就会无声复发（双重建只是性能劣化，UI 不出错，肉眼看不出来）。
 // 本测试把它钉成契约：普通流式事件到达时，订阅方收到的通知恰好一次。
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -22,7 +22,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { AnyEventDraft } from "../src/event/types.ts";
-import { Controller } from "../src/session/controller.ts";
+import { Controller } from "../src/controller/index.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 import { resolveTestTarget } from "./harness-target.ts";
 

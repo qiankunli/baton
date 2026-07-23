@@ -1,6 +1,6 @@
 /**
  * Baton 配置与调度侧的 Harness 目标。`harness` 选择执行协议，`id` 标识一份具体配置；
- * 同一种 Harness 可以有多个 target，但它们不能共享 controller slot 或原生 session。
+ * 同一种 Harness 可以有多个 target，但它们不能共享 HarnessBinding 或原生 session。
  */
 export interface HarnessTarget {
   readonly id: string;
