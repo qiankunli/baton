@@ -18,6 +18,7 @@ import type {
 import type { PromptBlock } from "../src/event/types.ts";
 import { Controller, type InteractionHandlers } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
+import { resolveTestTarget } from "./harness-target.ts";
 
 /** turn 阻塞在一个审批 Interaction 上，直到 resolve 或（cancel 时）级联取消；cancel() 合成 idle(cancelled) */
 class ApprovalHoldingAdapter implements HarnessAdapter {
@@ -79,6 +80,7 @@ describe("cancel cascades to pending Interactions", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       createAdapter: (_target, handlers) => new ApprovalHoldingAdapter(handlers),
     });
 

@@ -19,6 +19,7 @@ import type {
 import { textOf, type PromptBlock } from "../src/event/types.ts";
 import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
+import { resolveTestTarget } from "./harness-target.ts";
 
 /** turn 停在进行中，直到 finish() 或 cancel()；cancel 模拟 harness 的 cancelled 终态 */
 class HoldingAdapter implements HarnessAdapter {
@@ -78,7 +79,12 @@ beforeEach(() => {
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
 function controllerWith(adapter: HarnessAdapter): Controller {
-  return new Controller({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+  return new Controller({
+    session,
+    mentionBudgetChars: 4096,
+    resolveTarget: resolveTestTarget,
+    createAdapter: () => adapter,
+  });
 }
 const text = (t: string): PromptBlock[] => [{ type: "text", text: t }];
 async function until(cond: () => boolean): Promise<void> {

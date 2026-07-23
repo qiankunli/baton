@@ -190,7 +190,8 @@ export interface ControllerOptions {
   effortPreferences?: Readonly<Record<string, string>>;
   /** 工厂按 target.harness 选择 Adapter，并可使用 target.id lowering 实例级配置。 */
   createAdapter(target: HarnessTarget, handlers: InteractionHandlers): HarnessAdapter;
-  resolveTarget?(harnessTargetId: string): HarnessTarget;
+  /** HarnessTarget identity 的唯一 owner；未知 id 必须返回 undefined，不能反推 Harness。 */
+  resolveTarget(harnessTargetId: string): HarnessTarget | undefined;
   onChange?: () => void;
   /**
    * cancel 后等待 harness 确认终态的宽限期。到期仍无终态则合成 terminal error 并
@@ -504,6 +505,7 @@ export class Controller {
   currentModel(harnessTargetId: string): string | null {
     const slot = this.slots.get(harnessTargetId);
     if (!slot?.ref || !isModelConfigurable(slot.adapter)) {
+      this.targetFor(harnessTargetId);
       return this.preferredModel(harnessTargetId) ?? null;
     }
     return slot.adapter.currentModel(slot.ref);
@@ -541,6 +543,7 @@ export class Controller {
   currentEffort(harnessTargetId: string): string | null {
     const slot = this.slots.get(harnessTargetId);
     if (!slot?.ref || !isEffortConfigurable(slot.adapter)) {
+      this.targetFor(harnessTargetId);
       return this.preferredEffort(harnessTargetId) ?? null;
     }
     return slot.adapter.currentEffort(slot.ref);
@@ -1173,10 +1176,10 @@ export class Controller {
   }
 
   private targetFor(harnessTargetId: string): HarnessTarget {
-    const resolved = this.options.resolveTarget?.(harnessTargetId) ?? {
-      id: harnessTargetId,
-      harness: harnessTargetId,
-    };
+    const resolved = this.options.resolveTarget(harnessTargetId);
+    if (!resolved) {
+      throw new Error(`HarnessTarget not registered: ${harnessTargetId}`);
+    }
     if (!resolved.id || resolved.id !== harnessTargetId || !resolved.harness) {
       throw new Error(
         `invalid HarnessTarget for ${harnessTargetId}: id=${resolved.id}, harness=${resolved.harness}`,

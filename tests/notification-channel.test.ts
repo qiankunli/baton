@@ -24,6 +24,7 @@ import type {
 import type { AnyEventDraft } from "../src/event/types.ts";
 import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
+import { resolveTestTarget } from "./harness-target.ts";
 
 let root: string;
 let store: SessionStore;
@@ -118,6 +119,7 @@ describe("single-channel view notification per streaming event", () => {
       const controller = new Controller({
         session,
         mentionBudgetChars: 4096,
+        resolveTarget: resolveTestTarget,
         createAdapter: () => adapter,
         // 镜像 BatonChatProtocol 的接线：事件流订阅（subscribeSession）与 controller 的
         // onChange 汇入同一个 changed()——每次调用重建一次完整 view。因此

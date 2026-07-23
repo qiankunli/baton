@@ -19,6 +19,7 @@ import type {
 import { textOf, type PromptBlock } from "../src/event/types.ts";
 import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
+import { resolveTestTarget } from "./harness-target.ts";
 
 /** turn 不自动终结：由测试显式 finish()，制造稳定的"turn 进行中"窗口 */
 class SteerableFakeAdapter implements HarnessAdapter {
@@ -107,6 +108,7 @@ function controllerWith(adapter: HarnessAdapter): Controller {
   return new Controller({
     session,
     mentionBudgetChars: 4096,
+    resolveTarget: resolveTestTarget,
     createAdapter: () => adapter,
   });
 }
@@ -215,6 +217,7 @@ describe("Controller.steer", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       createAdapter: (target) => adapters[target.harness] as HarnessAdapter,
     });
 

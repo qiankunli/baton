@@ -23,6 +23,7 @@ import type { AnyEventDraft } from "../src/event/types.ts";
 import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 import { BatonChatProtocol } from "../src/tui/protocol.ts";
+import { resolveTestTarget } from "./harness-target.ts";
 
 let root: string;
 let store: SessionStore;
@@ -215,6 +216,7 @@ describe("controller observed-turn accounting", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
       createAdapter: () => adapter,
     });
 
