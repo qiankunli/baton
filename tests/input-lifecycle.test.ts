@@ -17,7 +17,7 @@ import type {
   SteerReceipt,
 } from "../src/adapters/types.ts";
 import { textOf, type PromptBlock } from "../src/events/types.ts";
-import { BatonSessionRuntime } from "../src/session/runtime.ts";
+import { SessionController } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** turn 停在进行中，直到 finish() 或 cancel()；cancel 模拟 harness 的 cancelled 终态 */
@@ -77,8 +77,8 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-function runtimeWith(adapter: HarnessAdapter): BatonSessionRuntime {
-  return new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
+function controllerWith(adapter: HarnessAdapter): SessionController {
+  return new SessionController({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 }
 const text = (t: string): PromptBlock[] => [{ type: "text", text: t }];
 async function until(cond: () => boolean): Promise<void> {
@@ -89,34 +89,34 @@ async function until(cond: () => boolean): Promise<void> {
 describe("Input lifecycle (InputRecord)", () => {
   test("admitted input is identified by its messageId with admitted status", async () => {
     const adapter = new HoldingAdapter("codex");
-    const runtime = runtimeWith(adapter);
-    const turn = runtime.submit("codex", text("build it"));
+    const controller = controllerWith(adapter);
+    const turn = controller.submit("codex", text("build it"));
     await until(() => adapter.prompts.length === 1);
 
-    const inputs = runtime.inputs;
+    const inputs = controller.inputs;
     expect(inputs).toHaveLength(1);
     expect(inputs[0]?.messageId).toMatch(/^m_/);
     expect(inputs[0]).toMatchObject({ status: "admitted", delivery: "prompt", harness: "codex" });
 
     adapter.finish("end_turn");
     await turn;
-    expect(runtime.inputs).toHaveLength(0); // finalized 输入不驻内存
+    expect(controller.inputs).toHaveLength(0); // finalized 输入不驻内存
   });
 
   test("a second input while busy is a queued entity; recall marks it recalled and drops it", async () => {
     const adapter = new HoldingAdapter("codex");
-    const runtime = runtimeWith(adapter);
-    const first = runtime.submit("codex", text("first"));
+    const controller = controllerWith(adapter);
+    const first = controller.submit("codex", text("first"));
     await until(() => adapter.prompts.length === 1);
-    const second = runtime.submit("codex", text("second"));
-    await until(() => runtime.queueLength === 1);
+    const second = controller.submit("codex", text("second"));
+    await until(() => controller.queueLength === 1);
 
-    const statuses = runtime.inputs.map((i) => i.status).sort();
+    const statuses = controller.inputs.map((i) => i.status).sort();
     expect(statuses).toEqual(["admitted", "queued"]);
 
-    const recalled = runtime.recallLatestQueued();
+    const recalled = controller.recallLatestQueued();
     expect(recalled?.blocks && textOf(recalled.blocks)).toBe("second");
-    expect(runtime.inputs.map((i) => i.status)).toEqual(["admitted"]); // queued 已移除
+    expect(controller.inputs.map((i) => i.status)).toEqual(["admitted"]); // queued 已移除
     expect(await second).toBe("recalled");
 
     adapter.finish("end_turn");
@@ -125,14 +125,14 @@ describe("Input lifecycle (InputRecord)", () => {
 
   test("accepted steer is a first-class entity attached to the active turn", async () => {
     const adapter = new HoldingAdapter("codex");
-    const runtime = runtimeWith(adapter);
-    const turn = runtime.submit("codex", text("build it"));
+    const controller = controllerWith(adapter);
+    const turn = controller.submit("codex", text("build it"));
     await until(() => adapter.prompts.length === 1);
 
-    const outcome = await runtime.steer("codex", text("prefer B"));
+    const outcome = await controller.steer("codex", text("prefer B"));
     expect(outcome.effective).toBe("steer");
 
-    const steer = runtime.inputs.find((i) => i.delivery === "steer");
+    const steer = controller.inputs.find((i) => i.delivery === "steer");
     expect(steer?.messageId).toMatch(/^m_/);
     expect(steer?.status).toBe("accepted_steer");
 
@@ -142,17 +142,17 @@ describe("Input lifecycle (InputRecord)", () => {
 
   test("Esc after an accepted steer interrupts the turn without silently dropping the steer", async () => {
     const adapter = new HoldingAdapter("codex");
-    const runtime = runtimeWith(adapter);
-    const turn = runtime.submit("codex", text("build it"));
+    const controller = controllerWith(adapter);
+    const turn = controller.submit("codex", text("build it"));
     await until(() => adapter.prompts.length === 1);
-    await runtime.steer("codex", text("also do B"));
-    expect(runtime.inputs.some((i) => i.status === "accepted_steer")).toBe(true);
+    await controller.steer("codex", text("also do B"));
+    expect(controller.inputs.some((i) => i.status === "accepted_steer")).toBe(true);
 
-    await runtime.control({ kind: "interrupt" });
+    await controller.control({ kind: "interrupt" });
     expect(await turn).toBe("completed");
 
     // 无悬挂输入实体，且 steer 文本仍在事件历史里（不静默丢；不自动重发 → 只有一条 steer prompt）
-    expect(runtime.inputs).toHaveLength(0);
+    expect(controller.inputs).toHaveLength(0);
     const state = session.loadState();
     const userTexts = [...state.messages.values()]
       .filter((m) => m.role === "user")

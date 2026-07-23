@@ -1,5 +1,5 @@
 // canonical harness id 的叶子真相源：registry / config / commands 都从这里取。
-// 单列成无依赖文件的原因：config 校验只需要 id 集合，而 harnesses/registry.ts
+// 单列成无依赖文件的原因：config 校验只需要 id 集合，而 harness/registry.ts
 // 携带 adapter 的完整依赖图（SDK、子进程封装）——"读配置"不应连带加载它，
 // 反向 import（config → registry）还会成环。
 

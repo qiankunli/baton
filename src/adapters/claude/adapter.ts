@@ -576,7 +576,7 @@ export class ClaudeAdapter implements HarnessAdapter {
 
     const turn: ClaudeTurn = { turnId: input.turnId, finalized: false, cancelRequested: false };
     rt.activeTurn = turn;
-    // user_message / state_update(running) 由 runtime 在出队时落盘（用户输入是 BatonSession
+    // user_message / state_update(running) 由 controller 在出队时落盘（用户输入是 BatonSession
     // 的事实，不等 harness 就绪）；adapter 只报告 harness 执行过程与终态。
 
     // 后台消费 SDK 消息流；submit 本身立即回执（design §4.1）

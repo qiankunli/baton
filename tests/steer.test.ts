@@ -1,4 +1,4 @@
-// steer 的 runtime 语义（design §4.3 / 验收矩阵 §7.6）：
+// steer 的 controller 语义（design §4.3 / 验收矩阵 §7.6）：
 // 正确 turn 成功注入且不新开 turn；不可 steer / harness 拒绝 / wire 故障一律显式
 // 降级为 follow-up（effective 如实上报），输入永不静默丢失。
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -17,7 +17,7 @@ import type {
   SteerReceipt,
 } from "../src/adapters/types.ts";
 import { textOf, type PromptBlock } from "../src/events/types.ts";
-import { BatonSessionRuntime } from "../src/session/runtime.ts";
+import { SessionController } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** turn 不自动终结：由测试显式 finish()，制造稳定的"turn 进行中"窗口 */
@@ -37,7 +37,7 @@ class SteerableFakeAdapter implements HarnessAdapter {
     return { harness: this.harness, harnessSessionId: `${this.harness}-ref`, resumed: false };
   }
 
-  // 新契约：普通 prompt 的 user_message / running 由 runtime 出队时落盘；
+  // 新契约：普通 prompt 的 user_message / running 由 controller 出队时落盘；
   // adapter 只在 steer 成功路径补 delivery:"steer" 的用户消息（见下方 steer()）
   async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.activeInput = input;
@@ -103,8 +103,8 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function runtimeWith(adapter: HarnessAdapter): BatonSessionRuntime {
-  return new BatonSessionRuntime({
+function controllerWith(adapter: HarnessAdapter): SessionController {
+  return new SessionController({
     session,
     mentionBudgetChars: 4096,
     createAdapter: () => adapter,
@@ -119,19 +119,19 @@ async function until(cond: () => boolean): Promise<void> {
   expect(cond()).toBe(true);
 }
 
-describe("BatonSessionRuntime.steer", () => {
+describe("SessionController.steer", () => {
   test("steers the active turn: no new turn, message lands in the steered turn", async () => {
     const adapter = new SteerableFakeAdapter("codex");
-    const runtime = runtimeWith(adapter);
+    const controller = controllerWith(adapter);
 
-    const turn = runtime.submit("codex", text("build it"));
+    const turn = controller.submit("codex", text("build it"));
     await until(() => adapter.prompts.length === 1);
-    expect(runtime.canSteer("codex")).toBe(true);
+    expect(controller.canSteer("codex")).toBe(true);
 
-    const outcome = await runtime.steer("codex", text("prefer approach B"));
+    const outcome = await controller.steer("codex", text("prefer approach B"));
 
     expect(outcome.effective).toBe("steer");
-    expect(runtime.queueLength).toBe(0);
+    expect(controller.queueLength).toBe(0);
     expect(adapter.steers).toHaveLength(1);
     // expectedTurnId 与消息归属 turn 都是当前 active 的 baton turn id
     expect(adapter.steers[0]?.expectedTurnId).toBe(adapter.steers[0]?.turnId as string);
@@ -151,14 +151,14 @@ describe("BatonSessionRuntime.steer", () => {
   test("degrades to follow-up when the adapter rejects (stale turn race)", async () => {
     const adapter = new SteerableFakeAdapter("codex");
     adapter.steerResult = { effective: "rejected" };
-    const runtime = runtimeWith(adapter);
+    const controller = controllerWith(adapter);
 
-    const first = runtime.submit("codex", text("one"));
+    const first = controller.submit("codex", text("one"));
     await until(() => adapter.prompts.length === 1);
-    const outcome = await runtime.steer("codex", text("two"));
+    const outcome = await controller.steer("codex", text("two"));
 
     expect(outcome.effective).toBe("follow_up");
-    expect(runtime.queueLength).toBe(1);
+    expect(controller.queueLength).toBe(1);
     adapter.finish(); // 结束 turn one → 降级的 follow-up 开始执行
     await first;
     await until(() => adapter.prompts.length === 2);
@@ -170,35 +170,35 @@ describe("BatonSessionRuntime.steer", () => {
   test("degrades to follow-up when the adapter throws (wire failure)", async () => {
     const adapter = new SteerableFakeAdapter("codex");
     adapter.steerError = new Error("peer closed");
-    const runtime = runtimeWith(adapter);
+    const controller = controllerWith(adapter);
 
-    runtime.submit("codex", text("one"));
+    controller.submit("codex", text("one"));
     await until(() => adapter.prompts.length === 1);
-    const outcome = await runtime.steer("codex", text("two"));
+    const outcome = await controller.steer("codex", text("two"));
 
     expect(outcome.effective).toBe("follow_up");
-    expect(runtime.queueLength).toBe(1);
+    expect(controller.queueLength).toBe(1);
   });
 
   test("degrades when the harness does not declare the steer capability", async () => {
     const adapter = new PlainFakeAdapter("claude");
-    const runtime = runtimeWith(adapter);
+    const controller = controllerWith(adapter);
 
-    runtime.submit("claude", text("one"));
+    controller.submit("claude", text("one"));
     await until(() => adapter.prompts.length === 1);
-    expect(runtime.canSteer("claude")).toBe(false);
+    expect(controller.canSteer("claude")).toBe(false);
 
-    const outcome = await runtime.steer("claude", text("two"));
+    const outcome = await controller.steer("claude", text("two"));
     expect(outcome.effective).toBe("follow_up");
-    expect(runtime.queueLength).toBe(1);
+    expect(controller.queueLength).toBe(1);
   });
 
   test("degrades when idle (no active turn to steer)", async () => {
     const adapter = new SteerableFakeAdapter("codex");
-    const runtime = runtimeWith(adapter);
+    const controller = controllerWith(adapter);
 
-    expect(runtime.canSteer("codex")).toBe(false);
-    const outcome = await runtime.steer("codex", text("hello"));
+    expect(controller.canSteer("codex")).toBe(false);
+    const outcome = await controller.steer("codex", text("hello"));
     expect(outcome.effective).toBe("follow_up");
 
     await until(() => adapter.prompts.length === 1);
@@ -212,19 +212,19 @@ describe("BatonSessionRuntime.steer", () => {
     const codex = new SteerableFakeAdapter("codex");
     const claude = new SteerableFakeAdapter("claude-code");
     const adapters: Record<string, HarnessAdapter> = { codex, claude };
-    const runtime = new BatonSessionRuntime({
+    const controller = new SessionController({
       session,
       mentionBudgetChars: 4096,
       createAdapter: (harness) => adapters[harness] as HarnessAdapter,
     });
 
-    runtime.submit("codex", text("one"));
+    controller.submit("codex", text("one"));
     await until(() => codex.prompts.length === 1);
-    expect(runtime.canSteer("claude")).toBe(false);
+    expect(controller.canSteer("claude")).toBe(false);
 
-    const outcome = await runtime.steer("claude", text("two"));
+    const outcome = await controller.steer("claude", text("two"));
     expect(outcome.effective).toBe("follow_up");
     expect(claude.steers).toHaveLength(0);
-    expect(runtime.queueLength).toBe(1);
+    expect(controller.queueLength).toBe(1);
   });
 });

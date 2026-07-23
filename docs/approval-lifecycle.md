@@ -22,7 +22,7 @@
 | 状态 | owner | 语义 |
 |---|---|---|
 | requested | Adapter | harness 请求执行某操作，等待决策 |
-| pending（card） | runtime + Store | 已 emit `permission_request`，UI 出审批卡等用户；卡不可 dismiss |
+| pending（card） | controller + Store | 已 emit `permission_request`，UI 出审批卡等用户；卡不可 dismiss |
 | resolved | Adapter + Store | 决策作出（approve/deny），`permission_resolved` 留痕 |
 | auto-reviewed | Adapter + Store | reviewer 自动决策，带 risk / authorization / rationale 的权威回执 |
 
@@ -40,7 +40,7 @@
 
 ### 2.1 交互审批
 
-Adapter emit `permission_request` → runtime 的 `approvalHandler` 注册 resolver（pending 真相源是事件流，不在 handler 里另存状态）→ chat-tui 渲染审批卡 → 用户经 `resolveApproval` 决策 → Adapter 的 await 点返回 → `permission_resolved` 落盘留痕。
+Adapter emit `permission_request` → controller 的 `approvalHandler` 注册 resolver（pending 真相源是事件流，不在 handler 里另存状态）→ chat-tui 渲染审批卡 → 用户经 `resolveApproval` 决策 → Adapter 的 await 点返回 → `permission_resolved` 落盘留痕。
 
 ### 2.2 审批人跟随 codex，不由 baton 定默认
 
@@ -103,7 +103,7 @@ codex 报告生效 reviewer 为委托时，Harness Status 常驻 `approvals:auto
 
 - `src/adapters/codex/adapter.ts`：reviewer 下发与生效值回吐（`approvalRoute`）、`autoApprovalReview/*` 消费、归一与 §2.3 启发式 notice 收敛。
 - `src/adapters/types.ts`：`ApprovalHandler` / `PermissionRequest` 交互审批契约。
-- `src/session/runtime.ts`：`approvalHandler` resolver 注册、pending 事件流真相源。
+- `src/session/controller.ts`：`approvalHandler` resolver 注册、pending 事件流真相源。
 - `src/events/types.ts`：`permission_request` / `permission_resolved` / `approval_review_update`。
 - `src/tui/protocol.ts`：审批卡、review 回执与 Harness Status 委托提示投影。
 - chat-tui `src/types/index.ts`：`TranscriptBlockStatus.warning`；`components/transcript.tsx` 的状态图标/配色。

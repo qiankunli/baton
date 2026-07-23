@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // chat-first TUI：打开即聊天，体验对齐 claude/codex CLI。
 // UI 层来自 chat-tui（github.com/qiankunli/chat-tui）：ChatShell 消费视图快照、回传 intents；
-// baton 侧只有 BatonChatProtocol（runtime/store → 视图投影 + intents → runtime 操作）。
+// baton 侧只有 BatonChatProtocol（controller/store → 视图投影 + intents → controller 操作）。
 //   - 直接输入 → 发给当前 agent（默认 codex）
 //   - /codex、/claude 直接选择输入目标；/model、/effort 分别配置后续 turn
 //   - 切换 agent 时自动注入对方最新进展（buildCatchUpContext），无需手动搬运上下文

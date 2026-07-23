@@ -18,7 +18,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { AnyEventEnvelope, AnyNewEvent, StopReason } from "../src/events/types.ts";
-import { BatonSessionRuntime, INTERRUPTED_NOTICE_TITLE } from "../src/session/runtime.ts";
+import { SessionController, INTERRUPTED_NOTICE_TITLE } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** 事件完全由测试脚本控制的 adapter：submit 只回执，终态由测试显式注入 */
@@ -36,7 +36,7 @@ class ScriptedAdapter implements HarnessAdapter {
     return { harness: this.harness, harnessSessionId: `${this.harness}-ref` };
   }
 
-  // 新契约：user_message / running 由 runtime 出队时落盘，adapter submit 只做 admission
+  // 新契约：user_message / running 由 controller 出队时落盘，adapter submit 只做 admission
   async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.submits.push(input);
     return { accepted: true };
@@ -83,8 +83,8 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function makeRuntime(adapter: ScriptedAdapter, cancelGraceMs?: number) {
-  return new BatonSessionRuntime({
+function makeController(adapter: ScriptedAdapter, cancelGraceMs?: number) {
+  return new SessionController({
     session,
     mentionBudgetChars: 4096,
     createAdapter: () => adapter,
@@ -99,8 +99,8 @@ function kinds(events: AnyEventEnvelope[]): string[] {
 describe("idempotent turn finalize", () => {
   test("duplicate terminal finalizes once: single summary, second idle is inert", async () => {
     const adapter = new ScriptedAdapter();
-    const runtime = makeRuntime(adapter);
-    const outcome = runtime.submit("scripted", [{ type: "text", text: "hi" }]);
+    const controller = makeController(adapter);
+    const outcome = controller.submit("scripted", [{ type: "text", text: "hi" }]);
 
     await until(() => adapter.submits.length === 1);
     const turnId = adapter.submits[0]!.turnId;
@@ -110,20 +110,20 @@ describe("idempotent turn finalize", () => {
 
     const events = session.readEvents();
     expect(events.filter((ev) => ev.kind === "_baton_turn_summary")).toHaveLength(1);
-    expect(runtime.isBusy).toBe(false);
+    expect(controller.isBusy).toBe(false);
   });
 
   test("late terminal from a previous turn cannot close the newer active turn", async () => {
     const adapter = new ScriptedAdapter();
-    const runtime = makeRuntime(adapter);
+    const controller = makeController(adapter);
 
-    const first = runtime.submit("scripted", [{ type: "text", text: "one" }]);
+    const first = controller.submit("scripted", [{ type: "text", text: "one" }]);
     await until(() => adapter.submits.length === 1);
     const turn1 = adapter.submits[0]!.turnId;
     adapter.idle(turn1, "end_turn");
     await first;
 
-    const second = runtime.submit("scripted", [{ type: "text", text: "two" }]);
+    const second = controller.submit("scripted", [{ type: "text", text: "two" }]);
     await until(() => adapter.submits.length === 2);
     const turn2 = adapter.submits[1]!.turnId;
 
@@ -140,14 +140,14 @@ describe("idempotent turn finalize", () => {
 describe("cancel", () => {
   test("harness-confirmed cancel leaves an interrupted notice and advances the queue", async () => {
     const adapter = new ScriptedAdapter();
-    const runtime = makeRuntime(adapter);
+    const controller = makeController(adapter);
     adapter.onCancel = () => adapter.idle(adapter.submits.at(-1)!.turnId, "cancelled");
 
-    const first = runtime.submit("scripted", [{ type: "text", text: "long job" }]);
-    const queued = runtime.submit("scripted", [{ type: "text", text: "follow-up" }]);
+    const first = controller.submit("scripted", [{ type: "text", text: "long job" }]);
+    const queued = controller.submit("scripted", [{ type: "text", text: "follow-up" }]);
     await until(() => adapter.submits.length === 1);
 
-    await runtime.control({ kind: "interrupt" });
+    await controller.control({ kind: "interrupt" });
     expect(await first).toBe("completed");
 
     // 排队的 follow-up 在打断后自动开跑；测试手动放行它的终态
@@ -172,11 +172,11 @@ describe("cancel", () => {
 
   test("cancel grace expiry synthesizes error + cancelled terminal and unblocks the queue", async () => {
     const adapter = new ScriptedAdapter();
-    const runtime = makeRuntime(adapter, 20); // harness 永不确认
-    const outcome = runtime.submit("scripted", [{ type: "text", text: "stuck" }]);
+    const controller = makeController(adapter, 20); // harness 永不确认
+    const outcome = controller.submit("scripted", [{ type: "text", text: "stuck" }]);
     await until(() => adapter.submits.length === 1);
 
-    await runtime.control({ kind: "interrupt" });
+    await controller.control({ kind: "interrupt" });
     expect(await outcome).toBe("completed");
 
     const events = session.readEvents();
@@ -190,7 +190,7 @@ describe("cancel", () => {
     expect((idles[0]!.payload as { stopReason?: string }).stopReason).toBe("cancelled");
     expect(events.filter((ev) => ev.kind === "_baton_notice")).toHaveLength(1);
     expect(adapter.cancels).toBe(1);
-    expect(runtime.isBusy).toBe(false);
+    expect(controller.isBusy).toBe(false);
   });
 });
 

@@ -16,7 +16,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { PermissionRequest, PromptBlock } from "../src/events/types.ts";
-import { BatonSessionRuntime, type InteractionHandlers } from "../src/session/runtime.ts";
+import { SessionController, type InteractionHandlers } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** turn 阻塞在一个审批 request 上，直到 respond 或（cancel 时）级联取消；cancel() 合成 idle(cancelled) */
@@ -88,18 +88,18 @@ async function until(cond: () => boolean): Promise<void> {
 
 describe("cancel cascades to pending requests", () => {
   test("Esc while a permission is pending resolves it cancelled, no dangling requires_action", async () => {
-    const runtime = new BatonSessionRuntime({
+    const controller = new SessionController({
       session,
       mentionBudgetChars: 4096,
       createAdapter: (_name, handlers) => new ApprovalHoldingAdapter(handlers),
     });
 
-    const turn = runtime.submit("codex", text("do it"));
+    const turn = controller.submit("codex", text("do it"));
     // 阻塞在审批：pending 落盘 → 会话派生 requires_action
     await until(() => session.loadState().pendingPermissions.size === 1);
     expect(session.loadState().runState).toBe("requires_action");
 
-    await runtime.control({ kind: "interrupt" });
+    await controller.control({ kind: "interrupt" });
     await Bun.sleep(5); // 让 adapter 的 await 续跑、发出 permission_resolved(cancelled)
     expect(await turn).toBe("completed");
 

@@ -96,7 +96,7 @@ export function createHarnessAdapter(
 /**
  * v2 target 模型的零功能迁移入口：现有 `/codex`、`/claude` 各映射到同名默认 target。
  * target identity 与 Harness identity 即使当前值相同也保持两个字段，后续增加第二个同类
- * target 时不再改动 BatonSession/runtime 主链路。
+ * target 时不再改动 BatonSession/controller 主链路。
  */
 export function defaultHarnessTarget(harness: HarnessName): HarnessTarget {
   return Object.freeze({ id: harness, harness });

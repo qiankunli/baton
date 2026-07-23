@@ -44,14 +44,14 @@ baton/
 │   │   └── codex/
 │   │       ├── jsonrpc.ts   # 行分隔 JSON-RPC peer（请求/通知/服务端请求三路分发）
 │   │       └── adapter.ts   # codex app-server 接入：事件翻译、审批、usage 差分（fast-submit 语义）
-│   ├── harnesses/
+│   ├── harness/
 │   │   ├── registry.ts      # 内置 harness 注册入口；新增 harness 不进入 session core
 │   │   └── target.ts        # HarnessTarget 与不可变 HarnessLaunchSnapshot；执行位置不与协议类型混用
 │   ├── context/
 │   │   └── mention.ts       # @ 引用急切解析：turn-summary → 紧凑摘要 → 注入 prompt（预算截断）
 │   ├── session/
 │   │   ├── open.ts          # BatonSession 打开的唯一入口：新建/继续/指定 + 会话锁 + crash recovery
-│   │   └── runtime.ts       # 全局 turn 队列、harness 恢复与同会话上下文同步
+│   │   └── controller.ts    # 全局 turn 队列、harness 恢复与同会话上下文同步
 │   ├── commands/
 │   │   └── registry.ts      # baton slash command 真相源：harness/model/session 生命周期
 │   ├── store/               # 会话存储
@@ -64,7 +64,7 @@ baton/
 │   └── tui/                 # UI 组件层来自 chat-tui（github.com/qiankunli/chat-tui，git 依赖）
 │       ├── main.tsx         # 入口：参数解析 + ChatShell 装配
 │       ├── session-picker.tsx # session picker：resume/fork 无 id 的前置会话选择屏（不经过 protocol）
-│       ├── protocol.ts      # ChatProtocol 实现：runtime/store → 视图投影，intents → runtime 操作
+│       ├── protocol.ts      # ChatProtocol 实现：controller/store → 视图投影，intents → controller 操作
 │       ├── theme.ts         # baton 配色：按 author 区分 agent 颜色（harness 语义不进 chat-tui）
 │       └── mentions.ts      # @ 候选源（BatonSession 匹配）
 └── tests/                   # bun test 单测
@@ -81,7 +81,7 @@ baton/
 
 - **BatonSession 与 HarnessSession 不是同一层对象**：前者是用户拥有、跨 harness、可持久恢复的逻辑会话；后者只是某个 harness 的私有执行状态。driven turn（用户 submit）在 BatonSession 内全局串行，切换 harness 不会分裂出多条并发逻辑历史；harness 自发的 observed turn（如后台任务唤醒）与队列正交，baton 只划界记账不调度，见 `docs/kernel.md` §3。
 - **事件流是统一历史的合并真相源，UI 是投影**：`session.jsonl` 记录可重放事件，TUI 状态由 reduce 重建——live 投影经 `SessionHandle.subscribe` 订阅事件流，与 resume 同一条 reduce 路径，不允许旁路投影通道（曾因 per-turn 回调这条第二通道静默丢掉 observed turn 的回复）；`meta.json` 保存定位与恢复元数据，不替代事件历史。HarnessSession 原生 resume 是加速路径，不是正确性的前提。
-- **用户输入的 owner 是 runtime，harness 执行的 owner 是 Adapter**：driven turn 出队即由 runtime 落 `user_message`/`running`（原始输入进正典历史，harness 冷启动不阻塞 Transcript，preparing 可取消）；Adapter 只报告执行过程与终态，steer 成功时补 `delivery:"steer"` 的用户消息。用户输入专项语义及其 Adapter 行为契约见 `docs/user-input-lifecycle.md`；完整交互面的总体结构见 `docs/harness-interaction-design.md`。
+- **用户输入的 owner 是 SessionController，harness 执行的 owner 是 Adapter**：driven turn 出队即由 controller 落 `user_message`/`running`（原始输入进正典历史，harness 冷启动不阻塞 Transcript，preparing 可取消）；Adapter 只报告执行过程与终态，steer 成功时补 `delivery:"steer"` 的用户消息。用户输入专项语义及其 Adapter 行为契约见 `docs/user-input-lifecycle.md`；完整交互面的总体结构见 `docs/harness-interaction-design.md`。
 - 各家 agent 的原生 session 文件（`~/.claude/projects/**`、`~/.codex/sessions/**`）**只读不写**，原因见 `docs/design.md`。
 - 内部事件模型对齐 ACP v2 词汇表；wire 协议用各家原生协议，不强求 ACP。
 - harness 中间过程按“最大公约数 + raw 保真”归一：Adapter 统一思考、工具、文件改动、命令输出、计划等展示与存储形状，粒度差异留在事件信封 `raw` 中；渲染层与存储层不出现 harness 分支。

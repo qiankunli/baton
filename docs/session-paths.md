@@ -49,11 +49,11 @@ _baton_context_import {
 
 ### Tab：纯呈现层
 
-tab 是 workspace runtime 中 `slots[]` 的视图，数据模型中不存在 "tab" 概念。TUI 关闭后 tab 布局丢失无妨，会话森林还在，`/tree` / `/sessions` 以树形呈现父子关系。
+tab 是 workspace controller 中 `slots[]` 的视图，数据模型中不存在 "tab" 概念。TUI 关闭后 tab 布局丢失无妨，会话森林还在，`/tree` / `/sessions` 以树形呈现父子关系。
 
 ## 2. 流程：两步走
 
-### 第一步：pi 对齐（单 runtime，不动存储，不做并发）
+### 第一步：pi 对齐（单 controller，不动存储，不做并发）
 
 借 pi 的核心交互——**merge 不是独立操作，是 path 切换的副作用**：
 
@@ -67,9 +67,9 @@ Path A ── turn ── turn ──(在水位处 fork / 或 /tree 选中已有
                                         挂到落脚 path（去向 1/2 由切换方向决定）
 ```
 
-- 单 active path：切换即停旧启新，同时只有一个 runtime 在跑；
+- 单 active path：切换即停旧启新，同时只有一个 controller 在跑；
 - 三种去向全覆盖：留在 B 不回头 = B 成主干；切回 A 时给 B 挂摘要 = 合入主线；切走不摘要 = 丢弃（path 留在树里，随时可回）；
-- diff 集中在：一个新事件类型 + `/tree` 树形 picker + 切换钩子，store / runtime / reduce 地基不动。
+- diff 集中在：一个新事件类型 + `/tree` 树形 picker + 切换钩子，store / controller / reduce 地基不动。
 
 ### 第二步：并发与写令牌（baton 的差异化，pi 没有的）
 
@@ -83,7 +83,7 @@ Path A（持写令牌）── Turn N running ─── Turn N done ── ...
                          写令牌 A → B，B 成为新主线
 ```
 
-- workspace runtime 持多 slot（tab 切换 = 换 focus），后台 path 完成 / 失败 / 待审批时前台提示；
+- workspace controller 持多 slot（tab 切换 = 换 focus），后台 path 完成 / 失败 / 待审批时前台提示；
 - fork 只从"最后一个完整 turn"的水位复制，不复制流式中途的半截 turn；
 - accept / elect 要求相关 path idle，运行中排队合入留给后续演进；
 - transcript 保真度档也放本步。
@@ -141,11 +141,11 @@ fork 后旧主线可能又跑了 turn、写了文件；checkout 到新 path 时 
 
 1. `/tree`：从 forkedFrom + 共享前缀渲染跨文件树视图，选中即打开对应 path，或在水位处 fork 新 path；
 2. `_baton_context_import` 事件（先只 summary 档）+ reducer 卡片展示 + harness catch-up 注入；
-3. path 切换钩子：离开时三选一（不摘要 / 默认摘要 / 自定义 focus），单 runtime，切换即停旧启新。
+3. path 切换钩子：离开时三选一（不摘要 / 默认摘要 / 自定义 focus），单 controller，切换即停旧启新。
 
 第二步（并发与写令牌）：
 
-4. workspace runtime 持 `slots[]`（先限 2-3 个），tab 切换 = 换 focus，后台 path 状态提示；
+4. workspace controller 持 `slots[]`（先限 2-3 个），tab 切换 = 换 focus，后台 path 状态提示；
 5. 写令牌：非持有者映射只读执行策略 + fork boundary 提示（继承历史仅作参考）；
 6. `accept` / `elect` / `leave` 显式动作；transcript 保真度档；
 7. 之后再考虑：运行中排队合入、重复增量收录、worktree 多写者。

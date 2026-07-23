@@ -2,9 +2,9 @@
 // event → append → broadcast → reduce → projection，不允许第二条投影通道）。
 //
 // 回归背景（PR #112）：普通流式事件曾同时走两条通知——session.append 的事件流广播
-// （投影订阅）+ runtime onAdapterEvent 末尾的 changed()（onStateChange），导致每个
+// （投影订阅）+ controller onAdapterEvent 末尾的 changed()（onChange），导致每个
 // streaming chunk 触发两次完整 view 重建。修复删掉了 onAdapterEvent 末尾的 changed()，
-// 但这条"哪类变更走哪条通知通道"的分工只靠 runtime.ts 里的一行注释守着——任何人
+// 但这条"哪类变更走哪条通知通道"的分工只靠 controller.ts 里的一行注释守着——任何人
 // 顺手加回 changed() 就会无声复发（双重建只是性能劣化，UI 不出错，肉眼看不出来）。
 // 本测试把它钉成契约：普通流式事件到达时，订阅方收到的通知恰好一次。
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -22,7 +22,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { AnyNewEvent } from "../src/events/types.ts";
-import { BatonSessionRuntime } from "../src/session/runtime.ts";
+import { SessionController } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 let root: string;
@@ -66,7 +66,7 @@ class StreamingAdapter implements HarnessAdapter {
     return { accepted: true };
   }
 
-  /** 模拟 harness 在 turn 运行中经同一 sink 上报一个事件（走 runtime.onAdapterEvent） */
+  /** 模拟 harness 在 turn 运行中经同一 sink 上报一个事件（走 controller.onAdapterEvent） */
   emit(ev: AnyNewEvent): void {
     this.sink?.(ev);
   }
@@ -78,7 +78,7 @@ class StreamingAdapter implements HarnessAdapter {
 // ---- 契约：普通流式事件 → 恰好一次视图通知 ----
 // 参数化覆盖 turn 运行中最高频的三类中间过程事件；对每一个事件断言"恰好 1"：
 // 0 = 事件到不了投影（丢更新，harness-initiated-turn.test.ts 钉住的那半边）；
-// 2 = append 广播之外又走了 runtime onStateChange（#112 的双重建回归，这半边归本文件）。
+// 2 = append 广播之外又走了 controller onChange（#112 的双重建回归，这半边归本文件）。
 
 describe("single-channel view notification per streaming event", () => {
   const cases: Array<{ name: string; event: (turnId: string) => AnyNewEvent }> = [
@@ -115,14 +115,14 @@ describe("single-channel view notification per streaming event", () => {
     test(`${c.name}: exactly one notification per event`, async () => {
       const adapter = new StreamingAdapter();
       let notifications = 0;
-      const runtime = new BatonSessionRuntime({
+      const controller = new SessionController({
         session,
         mentionBudgetChars: 4096,
         createAdapter: () => adapter,
-        // 镜像 BatonChatProtocol 的接线：事件流订阅（subscribeSession）与 runtime 的
-        // onStateChange 汇入同一个 changed()——每次调用重建一次完整 view。因此
+        // 镜像 BatonChatProtocol 的接线：事件流订阅（subscribeSession）与 controller 的
+        // onChange 汇入同一个 changed()——每次调用重建一次完整 view。因此
         // 两条通道的计数之和 == 一个事件引发的 view 重建次数。
-        onStateChange: () => {
+        onChange: () => {
           notifications += 1;
         },
       });
@@ -130,7 +130,7 @@ describe("single-channel view notification per streaming event", () => {
         notifications += 1;
       });
 
-      const outcome = runtime.submit("claude", [{ type: "text", text: "go" }]);
+      const outcome = controller.submit("claude", [{ type: "text", text: "go" }]);
       await adapter.admission;
 
       // 每发一个事件，通知恰好 +1（append 是同步广播，计数无需等待）

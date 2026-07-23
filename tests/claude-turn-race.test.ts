@@ -37,7 +37,7 @@ test("late stream-drain finalize from the previous turn must not close the next 
   const emitA = (ev: AnyNewEvent) => seams.emit(rt, ev, turnA);
   seams.finishTurn(rt, emitA, turnA, "end_turn");
 
-  // steer：runtime 在毫秒级内提交下一 turn（模拟 submit 的 admission 段）
+  // steer：controller 在毫秒级内提交下一 turn（模拟 submit 的 admission 段）
   const turnB: TurnState = { turnId: "t_B", finalized: false, cancelRequested: false };
   rt.activeTurn = turnB;
 

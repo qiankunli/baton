@@ -1,6 +1,6 @@
 // codex steer 的 wire 映射（design §4.3）：baton expectedTurnId → codex turn id、
 // 成功发 delivery:"steer" 的 user_message 并绑定原 turn、stale/finalized/wire 失败
-// 一律 rejected 且不发事件（降级由 runtime 决定）。
+// 一律 rejected 且不发事件（降级由 controller 决定）。
 import type { RequestHandler } from "../src/adapters/types.ts";
 import { expect, test } from "bun:test";
 

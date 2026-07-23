@@ -38,7 +38,7 @@ import {
   type TurnSummaryToolCall,
   type UsageUpdate,
 } from "../events/types.ts";
-import type { HarnessLaunchSnapshot } from "../harnesses/target.ts";
+import type { HarnessLaunchSnapshot } from "../harness/target.ts";
 import { reduceEvents, type SessionState } from "./reduce.ts";
 
 export interface HarnessSessionMeta {
@@ -269,7 +269,7 @@ export class SessionStore {
    * ID，remap 只会破坏与 raw 的对照），谱系由 meta.forkedFrom 表达。
    * harnessSessions 只保留 target identity、Harness 与 model / effort 偏好：child 不得
    * 继承原生 session 绑定或 launch snapshot（否则两个 BatonSession 会写进同一份 harness
-   * 历史）；child 首 turn 由 runtime 走 fresh native + 全量补课（syncedSeq 缺省=0）重建上下文。
+   * 历史）；child 首 turn 由 controller 走 fresh native + 全量补课（syncedSeq 缺省=0）重建上下文。
    * opts.cwd 支持跨 project fork：历史跟源走，project 归属跟 fork 发起位置走；
    * 缺省沿用源 cwd。
    */
@@ -386,7 +386,7 @@ export class SessionHandle {
    * "最后事件是 running"只有在没有活进程持有会话时才能断定为崩溃残留，
    * 否则往活会话里合成终态会污染它。不承担并发追加的完整保护。
    * 同进程重入直接通过，且不做引用计数——约定同一进程内一个 session 至多
-   * 一个活 handle（TUI 单前台会话；将来 workspace runtime 由 session slot
+   * 一个活 handle（TUI 单前台会话；将来 workspace controller 由 session slot
    * 唯一性保证），进程内并发归上层，锁只管跨进程。
    */
   acquireLock(): void {
