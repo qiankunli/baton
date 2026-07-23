@@ -753,6 +753,13 @@ export class BatonChatProtocol implements ChatProtocol {
       statusTargetId === activeTargetId || statusTargetId === this.harnessTargetId
         ? (this.controller.currentModel(statusTargetId) ?? "default")
         : (targetState?.contextUsage?.model ?? "default");
+    const statusEffort =
+      statusTargetId === activeTargetId || statusTargetId === this.harnessTargetId
+        ? this.controller.currentEffort(statusTargetId)
+        : this.session.meta.harnessSessions[statusTargetId]?.effort;
+    // default effort 的实际值由 harness/model 决定；拿不到权威值时省略，不把
+    // "default" 冒充成当前正在使用的 low/medium/high。
+    const modelAndEffort = statusEffort ? `${statusModel} · ${statusEffort}` : statusModel;
     const contextStatus = contextUsageStatusText(targetState?.contextUsage, statusModel);
     // 审批路由问 adapter 要（harness 自己报的生效值），不读 config——config 是意图，
     // 且投影层不得按 harness 分支（不变量 #3）。曾经这里硬编码 codexApprovalReviewer，
@@ -779,7 +786,7 @@ export class BatonChatProtocol implements ChatProtocol {
       ? splitStatus({
           id: `run:${activeTargetId}`,
           author: harnessAuthor(statusHarness),
-          label: `${statusModel} · ${runStatusLabel(v, activeTurnId)}`,
+          label: `${modelAndEffort} · ${runStatusLabel(v, activeTurnId)}`,
           startedAt: this.controller.activeStartedAt,
           hint: "Esc to interrupt",
         })
@@ -787,7 +794,7 @@ export class BatonChatProtocol implements ChatProtocol {
         ? splitStatus({
             id: `run:observed:${observedRun.turnId}`,
             author: harnessAuthor(statusHarness),
-            label: `${statusModel} · ${runStatusLabel(v, observedRun.turnId)} · background`,
+            label: `${modelAndEffort} · ${runStatusLabel(v, observedRun.turnId)} · background`,
             startedAt: observedRun.startedAt,
           })
         : splitStatus({
@@ -797,7 +804,7 @@ export class BatonChatProtocol implements ChatProtocol {
                 harnessDefinitionFor(this.harnessTargetId)?.sessionKey ??
                 this.harnessTargetId,
             ),
-            label: `${statusModel} · idle`,
+            label: `${modelAndEffort} · idle`,
           });
     const busy = activeTargetId !== undefined || observedRuns.length > 0;
     // plan 互补显示（design §5.9）：同一时刻只出现在一个地方——进行中归 pin（现在时），
