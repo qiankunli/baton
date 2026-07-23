@@ -228,7 +228,7 @@ export interface AvailableCommand {
   input?: { hint: string };
 }
 
-/** 完整快照：每次整体替换当前 harness command 列表，不做增量合并（对齐 ACP） */
+/** 完整快照：每次整体替换当前 HarnessTarget command 列表，不做增量合并（对齐 ACP） */
 export interface AvailableCommandsUpdate {
   commands: AvailableCommand[];
 }

@@ -616,7 +616,7 @@ export class CodexAdapter implements HarnessAdapter {
   private readonly hookTrustStore: HookTrustStore;
 
   constructor(private options: CodexAdapterOptions) {
-    this.hookTrustStore = options.hookTrustStore ?? new FileHookTrustStore();
+    this.hookTrustStore = options.hookTrustStore ?? new FileHookTrustStore("codex");
   }
 
   private launch(command: string[], opts: OpenOptions, sink: EventSink): ThreadRuntime {
@@ -697,7 +697,7 @@ export class CodexAdapter implements HarnessAdapter {
         const hooksResult = await rt.peer.request("hooks/list", {});
         const hooks = codexHooksRequiringTrust(hooksResult);
         const hooksNeedingUserTrust = hooks.filter(
-          (hook) => !this.hookTrustStore.isTrusted(this.harness, hook),
+          (hook) => !this.hookTrustStore.isTrusted(hook),
         );
         for (const warning of this.hookTrustStore.takeWarnings?.() ?? []) {
           this.emit(rt, {
@@ -730,7 +730,7 @@ export class CodexAdapter implements HarnessAdapter {
           }
           const trust = resolution.kind === "hook_trust" && resolution.outcome === "trusted";
           if (trust) {
-            this.hookTrustStore.trust(this.harness, hooksNeedingUserTrust);
+            this.hookTrustStore.trust(hooksNeedingUserTrust);
           }
           trustAll = trust;
         }

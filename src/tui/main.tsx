@@ -4,7 +4,7 @@
 // baton 侧只有 BatonChatProtocol（controller/store → 视图投影 + intents → controller 操作）。
 //   - 直接输入 → 发给当前 agent（默认 codex）
 //   - /codex、/claude 直接选择输入目标；/model、/effort 分别配置后续 turn
-//   - 切换 agent 时自动注入对方最新进展（buildCatchUpContext），无需手动搬运上下文
+//   - 切换 Target 时自动注入其它 Target 最新进展（buildTargetCatchUpContext），无需手动搬运上下文
 //   - @bs_xxx 引用其它 baton 会话；@ 不承担 harness 路由
 // 用法：baton [--root <batonRoot>] [--cwd <dir>] [-c|--continue] [-s|--session <id>]
 //       [--pick-session resume|fork]（bin.ts 内部 flag：先展示前置会话选择屏，选中才打开）

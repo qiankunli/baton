@@ -38,7 +38,6 @@ import {
   createHarnessAdapter,
   defaultHarnessTarget,
   harnessDefinitionFor,
-  harnessSessionKey,
   harnessShortName,
   type HarnessName,
 } from "../harness/registry.ts";
@@ -310,7 +309,7 @@ export class BatonChatProtocol implements ChatProtocol {
     const { prompt } = expandMentions(this.store, text, this.config.mentionBudgetChars);
     const blocks: PromptBlock[] = [{ type: "text", text: prompt }];
 
-    // busy 且当前 harness 支持时默认 steer（对齐原生"打字即纠偏"体验）；队列非空时
+    // busy 且当前 Target 支持时默认 steer（对齐原生"打字即纠偏"体验）；队列非空时
     // 例外——已有排队的 follow-up 意味着用户在按顺序编排，插队 steer 会打乱预期顺序。
     if (this.controller.queueLength === 0 && this.controller.canSteer(target)) {
       const steered = await this.controller.steer(target, blocks);
@@ -584,14 +583,13 @@ export class BatonChatProtocol implements ChatProtocol {
       modelPreferences: this.modelPreferences,
       effortPreferences: this.effortPreferences,
       // 交互回调由 controller 提供（resolver 注册表）：protocol 不再持有交互状态
-      createAdapter: (name, handlers) =>
-        createHarnessAdapter(name as HarnessName, {
+      createAdapter: (target, handlers) =>
+        createHarnessAdapter(target, {
           ...handlers,
           config: this.config,
           rootDir: this.store.rootDir,
         }),
       resolveTarget: (targetId) => defaultHarnessTarget(targetId as HarnessName),
-      harnessSessionKey: (name) => harnessSessionKey(name as HarnessName),
       onChange: () => this.changed(),
     });
   }

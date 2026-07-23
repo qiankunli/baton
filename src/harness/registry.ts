@@ -14,6 +14,8 @@ import type { HarnessTarget } from "./target.ts";
 export { HARNESSES, parseHarness, type HarnessName };
 
 export interface HarnessAdapterOptions {
+  /** Adapter 工厂的实例坐标；工厂负责把 Target 配置 lowering 成具体 Adapter 依赖。 */
+  target: HarnessTarget;
   interactionHandler: InteractionHandler;
   diagnostic?: DiagnosticSink;
   config: BatonConfig;
@@ -48,13 +50,13 @@ export const HARNESS_REGISTRY = [
     sessionKey: "codex",
     shortName: "codex",
     color: "#73daca", // 青
-    create: ({ interactionHandler, diagnostic, config, rootDir }) =>
+    create: ({ target, interactionHandler, diagnostic, config, rootDir }) =>
       new CodexAdapter({
         interactionHandler,
         diagnostic,
         command: config.codexCommand,
         approvalReviewer: config.codexApprovalReviewer,
-        hookTrustStore: new FileHookTrustStore(rootDir),
+        hookTrustStore: new FileHookTrustStore(target.id, rootDir),
       }),
   },
   {
@@ -85,12 +87,14 @@ export function harnessShortName(idOrSessionKey: string): string {
 }
 
 export function createHarnessAdapter(
-  harness: HarnessName,
-  options: HarnessAdapterOptions,
+  target: HarnessTarget,
+  options: Omit<HarnessAdapterOptions, "target">,
 ): HarnessAdapter {
-  const definition = HARNESS_REGISTRY.find((candidate) => candidate.id === harness);
-  if (!definition) throw new Error(`Harness not registered: ${harness}`);
-  return definition.create(options);
+  const definition = HARNESS_REGISTRY.find((candidate) => candidate.id === target.harness);
+  if (!definition) {
+    throw new Error(`HarnessTarget ${target.id} references an unregistered Harness: ${target.harness}`);
+  }
+  return definition.create({ ...options, target });
 }
 
 /**

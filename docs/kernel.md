@@ -14,7 +14,7 @@
 | **Event（信封）** | 最小 append-only 事实：稳定 `eventId` + 单一 `scope` + 必填 `source` + 归一 `payload` + 原始 wire `raw`；归属、来源与执行坐标正交 | 事件流是**感知的唯一真相源**；UI / 崩溃恢复 / resume 全是它的 reduce/投影，无旁路通道 |
 | **Turn** | 一段有始有终的 harness 活动（带 stopReason）| "谁发起"是属性（driven / observed），不是存在条件；**每个被 admit 的 turn 恰好收口一次** |
 | **Interaction** | Baton 持有的持久待决交互；`kind` 区分 permission / question / hook trust，`requester` 指明谁在等待 | identity 与 opened/resolved 生命周期由 Controller 统一签发和收口；Adapter 只提交 kind-specific draft 并等待结果 |
-| **HarnessTarget** | Baton 配置、调度与状态查询侧的一份具体 Harness 目标 | 实例坐标与协议类型分离：`Controller` processing / queue / slot、原生 session、同步水位和 Target-scoped 投影状态均按 `harnessTargetId` 隔离，不按 Harness 名称混用 |
+| **HarnessTarget** | Baton 配置、调度与状态查询侧的一份具体 Harness 目标 | 实例坐标与协议类型分离：Adapter 工厂接收完整 Target；`Controller` processing / queue / slot、原生 session、同步水位、偏好 / 授权和 Target-scoped 投影状态均按 `harnessTargetId` 隔离，不按 Harness 名称混用 |
 | **Adapter + Capability** | harness 方言的**唯一**居所：小核心 `HarnessAdapter` + 可选能力 descriptor | 差异表达为"能力有无"，type-guard 发现、契约测试钉住；**内核永不 `if harness===`** |
 | **Projection** | 纯函数：event reduce → 视图快照 | 只产展示形状；chat-tui 消费形状不消费语义；未变返回同引用（快照一致）|
 

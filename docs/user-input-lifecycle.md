@@ -8,7 +8,7 @@
 
 1. 输入不能静默丢失，baton 必须如实区分它是进入当前 turn、排队等待，还是被撤回。
 2. steer 与 follow-up 不是同一种投递。steer 在当前 turn 的安全边界生效；follow-up 在当前 turn 结束后开启新 turn。
-3. interrupt 作用于当前 harness turn，但不能顺带抹掉用户明确希望继续执行的后续输入。
+3. interrupt 作用于当前 HarnessTarget 的 turn，但不能顺带抹掉用户明确希望继续执行的后续输入。
 4. 是否可撤回应由输入生命周期决定，不能只凭 UI 看起来“harness 还没干活”猜测。
 
 为讨论方便，本文使用以下产品状态；它们描述语义，不预先冻结代码 enum：

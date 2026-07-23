@@ -15,7 +15,7 @@ import {
   type HarnessSessionRef,
   type SteerReceipt,
 } from "../adapters/types.ts";
-import { buildHarnessCatchUpContext } from "../context/mention.ts";
+import { buildTargetCatchUpContext } from "../context/mention.ts";
 import type { DiagnosticSink } from "../diagnostics.ts";
 import { diagnosticError } from "../diagnostics.ts";
 import { newId } from "../event/ids.ts";
@@ -184,14 +184,13 @@ export interface InteractionHandlers {
 export interface ControllerOptions {
   session: SessionHandle;
   mentionBudgetChars: number;
-  /** 新 session 未选过 model 时使用的 harness 级持久偏好。 */
+  /** 新 session 未选过 model 时使用的 HarnessTarget 级持久偏好。 */
   modelPreferences?: Readonly<Record<string, string>>;
-  /** 新 session 未选过 effort 时使用的 harness 级持久偏好。 */
+  /** 新 session 未选过 effort 时使用的 HarnessTarget 级持久偏好。 */
   effortPreferences?: Readonly<Record<string, string>>;
-  createAdapter(harness: string, handlers: InteractionHandlers): HarnessAdapter;
-  /** target 是 Baton 控制面概念；Adapter 工厂只接收 target.harness。 */
+  /** 工厂按 target.harness 选择 Adapter，并可使用 target.id lowering 实例级配置。 */
+  createAdapter(target: HarnessTarget, handlers: InteractionHandlers): HarnessAdapter;
   resolveTarget?(harnessTargetId: string): HarnessTarget;
-  harnessSessionKey?(harness: string): string;
   onChange?: () => void;
   /**
    * cancel 后等待 harness 确认终态的宽限期。到期仍无终态则合成 terminal error 并
@@ -505,9 +504,7 @@ export class Controller {
   currentModel(harnessTargetId: string): string | null {
     const slot = this.slots.get(harnessTargetId);
     if (!slot?.ref || !isModelConfigurable(slot.adapter)) {
-      const target = this.targetFor(harnessTargetId);
-      const sessionKey = this.options.harnessSessionKey?.(target.harness) ?? target.harness;
-      return this.preferredModel(target, sessionKey) ?? null;
+      return this.preferredModel(harnessTargetId) ?? null;
     }
     return slot.adapter.currentModel(slot.ref);
   }
@@ -544,9 +541,7 @@ export class Controller {
   currentEffort(harnessTargetId: string): string | null {
     const slot = this.slots.get(harnessTargetId);
     if (!slot?.ref || !isEffortConfigurable(slot.adapter)) {
-      const target = this.targetFor(harnessTargetId);
-      const sessionKey = this.options.harnessSessionKey?.(target.harness) ?? target.harness;
-      return this.preferredEffort(target, sessionKey) ?? null;
+      return this.preferredEffort(harnessTargetId) ?? null;
     }
     return slot.adapter.currentEffort(slot.ref);
   }
@@ -820,11 +815,10 @@ export class Controller {
 
       const session = this.options.session;
       const meta = session.meta.harnessSessions[targetKey];
-      const catchUp = buildHarnessCatchUpContext(session, {
-        harness: harnessKey,
-        harnessTargetId: targetKey,
+      const catchUp = buildTargetCatchUpContext(session, {
+        target: slot.target,
         sinceSeq: meta?.syncedSeq ?? 0,
-        includeHarnessTurns: slot.freshNative,
+        includeTargetTurns: slot.freshNative,
         budgetChars: this.options.mentionBudgetChars,
       });
       let blocks = turn.blocks;
@@ -1081,7 +1075,7 @@ export class Controller {
     let slot = this.slots.get(harnessTargetId);
     if (!slot) {
       const target = this.targetFor(harnessTargetId);
-      const adapter = this.options.createAdapter(target.harness, {
+      const adapter = this.options.createAdapter(target, {
         interactionHandler: (interaction, context) =>
           this.openHarnessInteraction(target.id, interaction, context),
         diagnostic: (entry) =>
@@ -1095,12 +1089,8 @@ export class Controller {
           const existing = this.options.session.meta.harnessSessions[target.id];
           const modelAdapter = isModelConfigurable(adapter) ? adapter : undefined;
           const effortAdapter = isEffortConfigurable(adapter) ? adapter : undefined;
-          const model = modelAdapter
-            ? this.preferredModel(target, adapter.harness)
-            : undefined;
-          const effort = effortAdapter
-            ? this.preferredEffort(target, adapter.harness)
-            : undefined;
+          const model = modelAdapter ? this.preferredModel(target.id) : undefined;
+          const effort = effortAdapter ? this.preferredEffort(target.id) : undefined;
           const launchSnapshot = createHarnessLaunchSnapshot({
             target,
             harnessSessionKey: adapter.harness,
@@ -1152,21 +1142,17 @@ export class Controller {
     return slot;
   }
 
-  private preferredModel(target: HarnessTarget, sessionKey: string): string | undefined {
+  private preferredModel(harnessTargetId: string): string | undefined {
     return (
-      this.options.session.meta.harnessSessions[target.id]?.model ??
-      this.options.modelPreferences?.[target.id] ??
-      this.options.modelPreferences?.[target.harness] ??
-      this.options.modelPreferences?.[sessionKey]
+      this.options.session.meta.harnessSessions[harnessTargetId]?.model ??
+      this.options.modelPreferences?.[harnessTargetId]
     );
   }
 
-  private preferredEffort(target: HarnessTarget, sessionKey: string): string | undefined {
+  private preferredEffort(harnessTargetId: string): string | undefined {
     return (
-      this.options.session.meta.harnessSessions[target.id]?.effort ??
-      this.options.effortPreferences?.[target.id] ??
-      this.options.effortPreferences?.[target.harness] ??
-      this.options.effortPreferences?.[sessionKey]
+      this.options.session.meta.harnessSessions[harnessTargetId]?.effort ??
+      this.options.effortPreferences?.[harnessTargetId]
     );
   }
 

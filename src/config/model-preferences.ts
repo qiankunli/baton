@@ -1,4 +1,4 @@
-// /model 是用户级运行偏好，不改写手工维护的 config.yaml。按 harness 记住最近一次
+// /model 是用户级运行偏好，不改写手工维护的 config.yaml。按 HarnessTarget 记住最近一次
 // 显式选择，让新 BatonSession / 新进程沿用；session 自己已有的 model 仍优先。
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -21,9 +21,9 @@ export function loadModelPreferences(rootDir?: string): Record<string, string> {
     const persisted = JSON.parse(readFileSync(path, "utf8")) as PersistedModelPreferences;
     if (!persisted.models || typeof persisted.models !== "object") return {};
     return Object.fromEntries(
-      Object.entries(persisted.models).flatMap(([harness, model]) =>
-        harness.trim() && typeof model === "string" && model.trim() && model !== "default"
-          ? [[harness, model] as const]
+      Object.entries(persisted.models).flatMap(([harnessTargetId, model]) =>
+        harnessTargetId.trim() && typeof model === "string" && model.trim() && model !== "default"
+          ? [[harnessTargetId, model] as const]
           : [],
       ),
     );
@@ -32,11 +32,11 @@ export function loadModelPreferences(rootDir?: string): Record<string, string> {
   }
 }
 
-/** `default` 表示重新跟随 harness，因此删除该 harness 的持久偏好。 */
-export function saveModelPreference(rootDir: string, harness: string, model: string): void {
+/** `default` 表示重新跟随 Harness，因此删除该 Target 的持久偏好。 */
+export function saveModelPreference(rootDir: string, harnessTargetId: string, model: string): void {
   const models = loadModelPreferences(rootDir);
-  if (!model || model === "default") delete models[harness];
-  else models[harness] = model;
+  if (!model || model === "default") delete models[harnessTargetId];
+  else models[harnessTargetId] = model;
 
   const path = modelPreferencesPath(rootDir);
   const temporary = `${path}.${process.pid}.tmp`;

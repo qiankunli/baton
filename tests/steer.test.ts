@@ -215,7 +215,7 @@ describe("Controller.steer", () => {
     const controller = new Controller({
       session,
       mentionBudgetChars: 4096,
-      createAdapter: (harness) => adapters[harness] as HarnessAdapter,
+      createAdapter: (target) => adapters[target.harness] as HarnessAdapter,
     });
 
     controller.submit("codex", text("one"));

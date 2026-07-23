@@ -24,18 +24,18 @@ describe("effort preferences", () => {
     expect(effortPreferencesPath(root)).toBe(join(root, "state", "effort.json"));
   });
 
-  test("remembers the latest explicit effort per harness", () => {
-    saveEffortPreference(root, "claude", "high");
-    saveEffortPreference(root, "codex", "xhigh");
+  test("remembers the latest explicit effort per HarnessTarget", () => {
+    saveEffortPreference(root, "codex-a", "high");
+    saveEffortPreference(root, "codex-b", "xhigh");
 
-    expect(loadEffortPreferences(root)).toEqual({ claude: "high", codex: "xhigh" });
+    expect(loadEffortPreferences(root)).toEqual({ "codex-a": "high", "codex-b": "xhigh" });
   });
 
-  test("selecting default clears only that harness preference", () => {
-    saveEffortPreference(root, "claude", "high");
-    saveEffortPreference(root, "codex", "xhigh");
-    saveEffortPreference(root, "claude", "default");
+  test("selecting default clears only that Target preference", () => {
+    saveEffortPreference(root, "codex-a", "high");
+    saveEffortPreference(root, "codex-b", "xhigh");
+    saveEffortPreference(root, "codex-a", "default");
 
-    expect(loadEffortPreferences(root)).toEqual({ codex: "xhigh" });
+    expect(loadEffortPreferences(root)).toEqual({ "codex-b": "xhigh" });
   });
 });

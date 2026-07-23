@@ -40,16 +40,18 @@ describe("persisted hook trust", () => {
   test("stores exact definitions under state/hook.json and asks again after hash changes", () => {
     const root = mkdtempSync(join(tmpdir(), "baton-hook-trust-"));
     roots.push(root);
-    const store = new FileHookTrustStore(root);
+    const store = new FileHookTrustStore("codex-a", root);
+    const sibling = new FileHookTrustStore("codex-b", root);
     const hook = candidate();
 
-    expect(store.isTrusted("codex", hook)).toBe(false);
-    store.trust("codex", [hook]);
-    expect(store.isTrusted("codex", hook)).toBe(true);
-    expect(store.isTrusted("codex", candidate({ currentHash: "sha256:two" }))).toBe(false);
+    expect(store.isTrusted(hook)).toBe(false);
+    store.trust([hook]);
+    expect(store.isTrusted(hook)).toBe(true);
+    expect(sibling.isTrusted(hook)).toBe(false);
+    expect(store.isTrusted(candidate({ currentHash: "sha256:two" }))).toBe(false);
     expect(hookStatePath(root)).toBe(join(root, "state", "hook.json"));
     expect(JSON.parse(readFileSync(hookStatePath(root), "utf8"))).toEqual({
-      trust: { harnesses: { codex: { [hook.key]: "sha256:one" } } },
+      trust: { targets: { "codex-a": { [hook.key]: "sha256:one" } } },
     });
   });
 
@@ -61,7 +63,7 @@ describe("persisted hook trust", () => {
     expect(hookTrustFingerprint(one)).not.toBe(hookTrustFingerprint(changed));
   });
 
-  test("preserves unrelated hook settings and trust fields when adding a harness", () => {
+  test("preserves unrelated hook settings and trust fields when adding a Target", () => {
     const root = mkdtempSync(join(tmpdir(), "baton-hook-state-preserve-"));
     roots.push(root);
     const path = hookStatePath(root);
@@ -70,19 +72,19 @@ describe("persisted hook trust", () => {
       path,
       `${JSON.stringify({
         display: { showStatus: true },
-        trust: { policy: "exact", harnesses: { claude: { existing: "sha256:claude" } } },
+        trust: { policy: "exact", targets: { "codex-b": { existing: "sha256:other" } } },
       })}\n`,
     );
 
-    new FileHookTrustStore(root).trust("codex", [candidate()]);
+    new FileHookTrustStore("codex-a", root).trust([candidate()]);
 
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
       display: { showStatus: true },
       trust: {
         policy: "exact",
-        harnesses: {
-          claude: { existing: "sha256:claude" },
-          codex: { [candidate().key]: "sha256:one" },
+        targets: {
+          "codex-b": { existing: "sha256:other" },
+          "codex-a": { [candidate().key]: "sha256:one" },
         },
       },
     });
@@ -94,11 +96,11 @@ describe("persisted hook trust", () => {
     const path = hookStatePath(root);
     mkdirSync(join(root, "state"), { recursive: true });
     writeFileSync(path, "{not json\n");
-    const store = new FileHookTrustStore(root);
+    const store = new FileHookTrustStore("codex", root);
 
-    expect(store.isTrusted("codex", candidate())).toBe(false);
+    expect(store.isTrusted(candidate())).toBe(false);
     expect(store.takeWarnings()).toEqual([expect.stringContaining(`could not read ${path}`)]);
-    expect(() => store.trust("codex", [candidate()])).toThrow(/Cannot update hook trust/);
+    expect(() => store.trust([candidate()])).toThrow(/Cannot update hook trust/);
     expect(readFileSync(path, "utf8")).toBe("{not json\n");
   });
 
@@ -109,11 +111,11 @@ describe("persisted hook trust", () => {
     mkdirSync(join(root, "state"), { recursive: true });
     writeFileSync(`${path}.lock`, "999999999:stale");
 
-    new FileHookTrustStore(root).trust("codex", [candidate()]);
+    new FileHookTrustStore("codex", root).trust([candidate()]);
 
     expect(existsSync(`${path}.lock`)).toBe(false);
     expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
-      trust: { harnesses: { codex: { [candidate().key]: "sha256:one" } } },
+      trust: { targets: { codex: { [candidate().key]: "sha256:one" } } },
     });
   });
 
@@ -138,23 +140,23 @@ describe("persisted hook trust", () => {
     reader.releaseLock();
     expect(new TextDecoder().decode(ready.value)).toContain("locked");
 
-    new FileHookTrustStore(root).trust("codex", [candidate()]);
+    new FileHookTrustStore("codex", root).trust([candidate()]);
 
     expect(await holder.exited).toBe(0);
     expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
       display: { compact: true },
-      trust: { harnesses: { codex: { [candidate().key]: "sha256:one" } } },
+      trust: { targets: { codex: { [candidate().key]: "sha256:one" } } },
     });
   });
 });
 
 class MemoryHookTrustStore implements HookTrustStore {
   private trusted = new Map<string, string>();
-  isTrusted(harness: string, hook: HookTrustCandidate): boolean {
-    return this.trusted.get(`${harness}:${hook.key}`) === hookTrustFingerprint(hook);
+  isTrusted(hook: HookTrustCandidate): boolean {
+    return this.trusted.get(hook.key) === hookTrustFingerprint(hook);
   }
-  trust(harness: string, hooks: HookTrustCandidate[]): void {
-    for (const hook of hooks) this.trusted.set(`${harness}:${hook.key}`, hookTrustFingerprint(hook));
+  trust(hooks: HookTrustCandidate[]): void {
+    for (const hook of hooks) this.trusted.set(hook.key, hookTrustFingerprint(hook));
   }
 }
 

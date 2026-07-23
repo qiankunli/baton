@@ -1,5 +1,5 @@
-// Codex app-server 只提供 hooks/list，没有持久 trust 写接口。Baton 因而按 harness 保存
-// 用户已审过的 hook 精确定义指纹；后续定义完全相同时自动启用，任一字段变化就重新询问。
+// Codex app-server 只提供 hooks/list，没有持久 trust 写接口。Baton 因而按 HarnessTarget
+// 保存用户已审过的 hook 精确定义指纹；定义或执行目标变化时都重新询问。
 
 import { createHash } from "node:crypto";
 import {
@@ -22,8 +22,8 @@ interface PersistedHookState extends Record<string, unknown> {
 }
 
 export interface HookTrustStore {
-  isTrusted(harness: string, hook: HookTrustCandidate): boolean;
-  trust(harness: string, hooks: HookTrustCandidate[]): void;
+  isTrusted(hook: HookTrustCandidate): boolean;
+  trust(hooks: HookTrustCandidate[]): void;
   /** 读取失败时 fail closed，同时把可见诊断交给 adapter 投影。 */
   takeWarnings?(): string[];
 }
@@ -69,8 +69,8 @@ function loadHookState(rootDir?: string): LoadedHookState {
     if (parsed.trust !== undefined && !isRecord(parsed.trust)) {
       return { state: parsed, error: `${path} field trust must be a JSON object` };
     }
-    if (isRecord(parsed.trust) && parsed.trust.harnesses !== undefined && !isRecord(parsed.trust.harnesses)) {
-      return { state: parsed, error: `${path} field trust.harnesses must be a JSON object` };
+    if (isRecord(parsed.trust) && parsed.trust.targets !== undefined && !isRecord(parsed.trust.targets)) {
+      return { state: parsed, error: `${path} field trust.targets must be a JSON object` };
     }
     return { state: parsed };
   } catch (error) {
@@ -82,11 +82,11 @@ function loadHookState(rootDir?: string): LoadedHookState {
 
 function trustedHooks(state: PersistedHookState): Record<string, Record<string, string>> {
   const trust = isRecord(state.trust) ? state.trust : {};
-  const savedHarnesses = isRecord(trust.harnesses) ? trust.harnesses : {};
-  const harnesses: Record<string, Record<string, string>> = {};
-  for (const [harness, rawHooks] of Object.entries(savedHarnesses)) {
-    if (!harness.trim() || !isRecord(rawHooks)) continue;
-    harnesses[harness] = Object.fromEntries(
+  const savedTargets = isRecord(trust.targets) ? trust.targets : {};
+  const targets: Record<string, Record<string, string>> = {};
+  for (const [harnessTargetId, rawHooks] of Object.entries(savedTargets)) {
+    if (!harnessTargetId.trim() || !isRecord(rawHooks)) continue;
+    targets[harnessTargetId] = Object.fromEntries(
       Object.entries(rawHooks).flatMap(([key, fingerprint]) =>
         key.trim() && typeof fingerprint === "string" && fingerprint.trim()
           ? [[key, fingerprint] as const]
@@ -94,7 +94,7 @@ function trustedHooks(state: PersistedHookState): Record<string, Record<string, 
       ),
     );
   }
-  return harnesses;
+  return targets;
 }
 
 const LOCK_WAIT_ARRAY = new Int32Array(new SharedArrayBuffer(4));
@@ -170,15 +170,18 @@ function withHookStateLock<T>(path: string, update: () => T): T {
 export class FileHookTrustStore implements HookTrustStore {
   private readonly warnings = new Set<string>();
 
-  constructor(private readonly rootDir?: string) {}
+  constructor(
+    private readonly harnessTargetId: string,
+    private readonly rootDir?: string,
+  ) {}
 
-  isTrusted(harness: string, hook: HookTrustCandidate): boolean {
+  isTrusted(hook: HookTrustCandidate): boolean {
     const loaded = loadHookState(this.rootDir);
     if (loaded.error) {
       this.warnings.add(loaded.error);
       return false;
     }
-    return trustedHooks(loaded.state)[harness]?.[hook.key] === hookTrustFingerprint(hook);
+    return trustedHooks(loaded.state)[this.harnessTargetId]?.[hook.key] === hookTrustFingerprint(hook);
   }
 
   takeWarnings(): string[] {
@@ -187,21 +190,22 @@ export class FileHookTrustStore implements HookTrustStore {
     return warnings;
   }
 
-  trust(harness: string, hooks: HookTrustCandidate[]): void {
+  trust(hooks: HookTrustCandidate[]): void {
     const path = hookStatePath(this.rootDir);
     withHookStateLock(path, () => {
       const loaded = loadHookState(this.rootDir);
       if (loaded.error) throw new Error(`Cannot update hook trust: ${loaded.error}`);
       const state = loaded.state;
       const trust = isRecord(state.trust) ? state.trust : {};
-      const harnesses = isRecord(trust.harnesses) ? trust.harnesses : {};
-      const existing = isRecord(harnesses[harness]) ? harnesses[harness] : {};
+      const targets = isRecord(trust.targets) ? trust.targets : {};
+      const savedTarget = targets[this.harnessTargetId];
+      const existing = isRecord(savedTarget) ? savedTarget : {};
       const trusted = { ...existing };
       for (const hook of hooks) trusted[hook.key] = hookTrustFingerprint(hook);
 
       const next: PersistedHookState = {
         ...state,
-        trust: { ...trust, harnesses: { ...harnesses, [harness]: trusted } },
+        trust: { ...trust, targets: { ...targets, [this.harnessTargetId]: trusted } },
       };
       const temporary = `${path}.${process.pid}.tmp`;
       try {
