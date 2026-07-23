@@ -50,7 +50,6 @@ class ScriptedAdapter implements HarnessAdapter {
   idle(turnId: string, stopReason: StopReason): void {
     this.emit({
       kind: "state_update",
-      harness: this.harness,
       turnId,
       payload: { state: "idle", stopReason },
     });

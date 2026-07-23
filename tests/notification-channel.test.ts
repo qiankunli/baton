@@ -145,7 +145,6 @@ describe("single-channel view notification per streaming event", () => {
       // 收口 turn，别让 pending 的 submit promise 泄漏到测试外
       adapter.emit({
         kind: "state_update",
-        harness: "claude-code",
         turnId: adapter.turnId!,
         payload: { state: "idle", stopReason: "end_turn" },
       });

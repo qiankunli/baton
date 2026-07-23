@@ -49,12 +49,12 @@ describe("projection invariant: every appended event reaches the view", () => {
     {
       name: "while a driven turn of the same harness is running",
       before: [
-        { kind: "state_update", harness: "claude-code", turnId: "t_driven", payload: { state: "running" } },
+        { kind: "state_update", turnId: "t_driven", payload: { state: "running" } },
       ],
     },
     {
       name: "while a driven turn of another harness is running",
-      before: [{ kind: "state_update", harness: "codex", turnId: "t_other", payload: { state: "running" } }],
+      before: [{ kind: "state_update", turnId: "t_other", payload: { state: "running" } }],
     },
   ];
 
@@ -169,14 +169,12 @@ class WakingAdapter implements HarnessAdapter {
   async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.sink?.({
       kind: "user_message",
-      harness: this.harness,
       turnId: input.turnId,
       payload: { messageId: input.messageId, content: input.blocks },
     });
     void (async () => {
       this.sink?.({
         kind: "state_update",
-        harness: this.harness,
         turnId: input.turnId,
         payload: { state: "idle", stopReason: "end_turn" },
       });
@@ -186,19 +184,16 @@ class WakingAdapter implements HarnessAdapter {
       await Bun.sleep(5);
       this.sink?.({
         kind: "state_update",
-        harness: this.harness,
         turnId: "t_wake",
         payload: { state: "running" },
       });
       this.sink?.({
         kind: "agent_message",
-        harness: this.harness,
         turnId: "t_wake",
         payload: { messageId: "m_wake", content: [{ type: "text", text: "task finished" }] },
       });
       this.sink?.({
         kind: "state_update",
-        harness: this.harness,
         turnId: "t_wake",
         payload: { state: "idle", stopReason: "end_turn" },
       });

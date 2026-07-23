@@ -644,7 +644,6 @@ export class ClaudeAdapter implements HarnessAdapter {
       } else {
         emit({
           kind: "_baton_error_update",
-          harness: this.harness,
           payload: { message: error instanceof Error ? error.message : String(error) },
         });
         this.finishTurn(rt, emit, current, "error");
@@ -664,7 +663,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     const observed: ClaudeTurn = { turnId: newId("t"), finalized: false, cancelRequested: false };
     this.emit(
       rt,
-      { kind: "state_update", harness: this.harness, payload: { state: "running" } },
+      { kind: "state_update", payload: { state: "running" } },
       observed,
     );
     return observed;
@@ -679,7 +678,6 @@ export class ClaudeAdapter implements HarnessAdapter {
     turn.finalized = true;
     emit({
       kind: "state_update",
-      harness: this.harness,
       payload: { state: "idle", stopReason },
       ...(raw !== undefined ? { raw } : {}),
     });
@@ -690,7 +688,6 @@ export class ClaudeAdapter implements HarnessAdapter {
   private emit(rt: ClaudeRuntime, ev: Parameters<EventSink>[0], turn?: ClaudeTurn): void {
     rt.sink({
       ...ev,
-      harness: this.harness,
       harnessSessionId: rt.claudeSessionId,
       turnId: (turn ?? rt.activeTurn)?.turnId,
     });
@@ -810,7 +807,6 @@ export class ClaudeAdapter implements HarnessAdapter {
           // 归一成"无阶段"（回落默认 thinking），未来未知 status 同样安全降级。
           emit({
             kind: "_baton_run_status",
-            harness: this.harness,
             payload:
               msg.status === "compacting"
                 ? { phase: "compacting", title: "Compacting context…" }
@@ -830,14 +826,12 @@ export class ClaudeAdapter implements HarnessAdapter {
           if (event.delta.type === "text_delta" && event.delta.text) {
             emit({
               kind: "agent_message_chunk",
-              harness: this.harness,
               payload: { messageId, content: { type: "text", text: event.delta.text } },
               raw: msg,
             });
           } else if (event.delta.type === "thinking_delta" && event.delta.thinking) {
             emit({
               kind: "agent_thought_chunk",
-              harness: this.harness,
               payload: { messageId: `${messageId}_thought`, content: { type: "text", text: event.delta.thinking } },
               raw: msg,
             });
@@ -857,7 +851,6 @@ export class ClaudeAdapter implements HarnessAdapter {
           turn.streamMessageId = undefined;
           emit({
             kind: "agent_message",
-            harness: this.harness,
             payload: { messageId, content: [{ type: "text", text: texts }] },
             raw: msg,
           });
@@ -871,7 +864,6 @@ export class ClaudeAdapter implements HarnessAdapter {
             rt.suppressedToolIds.add(String(b.id));
             emit({
               kind: "plan_update",
-              harness: this.harness,
               // planId 用 per-turn（对齐 codex 的 pl_<turnId>）：卡片锚定在当前 turn 的位置，本 turn 内
               // 的 todo 更新原地 mark。per-session 会一直改写 session 首次出现的旧卡，进度在 scrollback 里不可见
               payload: { planId: `pl_${turn.turnId}`, entries: todoWritePlan(input) },
@@ -890,7 +882,6 @@ export class ClaudeAdapter implements HarnessAdapter {
           const diff = claudeToolDiff(toolName, input);
           emit({
             kind: "tool_call_update",
-            harness: this.harness,
             payload: {
               toolCallId: String(b.id),
               title: claudeToolTitle(toolName, input),
@@ -924,7 +915,6 @@ export class ClaudeAdapter implements HarnessAdapter {
               applyTaskOp(rt.tasks, taskOp, text, String(b.tool_use_id));
               emit({
                 kind: "plan_update",
-                harness: this.harness,
                 // planId per-turn，与 TodoWrite 一致：卡片锚定当前 turn，本 turn 内原地 mark
                 payload: { planId: `pl_${turn.turnId}`, entries: taskPlanEntries(rt.tasks) },
                 raw: msg,
@@ -935,7 +925,6 @@ export class ClaudeAdapter implements HarnessAdapter {
           if (rt.suppressedToolIds.has(String(b.tool_use_id))) continue;
           emit({
             kind: "tool_call_update",
-            harness: this.harness,
             payload: {
               toolCallId: String(b.tool_use_id),
               status: b.is_error ? "failed" : "completed",
@@ -951,7 +940,6 @@ export class ClaudeAdapter implements HarnessAdapter {
           for (const output of claudeToolResultBlocks(b.content)) {
             emit({
               kind: "tool_call_content_chunk",
-              harness: this.harness,
               payload: { toolCallId: String(b.tool_use_id), content: output },
               raw: msg,
             });
@@ -964,7 +952,6 @@ export class ClaudeAdapter implements HarnessAdapter {
         if (usage) {
           emit({
             kind: "usage_update",
-            harness: this.harness,
             payload: {
               inputTokens: usage.input_tokens ?? 0,
               outputTokens: usage.output_tokens ?? 0,
@@ -978,7 +965,6 @@ export class ClaudeAdapter implements HarnessAdapter {
         if (context) {
           emit({
             kind: "context_usage_update",
-            harness: this.harness,
             payload: { model: rt.model ?? "default", ...context },
             raw: msg,
           });

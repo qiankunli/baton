@@ -702,7 +702,6 @@ export class CodexAdapter implements HarnessAdapter {
         for (const warning of this.hookTrustStore.takeWarnings?.() ?? []) {
           this.emit(rt, {
             kind: "_baton_notice",
-            harness: this.harness,
             payload: { level: "warning", title: "Could not load saved hook trust", detail: warning },
           });
         }
@@ -710,7 +709,6 @@ export class CodexAdapter implements HarnessAdapter {
         if (trustAll) {
           this.emit(rt, {
             kind: "_baton_notice",
-            harness: this.harness,
             payload: {
               level: "info",
               title: `Enabled ${hooks.length} previously trusted Codex hook${hooks.length === 1 ? "" : "s"}`,
@@ -912,7 +910,6 @@ export class CodexAdapter implements HarnessAdapter {
       rt,
       {
         kind: "user_message",
-        harness: this.harness,
         payload: { messageId: input.messageId, content: input.blocks, delivery: "steer" },
       },
       undefined,
@@ -961,7 +958,7 @@ export class CodexAdapter implements HarnessAdapter {
     // 空回合判定的记账点：任何可见产出都经过这里，集中标记比在各通知分支手工标记可靠
     const owner = turn ?? rt.activeTurn;
     if (owner && !owner.finalized && OUTPUT_EVENT_KINDS.has(ev.kind)) owner.sawOutput = true;
-    rt.sink?.({ ...ev, harness: this.harness, harnessSessionId: rt.threadId, turnId: turn?.turnId ?? rt.turnId, raw });
+    rt.sink?.({ ...ev, harnessSessionId: rt.threadId, turnId: turn?.turnId ?? rt.turnId, raw });
   }
 
   /**
@@ -980,7 +977,6 @@ export class CodexAdapter implements HarnessAdapter {
         rt,
         {
           kind: "_baton_notice",
-          harness: this.harness,
           payload: {
             level: "warning",
             title: "Codex returned an empty turn (no output)",
@@ -997,7 +993,6 @@ export class CodexAdapter implements HarnessAdapter {
       rt,
       {
         kind: "state_update",
-        harness: this.harness,
         payload: { state: "idle", stopReason: stopReasonOf(turnStatus) },
       },
       undefined,
@@ -1033,7 +1028,6 @@ export class CodexAdapter implements HarnessAdapter {
       rt,
       {
         kind: "_baton_notice",
-        harness: this.harness,
         payload: {
           level: "warning",
           title: "Unrecognized approval choices from codex",
@@ -1051,7 +1045,7 @@ export class CodexAdapter implements HarnessAdapter {
   /** 错误路径终态：先留结构化 error，再合成 idle（design §4.9） */
   private failTurn(rt: ThreadRuntime, turn: CodexTurn | undefined, message: string): void {
     if (!turn || turn.finalized) return;
-    this.emit(rt, { kind: "_baton_error_update", harness: this.harness, payload: { message } }, undefined, turn);
+    this.emit(rt, { kind: "_baton_error_update", payload: { message } }, undefined, turn);
     this.finishTurn(rt, turn, "failed");
   }
 
@@ -1071,7 +1065,6 @@ export class CodexAdapter implements HarnessAdapter {
           rt,
           {
             kind: "agent_message_chunk",
-            harness: this.harness,
             payload: { messageId: String(p.itemId), content: { type: "text", text: String(p.delta) } },
           },
           params,
@@ -1087,7 +1080,6 @@ export class CodexAdapter implements HarnessAdapter {
           rt,
           {
             kind: "agent_thought_chunk",
-            harness: this.harness,
             payload: { messageId, content: { type: "text", text: String(p.delta) } },
           },
           params,
@@ -1105,7 +1097,6 @@ export class CodexAdapter implements HarnessAdapter {
               rt,
               {
                 kind: "agent_message",
-                harness: this.harness,
                 payload: { messageId: String(item.id), content: [{ type: "text", text: String(item.text ?? "") }] },
               },
               params,
@@ -1122,7 +1113,6 @@ export class CodexAdapter implements HarnessAdapter {
                 rt,
                 {
                   kind: "agent_thought",
-                  harness: this.harness,
                   payload: {
                     messageId: `${String(item.id)}:summary:${index}`,
                     content: [{ type: "text", text: full }],
@@ -1140,7 +1130,6 @@ export class CodexAdapter implements HarnessAdapter {
             rt,
             {
               kind: "_baton_run_status",
-              harness: this.harness,
               payload:
                 method === "item/started"
                   ? { phase: "compacting", title: "Compacting context…" }
@@ -1161,7 +1150,6 @@ export class CodexAdapter implements HarnessAdapter {
               rt,
               {
                 kind: "_baton_notice",
-                harness: this.harness,
                 payload: {
                   level: "warning",
                   title: "Approval bypassed by harness-side policy",
@@ -1175,7 +1163,6 @@ export class CodexAdapter implements HarnessAdapter {
             rt,
             {
               kind: "tool_call_update",
-              harness: this.harness,
               payload: {
                 toolCallId: String(item.id),
                 title: toolTitleOf(item),
@@ -1215,7 +1202,6 @@ export class CodexAdapter implements HarnessAdapter {
             rt,
             {
               kind: "approval_review_update",
-              harness: this.harness,
               payload: {
                 reviewId: newId("arv"),
                 ...(targetItemId ? { toolCallId: targetItemId } : {}),
@@ -1235,7 +1221,6 @@ export class CodexAdapter implements HarnessAdapter {
           rt,
           {
             kind: "_baton_run_status",
-            harness: this.harness,
             payload: method.endsWith("/started")
               ? { phase: "reviewing_approval", title: "Reviewing approval…" }
               : { phase: null },
@@ -1250,7 +1235,6 @@ export class CodexAdapter implements HarnessAdapter {
           rt,
           {
             kind: "tool_call_content_chunk",
-            harness: this.harness,
             payload: { toolCallId: String(p.itemId), content: { type: "text", text: String(p.delta) } },
           },
           params,
@@ -1267,7 +1251,7 @@ export class CodexAdapter implements HarnessAdapter {
         });
         this.emit(
           rt,
-          { kind: "plan_update", harness: this.harness, payload: { planId: `pl_${rt.codexTurnId ?? "turn"}`, entries } },
+          { kind: "plan_update", payload: { planId: `pl_${rt.codexTurnId ?? "turn"}`, entries } },
           params,
         );
         break;
@@ -1291,7 +1275,7 @@ export class CodexAdapter implements HarnessAdapter {
           reasoningTokens: Math.max(0, cur.reasoningOutputTokens - prev.reasoningOutputTokens),
         };
         if (delta.inputTokens || delta.outputTokens || delta.cacheReadTokens || delta.reasoningTokens) {
-          this.emit(rt, { kind: "usage_update", harness: this.harness, payload: delta }, params);
+          this.emit(rt, { kind: "usage_update", payload: delta }, params);
         }
         const contextSize = typeof usage.modelContextWindow === "number" ? usage.modelContextWindow : undefined;
         const contextUsed = typeof last.totalTokens === "number" ? last.totalTokens : undefined;
@@ -1300,7 +1284,6 @@ export class CodexAdapter implements HarnessAdapter {
             rt,
             {
               kind: "context_usage_update",
-              harness: this.harness,
               payload: {
                 model: rt.model ?? "default",
                 ...(contextUsed !== undefined ? { contextUsed } : {}),
@@ -1342,7 +1325,6 @@ export class CodexAdapter implements HarnessAdapter {
           rt,
           {
             kind: "_baton_notice",
-            harness: this.harness,
             payload: {
               level: "warning",
               title: `Codex ${eventName} hook blocked the prompt`,

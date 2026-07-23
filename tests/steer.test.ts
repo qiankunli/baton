@@ -53,7 +53,6 @@ class SteerableFakeAdapter implements HarnessAdapter {
       // 契约：成功路径由 adapter 发 delivery:"steer" 的 user_message，绑定被注入的 turn
       this.sink?.({
         kind: "user_message",
-        harness: this.harness,
         turnId: input.turnId,
         payload: { messageId: input.messageId, content: input.blocks, delivery: "steer" },
       });
@@ -68,13 +67,11 @@ class SteerableFakeAdapter implements HarnessAdapter {
     this.activeInput = undefined;
     this.sink?.({
       kind: "agent_message",
-      harness: this.harness,
       turnId: input.turnId,
       payload: { messageId: `${input.turnId}-agent`, content: [{ type: "text", text: "done" }] },
     });
     this.sink?.({
       kind: "state_update",
-      harness: this.harness,
       turnId: input.turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });

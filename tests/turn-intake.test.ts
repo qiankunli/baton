@@ -48,13 +48,11 @@ class GatedOpenAdapter implements HarnessAdapter {
     queueMicrotask(() => {
       this.sink?.({
         kind: "agent_message",
-        harness: this.harness,
         turnId: input.turnId,
         payload: { messageId: `${input.turnId}-agent`, content: [{ type: "text", text: "done" }] },
       });
       this.sink?.({
         kind: "state_update",
-        harness: this.harness,
         turnId: input.turnId,
         payload: { state: "idle", stopReason: "end_turn" },
       });

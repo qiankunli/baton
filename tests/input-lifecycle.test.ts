@@ -44,7 +44,6 @@ class HoldingAdapter implements HarnessAdapter {
   async steer(_ref: HarnessSessionRef, input: PromptInput): Promise<SteerReceipt> {
     this.sink?.({
       kind: "user_message",
-      harness: this.harness,
       turnId: input.turnId,
       payload: { messageId: input.messageId, content: input.blocks, delivery: "steer" },
     });
@@ -57,7 +56,6 @@ class HoldingAdapter implements HarnessAdapter {
     this.active = undefined;
     this.sink?.({
       kind: "state_update",
-      harness: this.harness,
       turnId: input.turnId,
       payload: { state: "idle", stopReason },
     });

@@ -89,19 +89,16 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
     // 同一 slot 上 observed turn 开界 → 收界，此刻 driven turn 仍在运行
     adapter.sink?.({
       kind: "state_update",
-      harness: adapter.harness,
       turnId: "t_obs",
       payload: { state: "running" },
     });
     adapter.sink?.({
       kind: "agent_message",
-      harness: adapter.harness,
       turnId: "t_obs",
       payload: { messageId: "m_obs", content: [{ type: "text", text: "background done" }] },
     });
     adapter.sink?.({
       kind: "state_update",
-      harness: adapter.harness,
       turnId: "t_obs",
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -112,7 +109,6 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
     // driven turn 不受影响，照常收口
     adapter.sink?.({
       kind: "state_update",
-      harness: adapter.harness,
       turnId: adapter.driven!.turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -134,14 +130,12 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
 
     adapter.sink?.({
       kind: "state_update",
-      harness: adapter.harness,
       turnId: "t_obs",
       payload: { state: "running" },
     });
     // driven 先收口
     adapter.sink?.({
       kind: "state_update",
-      harness: adapter.harness,
       turnId: adapter.driven!.turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -151,7 +145,6 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
     // observed 随后收口，恰好一次
     adapter.sink?.({
       kind: "state_update",
-      harness: adapter.harness,
       turnId: "t_obs",
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -175,7 +168,7 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
     await Bun.sleep(1);
 
     // 无 turnId 的终态：留痕，但不能终结 driven turn
-    adapter.sink?.({ kind: "state_update", harness: adapter.harness, payload: { state: "idle" } });
+    adapter.sink?.({ kind: "state_update", payload: { state: "idle" } });
     await Bun.sleep(1);
     expect(done).toBe(false);
     expect(summaryTurnIds()).toEqual([]);
@@ -186,7 +179,6 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
     // 带 turnId 的正确终态仍能收口
     adapter.sink?.({
       kind: "state_update",
-      harness: adapter.harness,
       turnId: adapter.driven!.turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -218,7 +210,6 @@ describe("finalized turn records are retired (memory retention regression)", () 
 
     adapter.sink?.({
       kind: "state_update",
-      harness: adapter.harness,
       turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -235,7 +226,6 @@ describe("finalized turn records are retired (memory retention regression)", () 
     // 幂等钉子：重复终态 inert，不产生第二份 summary
     adapter.sink?.({
       kind: "state_update",
-      harness: adapter.harness,
       turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
