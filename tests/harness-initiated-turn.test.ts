@@ -20,7 +20,7 @@ import type {
 } from "../src/adapters/types.ts";
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
 import type { AnyEventDraft } from "../src/event/types.ts";
-import { Controller } from "../src/session/controller.ts";
+import { Controller } from "../src/controller/index.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 import { BatonChatProtocol } from "../src/tui/protocol.ts";
 import { resolveTestTarget } from "./harness-target.ts";

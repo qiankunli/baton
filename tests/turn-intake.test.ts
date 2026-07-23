@@ -18,7 +18,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import { textOf } from "../src/event/types.ts";
-import { Controller } from "../src/session/controller.ts";
+import { Controller } from "../src/controller/index.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 import { resolveTestTarget } from "./harness-target.ts";
 
@@ -166,7 +166,7 @@ describe("controller-owned user_message at dequeue", () => {
     expect(adapter.prompts[0]!.split("next step")).toHaveLength(2); // prompt 里只出现一次（sync 块内没有）
   });
 
-  test("cancel during preparing synthesizes a cancelled terminal immediately and the slot is reused", async () => {
+  test("cancel during preparing synthesizes a cancelled terminal immediately and the binding is reused", async () => {
     const adapter = new GatedOpenAdapter("codex");
     const controller = controllerWith(adapter);
 
@@ -184,7 +184,7 @@ describe("controller-owned user_message at dequeue", () => {
     expect(events.filter((ev) => ev.kind === "_baton_notice")).toHaveLength(1);
     expect(events.filter((ev) => ev.kind === "_baton_turn_summary")).toHaveLength(1);
 
-    // 启动随后完成：slot 复用，后续 turn 正常执行；被取消的 turn 从未作为 prompt 提交给
+    // 启动随后完成：binding 复用，后续 turn 正常执行；被取消的 turn 从未作为 prompt 提交给
     // harness——但它属于正典历史，fresh native session 经 <baton-sync> 恢复完整逻辑历史时
     // 会带上它（标记 cancelled），这是预期语义而非泄漏
     adapter.openGate();

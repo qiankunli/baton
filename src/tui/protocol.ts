@@ -46,7 +46,7 @@ import type {
   PermissionOption,
 } from "../interaction/types.ts";
 import { openBatonSession } from "../session/open.ts";
-import { Controller } from "../session/controller.ts";
+import { Controller } from "../controller/index.ts";
 import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from "../store/reduce.ts";
 import { sessionDisplayTitle, type SessionHandle, type SessionStore } from "../store/store.ts";
 import { sessionMentionCandidates } from "./mentions.ts";
@@ -747,7 +747,7 @@ export class BatonChatProtocol implements ChatProtocol {
       targetState?.harness ??
       harnessDefinitionFor(statusTargetId)?.sessionKey ??
       statusTargetId;
-    // observed turn 可能来自恢复的事件流，当前 Controller 并未创建该 Target 的 slot；
+    // observed turn 可能来自恢复的事件流，当前 Controller 并未创建该 Target 的 binding；
     // 此时只消费事件已报告的 model，不为展示反向启动或解析 Harness。
     const statusModel =
       statusTargetId === activeTargetId || statusTargetId === this.harnessTargetId

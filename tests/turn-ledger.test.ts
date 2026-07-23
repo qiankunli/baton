@@ -1,5 +1,5 @@
-// TurnLedger 契约测试：终态一律按 baton turn id 查表路由（不看 slot）。
-// 回归背景（bug#2）：旧路由先判"active 的 slot 是否命中"，同 harness 的 driven turn
+// TurnLedger 契约测试：终态一律按 baton turn id 查表路由（不看 binding）。
+// 回归背景（bug#2）：旧路由先判"active 的 binding 是否命中"，同 harness 的 driven turn
 // 运行期间，observed turn 的 idle 会进 driven 分支、被 turnId 守卫拒绝后不再 fallthrough——
 // observed turn 永远得不到 summary，跨 harness catch-up 对它永久盲区。
 // 另钉住（bug#4）：codex fast-submit 窗口内（codexTurnId 未就位）的 cancel 不得静默丢弃。
@@ -21,7 +21,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { AnyEventDraft } from "../src/event/types.ts";
-import { Controller } from "../src/session/controller.ts";
+import { Controller } from "../src/controller/index.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 import { resolveTestTarget } from "./harness-target.ts";
 
@@ -86,7 +86,7 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
     const submitted = controller.submit("claude", [{ type: "text", text: "go" }]);
     await Bun.sleep(1); // driven turn admission + running 就位
 
-    // 同一 slot 上 observed turn 开界 → 收界，此刻 driven turn 仍在运行
+    // 同一 binding 上 observed turn 开界 → 收界，此刻 driven turn 仍在运行
     adapter.sink?.({
       kind: "state_update",
       turnId: "t_obs",

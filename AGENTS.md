@@ -47,13 +47,18 @@ baton/
 │   │       ├── jsonrpc.ts   # 行分隔 JSON-RPC peer（请求/通知/服务端请求三路分发）
 │   │       └── adapter.ts   # codex app-server 接入：事件翻译、审批、usage 差分（fast-submit 语义）
 │   ├── harness/
+│   │   ├── binding.ts       # HarnessTarget ↔ Adapter ↔ HarnessSession 活绑定；启动、配置恢复与关闭
 │   │   ├── registry.ts      # 内置 harness 注册入口；新增 harness 不进入 session core
 │   │   └── target.ts        # HarnessTarget 与不可变 HarnessLaunchSnapshot；执行位置不与协议类型混用
 │   ├── context/
 │   │   └── mention.ts       # @ 引用急切解析：turn-summary → 紧凑摘要 → 注入 prompt（预算截断）
+│   ├── controller/
+│   │   ├── index.ts         # Controller 公共入口：Harness 编排、事件入口与跨生命周期主流程
+│   │   ├── input.ts         # Input 队列、身份、recall 与只读快照
+│   │   ├── turn.ts          # driven / observed Turn ledger 与幂等终态记账
+│   │   └── interaction.ts   # Interaction waiter 的 opened / resolved / cancel 生命周期
 │   ├── session/
-│   │   ├── open.ts          # BatonSession 打开的唯一入口：新建/继续/指定 + 会话锁 + crash recovery
-│   │   └── controller.ts    # 全局 turn 队列、harness 恢复与同会话上下文同步
+│   │   └── open.ts          # BatonSession 打开的唯一入口：新建/继续/指定 + 会话锁 + crash recovery
 │   ├── commands/
 │   │   └── registry.ts      # baton slash command 真相源：harness/model/session 生命周期
 │   ├── store/               # 会话存储
@@ -81,7 +86,7 @@ baton/
 
 ## 关键约定
 
-- **BatonSession、HarnessTarget 与 HarnessSession 分属三层**：BatonSession 是用户拥有、跨 harness、可持久恢复的逻辑历史；HarnessTarget 是具体执行与状态实例坐标；HarnessSession 只是该 Target 启动出的私有执行状态。Controller slot、原生 session、同步水位、偏好 / 授权与 Target-scoped 投影状态一律按 `harnessTargetId` 隔离；Target ID 必须经显式 resolver 找到完整 Target，未知值 fail closed，不能从 Harness 名称、alias 或 wire key 猜实例；Adapter 工厂再按 `target.harness` 选择协议实现。driven turn 在 BatonSession 内全局串行；harness 自发的 observed turn 与队列正交，见 `docs/kernel.md` §3。
+- **BatonSession、HarnessTarget 与 HarnessSession 分属三层**：BatonSession 是用户拥有、跨 harness、可持久恢复的逻辑历史；HarnessTarget 是具体执行与状态实例坐标；HarnessSession 只是该 Target 启动出的私有执行状态。`HarnessBinding`、原生 session、同步水位、偏好 / 授权与 Target-scoped 投影状态一律按 `harnessTargetId` 隔离；Target ID 必须经显式 resolver 找到完整 Target，未知值 fail closed，不能从 Harness 名称、alias 或 wire key 猜实例；Adapter 工厂再按 `target.harness` 选择协议实现。driven turn 在 BatonSession 内全局串行；harness 自发的 observed turn 与队列正交，见 `docs/kernel.md` §3。
 - **事件流是统一历史的合并真相源，UI 是投影**：每条 Event 必须有稳定 `eventId`、单一 `scope` 和显式事实 `source`；归属、来源与 `harness*` / `turnId` 等执行坐标正交。Adapter 只提交事实内容，`source`、Harness 与 HarnessTarget 由绑定它的宿主入口统一补齐，不能由 Adapter 自报。`session.jsonl` 记录可重放事件，TUI 状态由 reduce 重建——live 投影经 `SessionHandle.subscribe` 订阅事件流，与 resume 同一条 reduce 路径，不允许旁路投影通道（曾因 per-turn 回调这条第二通道静默丢掉 observed turn 的回复）；`meta.json` 保存定位与恢复元数据，不替代事件历史。HarnessSession 原生 resume 是加速路径，不是正确性的前提。
 - **用户输入的 owner 是 Controller，harness 执行的 owner 是 Adapter**：driven turn 出队即由 controller 落 `user_message`/`running`（原始输入进正典历史，harness 冷启动不阻塞 Transcript，preparing 可取消）；Adapter 只报告执行过程与终态，steer 成功时补 `delivery:"steer"` 的用户消息。用户输入专项语义及其 Adapter 行为契约见 `docs/user-input-lifecycle.md`；完整交互面的总体结构见 `docs/harness-interaction-design.md`。
 - **待决交互的 owner 是 Controller**：Harness / Plugin 只提交 typed Interaction draft；Controller 统一签发 `ix_`、补 requester、持久化 `interaction.opened/resolved` 并持有 live waiter。permission / question / hook trust 是 `kind`，不各自复制事件和 pending 状态机。

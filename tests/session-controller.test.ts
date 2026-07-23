@@ -16,7 +16,7 @@ import type {
 } from "../src/adapters/types.ts";
 import type { AnyEventDraft, AnyEventEnvelope, PromptBlock } from "../src/event/types.ts";
 import { textOf } from "../src/event/types.ts";
-import { Controller, type InteractionHandlers } from "../src/session/controller.ts";
+import { Controller, type InteractionHandlers } from "../src/controller/index.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 import { resolveTestTarget } from "./harness-target.ts";
 
@@ -758,7 +758,7 @@ describe("interaction resolver registry", () => {
   });
 
   test("setup-phase attribution covers any Interaction kind, not just hook trust", async () => {
-    // setup 阶段（slot 创建 → open 完成）的归属规则按 Interaction 判断：
+    // setup 阶段（binding 创建 → open 完成）的归属规则按 Interaction 判断：
     // 新 harness 的冷启动若阻塞征询 permission / question，不需要再回 controller 加 kind 特判。
     class SetupPermissionAdapter implements HarnessAdapter {
       readonly harness = "codex";
