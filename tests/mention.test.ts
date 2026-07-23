@@ -22,9 +22,9 @@ function sessionWithTurns(turnTexts: Array<{ user: string; agent: string }>): Se
   const h = store.createSession({ cwd: "/tmp", title: "demo" });
   turnTexts.forEach((t, i) => {
     const turnId = `t_${i}`;
-    h.append({ kind: "user_message", provider: "codex", turnId, payload: { messageId: `${turnId}_u`, content: [{ type: "text", text: t.user }] } });
-    h.append({ kind: "agent_message", provider: "codex", turnId, payload: { messageId: `${turnId}_a`, content: [{ type: "text", text: t.agent }] } });
-    h.append({ kind: "state_update", provider: "codex", turnId, payload: { state: "idle", stopReason: "end_turn" } });
+    h.append({ kind: "user_message", harness: "codex", turnId, payload: { messageId: `${turnId}_u`, content: [{ type: "text", text: t.user }] } });
+    h.append({ kind: "agent_message", harness: "codex", turnId, payload: { messageId: `${turnId}_a`, content: [{ type: "text", text: t.agent }] } });
+    h.append({ kind: "state_update", harness: "codex", turnId, payload: { state: "idle", stopReason: "end_turn" } });
     h.summarizeTurn(turnId);
   });
   return h;

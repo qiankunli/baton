@@ -1,6 +1,6 @@
 # Copy this file to ~/.baton/config.yaml and adjust the values you need.
 
-# Provider used when baton starts. Supported values: codex, claude.
+# Harness used when baton starts. Supported values: codex, claude.
 defaultAgent: codex
 
 # Optional: custom Claude Code executable, such as a company wrapper.
@@ -18,7 +18,7 @@ codexCommand:
 # per-tool audit receipts and in Agent Status.
 # codexApprovalReviewer: auto_review # auto_review | user
 
-# Maximum number of characters injected for session mentions and provider handoffs.
+# Maximum number of characters injected for session mentions and harness handoffs.
 mentionBudgetChars: 4096
 
 # Show agent reasoning in the timeline.

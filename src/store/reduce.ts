@@ -31,16 +31,16 @@ export interface MessageState {
   /** agent/thought chunk 仍在流式追加；完整 upsert 后转 completed。 */
   streamStatus?: "in_progress" | "completed";
   turnId?: string;
-  /** 产生该消息的 provider（多 agent 同时间线时用于标注说话人） */
-  provider?: string;
+  /** 产生该消息的 harness（多 agent 同时间线时用于标注说话人） */
+  harness?: string;
   /** 仅 user 消息：effective delivery（steer = 中途注入当前 turn），缺省 = prompt */
   delivery?: SubmitDelivery;
 }
 
 export interface ToolCallState {
   toolCallId: string;
-  /** 产生该工具活动的 provider；多 provider 时间线展示归属时使用。 */
-  provider?: string;
+  /** 产生该工具活动的 harness；多 harness 时间线展示归属时使用。 */
+  harness?: string;
   title?: string;
   kind?: string;
   status: ToolCallStatus;
@@ -52,20 +52,20 @@ export interface ToolCallState {
 }
 
 export interface PlanState extends PlanUpdate {
-  /** 产生该计划的 provider；pinned plan 只跟随当前输入目标。 */
-  provider?: string;
+  /** 产生该计划的 harness；pinned plan 只跟随当前输入目标。 */
+  harness?: string;
 }
 
 /**
- * provider-scoped 会话状态的统一槽位，键 = 事件信封 `provider`（即 registry 的
+ * harness-scoped 会话状态的统一槽位，键 = 事件信封 `harness`（即 registry 的
  * sessionKey / wire key，不是 canonical id——两套词汇混用曾让投影查空）。
- * 约定：新增"每个 provider 各有一份"的状态时，在这里加字段，不要在 SessionState
- * 再长平行的 Map<provider, X>（plan/contextUsage 都曾各自长过一个，事后才收敛）。
+ * 约定：新增"每个 harness 各有一份"的状态时，在这里加字段，不要在 SessionState
+ * 再长平行的 Map<harness, X>（plan/contextUsage 都曾各自长过一个，事后才收敛）。
  */
-export interface ProviderScopedState {
+export interface HarnessScopedState {
   /** 最近 context 占用快照（整体替换）。带 model 标签：切 model 后旧快照按标签判失效 */
   contextUsage?: ContextUsageUpdate;
-  /** 该 provider 最近一次 plan 的 id（pinned plan 的归属查询键；plan 本体在 plans） */
+  /** 该 harness 最近一次 plan 的 id（pinned plan 的归属查询键；plan 本体在 plans） */
   lastPlanId?: string;
 }
 
@@ -87,9 +87,9 @@ export interface UsageTotal {
 /** 一个仍在运行的 turn 的投影状态（running 开界、本 turn idle 收界） */
 export interface ActiveTurnState {
   turnId: string;
-  provider?: string;
-  /** 缺省 user=driven turn；provider=agent 自发的 observed turn（design §5.10） */
-  origin: "user" | "provider";
+  harness?: string;
+  /** 缺省 user=driven turn；harness=agent 自发的 observed turn（design §5.10） */
+  origin: "user" | "harness";
   /** 本 turn 当前非 idle 态（running / requires_action）：保真透传，不折叠成 running */
   state: Exclude<SessionRunState, "idle">;
   startedAt?: number;
@@ -123,17 +123,17 @@ export interface SessionState {
    */
   approvalReviews: Map<string, ApprovalReviewUpdate>;
   usage: UsageTotal;
-  /** provider command 完整快照：available_commands_update 整体替换，不做增量合并 */
+  /** harness command 完整快照：available_commands_update 整体替换，不做增量合并 */
   availableCommands: AvailableCommand[];
   /** session config 完整快照：config_option_update 整体替换（model 变化可联动其他选项） */
   configOptions: SessionConfigOption[];
-  /** provider-scoped 状态统一入口（contextUsage / lastPlanId…），键 = 信封 provider（sessionKey） */
-  perProvider: Map<string, ProviderScopedState>;
+  /** harness-scoped 状态统一入口（contextUsage / lastPlanId…），键 = 信封 harness（sessionKey） */
+  perHarness: Map<string, HarnessScopedState>;
   /** 最近一次结构化错误；willRetry 时 runState 仍应为 running（由事件源保证） */
   lastError?: ErrorUpdate & { seq: number };
   /**
    * 提示历史（append-only），同时进 timeline（id 为 `n_<seq>`）：打断标记、
-   * provider warning 等属于会话流的一部分，要按发生位置内联展示。
+   * harness warning 等属于会话流的一部分，要按发生位置内联展示。
    */
   notices: Array<Notice & { seq: number }>;
   turnSummaries: TurnSummary[];
@@ -163,7 +163,7 @@ export function emptySessionState(): SessionState {
     },
     availableCommands: [],
     configOptions: [],
-    perProvider: new Map(),
+    perHarness: new Map(),
     notices: [],
     turnSummaries: [],
     lastSeq: 0,
@@ -181,25 +181,25 @@ function getOrCreateMessage(
   id: string,
   role: MessageRole,
   turnId?: string,
-  provider?: string,
+  harness?: string,
 ): MessageState {
   let msg = state.messages.get(id);
   if (!msg) {
-    msg = { messageId: id, role, content: [], turnId, provider };
+    msg = { messageId: id, role, content: [], turnId, harness };
     state.messages.set(id, msg);
     state.timeline.push({ type: "message", id });
   }
   return msg;
 }
 
-function getOrCreateToolCall(state: SessionState, id: string, turnId?: string, provider?: string): ToolCallState {
+function getOrCreateToolCall(state: SessionState, id: string, turnId?: string, harness?: string): ToolCallState {
   let tc = state.toolCalls.get(id);
   if (!tc) {
-    tc = { toolCallId: id, provider, status: "pending", content: [], locations: [], turnId };
+    tc = { toolCallId: id, harness, status: "pending", content: [], locations: [], turnId };
     state.toolCalls.set(id, tc);
     state.timeline.push({ type: "tool_call", id });
-  } else if (!tc.provider) {
-    tc.provider = provider;
+  } else if (!tc.harness) {
+    tc.harness = harness;
   }
   return tc;
 }
@@ -210,7 +210,7 @@ function applyMessageUpsert(
   role: MessageRole,
 ): void {
   const p = ev.payload;
-  const msg = getOrCreateMessage(state, p.messageId, role, ev.turnId, ev.provider);
+  const msg = getOrCreateMessage(state, p.messageId, role, ev.turnId, ev.harness);
   // 三态：省略=不变；null/[]=清空；数组=整体替换
   if (p.content !== undefined) {
     msg.content = p.content === null ? [] : [...p.content];
@@ -229,14 +229,14 @@ function applyMessageChunk(
   role: MessageRole,
 ): void {
   const p = ev.payload;
-  const msg = getOrCreateMessage(state, p.messageId, role, ev.turnId, ev.provider);
+  const msg = getOrCreateMessage(state, p.messageId, role, ev.turnId, ev.harness);
   msg.content.push(p.content);
   if (role !== "user") msg.streamStatus = "in_progress";
 }
 
 function applyToolCallUpdate(state: SessionState, ev: EventEnvelope<"tool_call_update">): void {
   const p = ev.payload;
-  const tc = getOrCreateToolCall(state, p.toolCallId, ev.turnId, ev.provider);
+  const tc = getOrCreateToolCall(state, p.toolCallId, ev.turnId, ev.harness);
   if (p.title !== undefined) tc.title = p.title === null ? undefined : p.title;
   if (p.kind !== undefined) tc.kind = p.kind === null ? undefined : p.kind;
   if (p.status !== undefined && p.status !== null) tc.status = p.status;
@@ -255,7 +255,7 @@ function hasPendingBlocking(state: SessionState, turnId: string): boolean {
 }
 
 /**
- * 会话级 runState 派生（provider-interaction-design：存在 pending blocking request 时
+ * 会话级 runState 派生（harness-interaction-design：存在 pending blocking request 时
  * projection 必须产出 requires_action）。requires_action 比 running 优先上浮——它意味着
  * "没有用户动作会话无法完整推进"；直接看各 pending request 集合，未能归属到 turn 的 request
  * （缺 turnId 的旧事件）也不会漏。每个事件后重算：派生纯函数，正确性不依赖事件顺序。
@@ -295,7 +295,7 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
         const existing = state.activeTurns.get(ev.turnId);
         state.activeTurns.set(ev.turnId, {
           turnId: ev.turnId,
-          provider: ev.provider ?? existing?.provider,
+          harness: ev.harness ?? existing?.harness,
           origin: p.origin ?? existing?.origin ?? "user",
           state: hasPendingBlocking(state, ev.turnId) ? "requires_action" : p.state,
           startedAt: existing?.startedAt ?? (ev.ts ? Date.parse(ev.ts) || undefined : undefined),
@@ -319,7 +319,7 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       break;
     case "tool_call_content_chunk": {
       const p = ev.payload;
-      const tc = getOrCreateToolCall(state, p.toolCallId, ev.turnId, ev.provider);
+      const tc = getOrCreateToolCall(state, p.toolCallId, ev.turnId, ev.harness);
       tc.content.push(p.content);
       break;
     }
@@ -327,20 +327,20 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       const p = ev.payload;
       if (!state.plans.has(p.planId)) state.timeline.push({ type: "plan", id: p.planId });
       const existing = state.plans.get(p.planId);
-      const provider = ev.provider ?? existing?.provider;
+      const harness = ev.harness ?? existing?.harness;
       state.plans.set(p.planId, {
         planId: p.planId,
         entries: [...p.entries],
-        provider,
+        harness,
       });
-      // 归属查询键落统一槽位：投影按 provider 取"最近 plan"不再全表扫描
-      if (provider) providerScoped(state, provider).lastPlanId = p.planId;
+      // 归属查询键落统一槽位：投影按 harness 取"最近 plan"不再全表扫描
+      if (harness) harnessScoped(state, harness).lastPlanId = p.planId;
       break;
     }
     // request/resolved 驱动 per-turn requires_action ↔ running：不变量收在 reducer，
     // 不要求 adapter 自觉配对 state_update（事件流是唯一真相源；design §4.1）。
     // 原生 state_update(requires_action) 仍然有效——覆盖登录、设备确认等没有结构化
-    // request 的场景（provider-interaction-design：反向不强制成立）。
+    // request 的场景（harness-interaction-design：反向不强制成立）。
     case "permission_request": {
       const p = ev.payload;
       state.pendingPermissions.set(p.requestId, { ...p, turnId: ev.turnId });
@@ -398,8 +398,8 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       state.configOptions = [...ev.payload.options];
       break;
     case "context_usage_update":
-      // 快照替换语义（与 usage 的增量累加不同）；多 provider 各有自己的原生上下文
-      providerScoped(state, ev.provider).contextUsage = { ...ev.payload };
+      // 快照替换语义（与 usage 的增量累加不同）；多 harness 各有自己的原生上下文
+      harnessScoped(state, ev.harness).contextUsage = { ...ev.payload };
       break;
     case "_baton_error_update":
       state.lastError = { ...ev.payload, seq: ev.seq };
@@ -430,12 +430,12 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
   return state;
 }
 
-/** 取或建 provider 状态槽；键必须是信封 provider（sessionKey），调用方不要自行换算 id */
-function providerScoped(state: SessionState, provider: string): ProviderScopedState {
-  let scoped = state.perProvider.get(provider);
+/** 取或建 harness 状态槽；键必须是信封 harness（sessionKey），调用方不要自行换算 id */
+function harnessScoped(state: SessionState, harness: string): HarnessScopedState {
+  let scoped = state.perHarness.get(harness);
   if (!scoped) {
     scoped = {};
-    state.perProvider.set(provider, scoped);
+    state.perHarness.set(harness, scoped);
   }
   return scoped;
 }

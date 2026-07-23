@@ -5,7 +5,7 @@ import { defaultTheme } from "chat-tui";
 import { agentColorFor, batonTheme } from "../src/tui/theme.ts";
 
 describe("agentColorFor", () => {
-  test("known providers get fixed, distinct colors", () => {
+  test("known harnesses get fixed, distinct colors", () => {
     const claude = agentColorFor("claude");
     const codex = agentColorFor("codex");
     expect(claude).not.toBe(codex);
@@ -14,7 +14,7 @@ describe("agentColorFor", () => {
     expect([defaultTheme.user, defaultTheme.agent]).not.toContain(codex);
   });
 
-  test("unknown providers get a stable color from the fallback pool", () => {
+  test("unknown harnesses get a stable color from the fallback pool", () => {
     const first = agentColorFor("gemini");
     expect(agentColorFor("gemini")).toBe(first); // 同名稳定
     expect(first).toMatch(/^#[0-9a-f]{6}$/i);

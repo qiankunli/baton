@@ -24,14 +24,14 @@ describe("model preferences", () => {
     expect(modelPreferencesPath(root)).toBe(join(root, "state", "model.json"));
   });
 
-  test("remembers the latest explicit model per provider", () => {
+  test("remembers the latest explicit model per harness", () => {
     saveModelPreference(root, "claude", "sonnet");
     saveModelPreference(root, "codex", "gpt-5");
 
     expect(loadModelPreferences(root)).toEqual({ claude: "sonnet", codex: "gpt-5" });
   });
 
-  test("selecting default clears only that provider preference", () => {
+  test("selecting default clears only that harness preference", () => {
     saveModelPreference(root, "claude", "sonnet");
     saveModelPreference(root, "codex", "gpt-5");
     saveModelPreference(root, "claude", "default");

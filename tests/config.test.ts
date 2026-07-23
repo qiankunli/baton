@@ -47,7 +47,7 @@ describe("config", () => {
     expect(config.codexCommand).toEqual(["codex", "app-server"]);
   });
 
-  test("provider aliases are normalized to canonical ids", () => {
+  test("harness aliases are normalized to canonical ids", () => {
     writeFileSync(configPath(root), "defaultAgent: cc\n");
     expect(loadConfig(root).defaultAgent).toBe("claude");
   });

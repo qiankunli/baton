@@ -19,10 +19,10 @@ import type {
 
 import {
   COMMANDS,
-  parseProvider,
-  parseProviderRoute,
+  parseHarness,
+  parseHarnessRoute,
   type CommandName,
-  type ProviderName,
+  type HarnessName,
 } from "../commands/registry.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { loadEffortPreferences, saveEffortPreference } from "../config/effort-preferences.ts";
@@ -38,11 +38,11 @@ import {
   type PromptBlock,
 } from "../events/types.ts";
 import {
-  createProviderAdapter,
-  providerDefinitionFor,
-  providerSessionKey,
-  providerShortName,
-} from "../providers/registry.ts";
+  createHarnessAdapter,
+  harnessDefinitionFor,
+  harnessSessionKey,
+  harnessShortName,
+} from "../harnesses/registry.ts";
 import { openBatonSession } from "../session/open.ts";
 import { BatonSessionRuntime } from "../session/runtime.ts";
 import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from "../store/reduce.ts";
@@ -93,10 +93,10 @@ function hookTrustDescription(request: HookTrustRequest): string {
     .join("\n\n");
 }
 
-/** provider（id 或 wire key）→ 时间线 author 展示名；归一与着色 key 统一走 registry。 */
-function providerAuthor(provider: string | undefined): string | undefined {
-  if (!provider) return undefined;
-  return providerShortName(provider);
+/** harness（id 或 wire key）→ 时间线 author 展示名；归一与着色 key 统一走 registry。 */
+function harnessAuthor(harness: string | undefined): string | undefined {
+  if (!harness) return undefined;
+  return harnessShortName(harness);
 }
 
 export const CHAT_COMMANDS: readonly CommandSpec[] = COMMANDS;
@@ -149,7 +149,7 @@ function contextUsageText(
   selectedModel: string,
 ): string {
   if (!context || (context.model && context.model !== selectedModel)) {
-    return "unavailable until the provider reports this model";
+    return "unavailable until the harness reports this model";
   }
   if (!context.contextSize || context.contextSize < 0) return "size unavailable";
   const size = context.contextSize.toLocaleString("en-US");
@@ -210,7 +210,7 @@ export class BatonChatProtocol implements ChatProtocol {
   private session: SessionHandle;
   private state: SessionState;
   private runtime: BatonSessionRuntime;
-  private agent: ProviderName;
+  private agent: HarnessName;
   private status: StatusMessage | null = null;
   private commandOutput: TranscriptItem | null = null;
   private picker: PendingPicker | null = null;
@@ -244,7 +244,7 @@ export class BatonChatProtocol implements ChatProtocol {
     }
     this.runtime = this.createRuntime();
     // 投影单通道：live 与 resume 走同一条 reduce 路径（loadState 补历史 + subscribe 跟增量），
-    // 不从 per-turn 回调取事件——provider 自发回合（observed turn）没有对应的 submit 调用。
+    // 不从 per-turn 回调取事件——harness 自发回合（observed turn）没有对应的 submit 调用。
     this.state = this.session.loadState();
     this.seedHistoryFromState();
     this.unsubscribeSession = this.subscribeSession(this.session);
@@ -274,18 +274,18 @@ export class BatonChatProtocol implements ChatProtocol {
   // ===== 输入：TUI → baton =====
 
   async submit(text: string): Promise<void> {
-    const route = parseProviderRoute(text);
+    const route = parseHarnessRoute(text);
     if (route?.kind === "ambiguous") {
       this.status = null;
       this.commandOutput = this.batonTranscriptItem(
-        "_baton_provider_route_error",
-        `Error: provider prefix "/${route.token}" is ambiguous; matches ${route.providers.join(", ")}. Use a longer provider name or alias.`,
+        "_baton_harness_route_error",
+        `Error: harness prefix "/${route.token}" is ambiguous; matches ${route.harnesses.join(", ")}. Use a longer harness name or alias.`,
       );
       this.changed();
       return;
     }
     if (route?.kind === "matched") {
-      this.agent = route.provider;
+      this.agent = route.harness;
       this.status = null;
       this.commandOutput = null;
       this.changed();
@@ -309,7 +309,7 @@ export class BatonChatProtocol implements ChatProtocol {
     const { prompt } = expandMentions(this.store, text, this.config.mentionBudgetChars);
     const blocks: PromptBlock[] = [{ type: "text", text: prompt }];
 
-    // busy 且当前 provider 支持时默认 steer（对齐原生"打字即纠偏"体验）；队列非空时
+    // busy 且当前 harness 支持时默认 steer（对齐原生"打字即纠偏"体验）；队列非空时
     // 例外——已有排队的 follow-up 意味着用户在按顺序编排，插队 steer 会打乱预期顺序。
     if (this.runtime.queueLength === 0 && this.runtime.canSteer(target)) {
       const steered = await this.runtime.steer(target, blocks);
@@ -342,9 +342,9 @@ export class BatonChatProtocol implements ChatProtocol {
 
   async command(name: string, argument: string): Promise<void> {
     if (name !== "status") this.commandOutput = null;
-    const provider = parseProvider(name);
-    if (provider) {
-      this.agent = provider;
+    const harness = parseHarness(name);
+    if (harness) {
+      this.agent = harness;
       this.status = null;
       this.changed();
       if (argument) await this.submitMessage(argument);
@@ -496,9 +496,9 @@ export class BatonChatProtocol implements ChatProtocol {
     if (!recalled) return null;
     // 召回队列是另一种取回动作，结束进行中的历史浏览，避免游标错位。
     this.resetHistoryNav();
-    const provider = parseProvider(recalled.provider);
-    if (provider) this.agent = provider;
-    this.status = { text: `Recalled queued message for ${recalled.provider}; edit and resend`, tone: "info" };
+    const harness = parseHarness(recalled.harness);
+    if (harness) this.agent = harness;
+    this.status = { text: `Recalled queued message for ${recalled.harness}; edit and resend`, tone: "info" };
     this.changed();
     return { text: userVisibleText(textOf(recalled.blocks)) };
   }
@@ -578,12 +578,12 @@ export class BatonChatProtocol implements ChatProtocol {
       effortPreferences: this.effortPreferences,
       // 交互回调由 runtime 提供（resolver 注册表）：protocol 不再持有交互状态
       createAdapter: (name, handlers) =>
-        createProviderAdapter(name as ProviderName, {
+        createHarnessAdapter(name as HarnessName, {
           ...handlers,
           config: this.config,
           rootDir: this.store.rootDir,
         }),
-      providerSessionKey: (name) => providerSessionKey(name as ProviderName),
+      harnessSessionKey: (name) => harnessSessionKey(name as HarnessName),
       onStateChange: () => this.changed(),
     });
   }
@@ -619,7 +619,7 @@ export class BatonChatProtocol implements ChatProtocol {
     this.changed();
   }
 
-  private async configureModel(target: ProviderName, model: { id: string; label: string }): Promise<void> {
+  private async configureModel(target: HarnessName, model: { id: string; label: string }): Promise<void> {
     await this.runtime.setModel(target, model.id);
     saveModelPreference(this.store.rootDir, target, model.id);
     if (model.id === "default") delete this.modelPreferences[target];
@@ -628,7 +628,7 @@ export class BatonChatProtocol implements ChatProtocol {
     this.changed();
   }
 
-  private async configureEffort(target: ProviderName, effort: { id: string; label: string }): Promise<void> {
+  private async configureEffort(target: HarnessName, effort: { id: string; label: string }): Promise<void> {
     await this.runtime.setEffort(target, effort.id);
     saveEffortPreference(this.store.rootDir, target, effort.id);
     if (effort.id === "default") delete this.effortPreferences[target];
@@ -640,15 +640,15 @@ export class BatonChatProtocol implements ChatProtocol {
   /** 控制命令输出只进入当前 view，不写 session.jsonl，避免污染可恢复的会话历史。 */
   private sessionStatusItem(): TranscriptItem {
     const meta = this.session.meta;
-    const active = this.runtime.activeProvider;
+    const active = this.runtime.activeHarness;
     const selectedModel = this.runtime.currentModel(this.agent) ?? "default";
     const selectedEffort = this.runtime.currentEffort(this.agent) ?? "default";
-    // perProvider 的键是信封 provider（= sessionKey），不是 canonical id：
+    // perHarness 的键是信封 harness（= sessionKey），不是 canonical id：
     // claude 两者不同（"claude" vs "claude-code"），曾用 id 查导致 context 永远 unavailable
-    const providerKey = providerDefinitionFor(this.agent)?.sessionKey ?? this.agent;
-    const context = this.state.perProvider.get(providerKey)?.contextUsage;
+    const harnessKey = harnessDefinitionFor(this.agent)?.sessionKey ?? this.agent;
+    const context = this.state.perHarness.get(harnessKey)?.contextUsage;
     const contextText = contextUsageText(context, selectedModel);
-    const providers = Object.keys(meta.providerSessions).join(", ") || "-";
+    const harnesses = Object.keys(meta.harnessSessions).join(", ") || "-";
     const text = [
       `Session: ${meta.batonSessionId}`,
       `Name: ${sessionDisplayTitle(meta)}`,
@@ -656,14 +656,14 @@ export class BatonChatProtocol implements ChatProtocol {
       `Directory: ${meta.cwd}`,
       `Current: ${this.agent} - model ${selectedModel} - effort ${selectedEffort}`,
       `Context: ${contextText}`,
-      `Providers: ${providers}`,
+      `Harnesses: ${harnesses}`,
       `Turns: ${this.state.turnSummaries.length} - tokens in ${this.state.usage.inputTokens} / out ${this.state.usage.outputTokens}`,
       `State: ${active ? `running (${active})` : "idle"} - queue ${this.runtime.queueLength}`,
     ].join("\n");
     return this.batonTranscriptItem("_baton_status", text);
   }
 
-  /** baton 自身也是 transcript author；这类 UI 反馈不写入 provider 会话历史。 */
+  /** baton 自身也是 transcript author；这类 UI 反馈不写入 harness 会话历史。 */
   private batonTranscriptItem(id: string, text: string): TranscriptItem {
     return { type: "message", id, role: "agent", author: "baton", text, format: "plain" };
   }
@@ -711,29 +711,29 @@ export class BatonChatProtocol implements ChatProtocol {
 
   private buildView(): ChatViewState {
     const v = this.state;
-    const active = this.runtime.activeProvider;
+    const active = this.runtime.activeHarness;
     // pending 交互从事件流投影（Map 保插入序，取最早的一个）；id 即 requestId，
     // 应答经 runtime 的 resolver 注册表回到 adapter 的 await 点
     const permission = v.pendingPermissions.values().next().value;
     const hookTrust = v.pendingHookTrusts.values().next().value;
     const question = v.pendingQuestions.values().next().value;
-    const observedRuns = [...v.activeTurns.values()].filter((turn) => turn.origin === "provider");
+    const observedRuns = [...v.activeTurns.values()].filter((turn) => turn.origin === "harness");
     const observedRun = observedRuns.at(-1);
-    // baton 当前只呈现一个 agent 的状态：driven turn 优先，其次是 provider 自发的
+    // baton 当前只呈现一个 agent 的状态：driven turn 优先，其次是 harness 自发的
     // background turn，完全空闲时才回落到当前输入目标。状态本体与附加信息可拆成两行，
     // 但仍是同一个 agent；多运行者并发尚未进入产品范围。
     const activeTurnId = this.runtime.activeTurnId;
-    const statusProvider = active ?? observedRun?.provider ?? this.agent;
-    const statusProviderDefinition = providerDefinitionFor(statusProvider);
-    const statusProviderId = statusProviderDefinition?.id;
-    const statusModel = statusProviderId ? (this.runtime.currentModel(statusProviderId) ?? "default") : "default";
-    const statusProviderKey = statusProviderDefinition?.sessionKey ?? statusProvider;
-    const contextStatus = contextUsageStatusText(v.perProvider.get(statusProviderKey)?.contextUsage, statusModel);
-    // 审批路由问 adapter 要（provider 自己报的生效值），不读 config——config 是意图，
-    // 且投影层不得按 provider 分支（不变量 #3）。曾经这里硬编码 codexApprovalReviewer，
+    const statusHarness = active ?? observedRun?.harness ?? this.agent;
+    const statusHarnessDefinition = harnessDefinitionFor(statusHarness);
+    const statusHarnessId = statusHarnessDefinition?.id;
+    const statusModel = statusHarnessId ? (this.runtime.currentModel(statusHarnessId) ?? "default") : "default";
+    const statusHarnessKey = statusHarnessDefinition?.sessionKey ?? statusHarness;
+    const contextStatus = contextUsageStatusText(v.perHarness.get(statusHarnessKey)?.contextUsage, statusModel);
+    // 审批路由问 adapter 要（harness 自己报的生效值），不读 config——config 是意图，
+    // 且投影层不得按 harness 分支（不变量 #3）。曾经这里硬编码 codexApprovalReviewer，
     // 于是跟 claude 对话时 footer 照样显示 codex 的委托状态。
     const approvalStatus =
-      statusProviderId && this.runtime.approvalRoute(statusProviderId) === "delegated"
+      statusHarnessId && this.runtime.approvalRoute(statusHarnessId) === "delegated"
         ? "approvals:auto-review"
         : undefined;
     const statusDetails = [contextStatus, approvalStatus].filter((detail): detail is string => detail !== undefined);
@@ -753,7 +753,7 @@ export class BatonChatProtocol implements ChatProtocol {
     const runStatus: RunStatusItem[] = active
       ? splitStatus({
           id: `run:${active}`,
-          author: providerAuthor(active),
+          author: harnessAuthor(active),
           label: `${statusModel} · ${runStatusLabel(v, activeTurnId)}`,
           startedAt: this.runtime.activeStartedAt,
           hint: "Esc to interrupt",
@@ -761,32 +761,32 @@ export class BatonChatProtocol implements ChatProtocol {
       : observedRun
         ? splitStatus({
             id: `run:observed:${observedRun.turnId}`,
-            author: providerAuthor(statusProvider),
+            author: harnessAuthor(statusHarness),
             label: `${statusModel} · ${runStatusLabel(v, observedRun.turnId)} · background`,
             startedAt: observedRun.startedAt,
           })
         : splitStatus({
             id: `agent:${this.agent}`,
-            author: providerAuthor(this.agent),
+            author: harnessAuthor(this.agent),
             label: `${statusModel} · idle`,
           });
     const busy = active !== undefined || observedRuns.length > 0;
     // plan 互补显示（design §5.9）：同一时刻只出现在一个地方——进行中归 pin（现在时），
     // 盖棺归 transcript（过去时）。pin 显示期间 transcript 不渲染该 plan 卡（避免同屏两份、
     // 且过去时区域不该有实时改写的块）；全部完成 pin 停发，终态卡在 timeline 原位出现供回看。
-    // pin 还绑定当前输入目标 provider：切换 agent 即表示放弃上一家的现在时，
-    // 上一家未完成的 plan 回到 transcript；切回且该 provider 仍在运行时可恢复 pin。
-    // 同时以同 provider 的运行态门控：idle 后未完成的 plan 也归 transcript，
-    // 避免别家 provider 的回合让已搁置的 plan 重新上 pin。
-    const selectedProvider = providerDefinitionFor(this.agent)?.sessionKey ?? this.agent;
-    const lastPlanId = v.perProvider.get(selectedProvider)?.lastPlanId;
+    // pin 还绑定当前输入目标 harness：切换 agent 即表示放弃上一家的现在时，
+    // 上一家未完成的 plan 回到 transcript；切回且该 harness 仍在运行时可恢复 pin。
+    // 同时以同 harness 的运行态门控：idle 后未完成的 plan 也归 transcript，
+    // 避免别家 harness 的回合让已搁置的 plan 重新上 pin。
+    const selectedHarness = harnessDefinitionFor(this.agent)?.sessionKey ?? this.agent;
+    const lastPlanId = v.perHarness.get(selectedHarness)?.lastPlanId;
     const lastPlan = lastPlanId ? v.plans.get(lastPlanId) : undefined;
     const planEntries = (lastPlan?.entries ?? []).map((entry) => ({
       content: entry.content,
       status: normalizePlanStatus(entry.status),
     }));
-    const providerRunning = [...v.activeTurns.values()].some((turn) => turn.provider === selectedProvider);
-    const planActive = providerRunning && planEntries.some((entry) => entry.status !== "completed");
+    const harnessRunning = [...v.activeTurns.values()].some((turn) => turn.harness === selectedHarness);
+    const planActive = harnessRunning && planEntries.some((entry) => entry.status !== "completed");
     const pinnedPlanId = planActive ? lastPlan?.planId : undefined;
     return {
       transcript: [...buildTranscript(v, pinnedPlanId), ...(this.commandOutput ? [this.commandOutput] : [])],
@@ -796,7 +796,7 @@ export class BatonChatProtocol implements ChatProtocol {
       queued: this.runtime.queuedTurns.map((turn) => ({
         id: String(turn.id),
         text: userVisibleText(textOf(turn.blocks)),
-        tag: turn.provider,
+        tag: turn.harness,
       })),
       picker: this.picker
         ? { id: this.picker.id, title: this.picker.title, options: this.picker.options }
@@ -815,7 +815,7 @@ export class BatonChatProtocol implements ChatProtocol {
         : hookTrust
           ? {
               id: hookTrust.requestId,
-              title: `Trust ${hookTrust.hooks.length} ${hookTrust.providerName} hook${hookTrust.hooks.length === 1 ? "" : "s"}?`,
+              title: `Trust ${hookTrust.hooks.length} ${hookTrust.harnessName} hook${hookTrust.hooks.length === 1 ? "" : "s"}?`,
               description: hookTrustDescription(hookTrust),
               options: [
                 {
@@ -926,7 +926,7 @@ export function toolTranscriptItem(tc: ToolCallState): Extract<TranscriptItem, {
     type: "block",
     id: tc.toolCallId,
     kind: "tool",
-    author: providerAuthor(tc.provider),
+    author: harnessAuthor(tc.harness),
     title: tc.kind === "execute" ? executeTitleOf(status) : rawTitle,
     status,
     content: content.length > 0 ? content : undefined,
@@ -967,7 +967,7 @@ function approvalReviewTranscriptItem(review: ApprovalReviewUpdate): TranscriptI
 }
 
 /**
- * SessionState → chat-tui 展示形状。provider 内容在这里收敛为通用 command/output/diff/lines，块语义不出 baton。
+ * SessionState → chat-tui 展示形状。harness 内容在这里收敛为通用 command/output/diff/lines，块语义不出 baton。
  * pinnedPlanId：正被 pin 区承载的 plan——按互补显示规则跳过其 transcript 卡（见 buildView 处注释）。
  */
 function buildTranscript(state: SessionState, pinnedPlanId?: string): TranscriptItem[] {
@@ -1002,14 +1002,14 @@ function buildTranscript(state: SessionState, pinnedPlanId?: string): Transcript
             id: `${entry.id}:${index}`,
             kind: "thought",
             status,
-            author: providerAuthor(msg.provider),
+            author: harnessAuthor(msg.harness),
             title: block.title,
             content: block.content ? { type: "text", text: block.content } : undefined,
           });
         }
         continue;
       }
-      const author = msg.role === "user" ? "you" : (providerAuthor(msg.provider) ?? "agent");
+      const author = msg.role === "user" ? "you" : (harnessAuthor(msg.harness) ?? "agent");
       items.push({
         type: "message",
         id: entry.id,

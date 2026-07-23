@@ -12,18 +12,18 @@ describe("sessionPickerOptions", () => {
       cwd: "/repo",
       createdAt: "2026-07-01T00:00:00Z",
       updatedAt: "2026-07-02T00:00:00Z",
-      providerSessions: { codex: { provider: "codex" }, "claude-code": { provider: "claude-code" } },
+      harnessSessions: { codex: { harness: "codex" }, "claude-code": { harness: "claude-code" } },
     },
     {
       batonSessionId: "bs_untitled",
-      preview: "Inspect provider logs",
+      preview: "Inspect harness logs",
       cwd: "/other",
       createdAt: "2026-07-03T00:00:00Z",
-      providerSessions: {},
+      harnessSessions: {},
     },
   ] as SessionMeta[];
 
-  test("projects SessionMeta into select rows (title fallback, providers, time fallback)", () => {
+  test("projects SessionMeta into select rows (title fallback, harnesses, time fallback)", () => {
     expect(sessionPickerOptions(sessions)).toEqual([
       {
         name: "Implement resume titles",
@@ -31,7 +31,7 @@ describe("sessionPickerOptions", () => {
         value: "bs_titled",
       },
       {
-        name: "Inspect provider logs",
+        name: "Inspect harness logs",
         description: "bs_untitled · /other · 2026-07-03T00:00:00Z · [-]",
         value: "bs_untitled",
       },
@@ -40,7 +40,7 @@ describe("sessionPickerOptions", () => {
 
   test("marks the current session for the in-chat /sessions entry", () => {
     const names = sessionPickerOptions(sessions, { currentSessionId: "bs_untitled" }).map((o) => o.name);
-    expect(names).toEqual(["Implement resume titles", "● Inspect provider logs"]);
+    expect(names).toEqual(["Implement resume titles", "● Inspect harness logs"]);
   });
 
   test("keeps an explicit title ahead of preview", () => {
@@ -54,7 +54,7 @@ describe("sessionPickerOptions", () => {
     const fork: SessionMeta = {
       ...sessions[1]!,
       batonSessionId: "bs_fork",
-      title: "Inspect provider logs",
+      title: "Inspect harness logs",
       description: "fork: Implement resume titles",
       updatedAt: "2026-07-04T00:00:00Z",
       forkedFrom: { batonSessionId: "bs_titled", throughSeq: 3 },
@@ -67,8 +67,8 @@ describe("sessionPickerOptions", () => {
     // fork（07-04）把 bs_titled 整棵树浮顶；fork 缩进挂在源下并保留 ● 标记
     expect(names).toEqual([
       "Implement resume titles",
-      "└ ● Inspect provider logs",
-      "Inspect provider logs",
+      "└ ● Inspect harness logs",
+      "Inspect harness logs",
     ]);
     expect(options[1]!.description).toBe(
       "fork: Implement resume titles · bs_fork · /other · 2026-07-04T00:00:00Z · [-]",
@@ -77,6 +77,6 @@ describe("sessionPickerOptions", () => {
 
   test("list mode keeps incoming order untouched", () => {
     const names = sessionPickerOptions(sessions, { mode: "list" }).map((o) => o.name);
-    expect(names).toEqual(["Implement resume titles", "Inspect provider logs"]);
+    expect(names).toEqual(["Implement resume titles", "Inspect harness logs"]);
   });
 });

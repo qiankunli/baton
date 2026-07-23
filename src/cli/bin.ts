@@ -14,19 +14,19 @@ import packageJson from "../../package.json" with { type: "json" };
 import { sessionTreeRows, treeRowPrefix } from "../store/session-tree.ts";
 import { SessionStore, sessionDisplayTitle } from "../store/store.ts";
 
-const HELP = `baton — one durable terminal session across coding-agent providers
+const HELP = `baton — one durable terminal session across coding-agent harnesses
 
 Usage:
   baton [--cwd <dir>] [-c|--continue] [-s|--session <id>]
                         start the chat TUI; creates a new BatonSession by default,
                         -c continues the latest session in the cwd, -s opens a
-                        specific session; /codex (/cx) and /claude (/cc) switch provider
+                        specific session; /codex (/cx) and /claude (/cc) switch harness
   baton repl [--agent codex|cx|claude|cc] [--cwd <dir>]   headless REPL
   baton resume [bs_xxx] resume a BatonSession in the TUI; without an id shows a
                         session list for the current project first (enter resume · esc cancel ·
                         ctrl+c quit; starts fresh if there is no session yet)
   baton fork [bs_xxx|--last]
-                        fork a BatonSession (full-history copy, fresh provider
+                        fork a BatonSession (full-history copy, fresh harness
                         sessions) and open the fork; the fork lives in the
                         current project (cwd or --cwd) even when an explicitly
                         named source belongs to another one; without an id shows
@@ -149,9 +149,9 @@ async function run(command: string): Promise<void> {
         ? sessionTreeRows(sessions)
         : sessions.map((meta) => ({ meta, depth: 0 }));
       for (const { meta, depth } of rows) {
-        const providers = Object.keys(meta.providerSessions).join(",") || "-";
+        const harnesses = Object.keys(meta.harnessSessions).join(",") || "-";
         console.log(
-          `${treeRowPrefix(depth)}@${meta.batonSessionId}  [${providers}]  ${sessionDisplayTitle(meta)}  (${meta.createdAt})`,
+          `${treeRowPrefix(depth)}@${meta.batonSessionId}  [${harnesses}]  ${sessionDisplayTitle(meta)}  (${meta.createdAt})`,
         );
       }
       break;

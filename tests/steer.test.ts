@@ -1,5 +1,5 @@
 // steer 的 runtime 语义（design §4.3 / 验收矩阵 §7.6）：
-// 正确 turn 成功注入且不新开 turn；不可 steer / provider 拒绝 / wire 故障一律显式
+// 正确 turn 成功注入且不新开 turn；不可 steer / harness 拒绝 / wire 故障一律显式
 // 降级为 follow-up（effective 如实上报），输入永不静默丢失。
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -8,12 +8,12 @@ import { join } from "node:path";
 
 import type {
   AdapterCapabilities,
-  AgentAdapter,
+  HarnessAdapter,
   EventSink,
   OpenOptions,
   PromptInput,
   PromptReceipt,
-  ProviderSessionRef,
+  HarnessSessionRef,
   SteerReceipt,
 } from "../src/adapters/types.ts";
 import { textOf, type PromptBlock } from "../src/events/types.ts";
@@ -21,7 +21,7 @@ import { BatonSessionRuntime } from "../src/session/runtime.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** turn 不自动终结：由测试显式 finish()，制造稳定的"turn 进行中"窗口 */
-class SteerableFakeAdapter implements AgentAdapter {
+class SteerableFakeAdapter implements HarnessAdapter {
   readonly capabilities: AdapterCapabilities = { prompt: {}, steer: { supported: true } };
   sink?: EventSink;
   prompts: string[] = [];
@@ -30,29 +30,29 @@ class SteerableFakeAdapter implements AgentAdapter {
   steerError?: Error;
   private activeInput?: PromptInput;
 
-  constructor(readonly provider: string) {}
+  constructor(readonly harness: string) {}
 
-  async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+  async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
     this.sink = sink;
-    return { provider: this.provider, providerSessionId: `${this.provider}-ref`, resumed: false };
+    return { harness: this.harness, harnessSessionId: `${this.harness}-ref`, resumed: false };
   }
 
   // 新契约：普通 prompt 的 user_message / running 由 runtime 出队时落盘；
   // adapter 只在 steer 成功路径补 delivery:"steer" 的用户消息（见下方 steer()）
-  async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.activeInput = input;
     this.prompts.push(textOf(input.blocks));
     return { accepted: true };
   }
 
-  async steer(_ref: ProviderSessionRef, input: PromptInput, expectedTurnId: string): Promise<SteerReceipt> {
+  async steer(_ref: HarnessSessionRef, input: PromptInput, expectedTurnId: string): Promise<SteerReceipt> {
     if (this.steerError) throw this.steerError;
     this.steers.push({ turnId: input.turnId, expectedTurnId, text: textOf(input.blocks) });
     if (this.steerResult.effective === "steer") {
       // 契约：成功路径由 adapter 发 delivery:"steer" 的 user_message，绑定被注入的 turn
       this.sink?.({
         kind: "user_message",
-        provider: this.provider,
+        harness: this.harness,
         turnId: input.turnId,
         payload: { messageId: input.messageId, content: input.blocks, delivery: "steer" },
       });
@@ -60,27 +60,27 @@ class SteerableFakeAdapter implements AgentAdapter {
     return this.steerResult;
   }
 
-  /** 终结当前 turn（模拟 provider 的 idle 终态） */
+  /** 终结当前 turn（模拟 harness 的 idle 终态） */
   finish(): void {
     const input = this.activeInput;
     if (!input) return;
     this.activeInput = undefined;
     this.sink?.({
       kind: "agent_message",
-      provider: this.provider,
+      harness: this.harness,
       turnId: input.turnId,
       payload: { messageId: `${input.turnId}-agent`, content: [{ type: "text", text: "done" }] },
     });
     this.sink?.({
       kind: "state_update",
-      provider: this.provider,
+      harness: this.harness,
       turnId: input.turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
   }
 
-  async cancel(_ref: ProviderSessionRef): Promise<void> {}
-  async close(_ref: ProviderSessionRef): Promise<void> {}
+  async cancel(_ref: HarnessSessionRef): Promise<void> {}
+  async close(_ref: HarnessSessionRef): Promise<void> {}
 }
 
 /** 无 steer 能力的最小 adapter：验证 capability 缺失时的降级 */
@@ -103,7 +103,7 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function runtimeWith(adapter: AgentAdapter): BatonSessionRuntime {
+function runtimeWith(adapter: HarnessAdapter): BatonSessionRuntime {
   return new BatonSessionRuntime({
     session,
     mentionBudgetChars: 4096,
@@ -180,7 +180,7 @@ describe("BatonSessionRuntime.steer", () => {
     expect(runtime.queueLength).toBe(1);
   });
 
-  test("degrades when the provider does not declare the steer capability", async () => {
+  test("degrades when the harness does not declare the steer capability", async () => {
     const adapter = new PlainFakeAdapter("claude");
     const runtime = runtimeWith(adapter);
 
@@ -208,14 +208,14 @@ describe("BatonSessionRuntime.steer", () => {
     expect(adapter.prompts).toEqual(["hello"]);
   });
 
-  test("degrades when steering a provider other than the active one", async () => {
+  test("degrades when steering a harness other than the active one", async () => {
     const codex = new SteerableFakeAdapter("codex");
     const claude = new SteerableFakeAdapter("claude-code");
-    const adapters: Record<string, AgentAdapter> = { codex, claude };
+    const adapters: Record<string, HarnessAdapter> = { codex, claude };
     const runtime = new BatonSessionRuntime({
       session,
       mentionBudgetChars: 4096,
-      createAdapter: (provider) => adapters[provider] as AgentAdapter,
+      createAdapter: (harness) => adapters[harness] as HarnessAdapter,
     });
 
     runtime.submit("codex", text("one"));

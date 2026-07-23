@@ -7,11 +7,11 @@ import { join } from "node:path";
 
 import { parse, stringify } from "yaml";
 
-import { parseProvider, type ProviderName } from "../providers/ids.ts";
+import { parseHarness, type HarnessName } from "../harnesses/ids.ts";
 
 export interface BatonConfig {
-  /** 打开 TUI / REPL 时的默认 agent（canonical provider id） */
-  defaultAgent: ProviderName;
+  /** 打开 TUI / REPL 时的默认 agent（canonical harness id） */
+  defaultAgent: HarnessName;
   /** claude 可执行文件路径（如公司包装器 reclaude）；env BATON_CLAUDE_BIN 优先 */
   claudeExecutable?: string;
   /** codex 启动命令（headless 必须是 app-server 形态） */
@@ -23,7 +23,7 @@ export interface BatonConfig {
    * baton 不替 codex 定审批的安全默认。见 docs/approval-lifecycle.md。
    */
   codexApprovalReviewer?: "user" | "auto_review";
-  /** @ 引用与同会话 provider 同步的摘要预算（字符） */
+  /** @ 引用与同会话 harness 同步的摘要预算（字符） */
   mentionBudgetChars: number;
   /** 是否在时间线里显示 agent 的思考过程（reasoning 流） */
   showThoughts: boolean;
@@ -75,7 +75,7 @@ export function loadConfig(rootDir?: string): BatonConfig {
   };
   merged.defaultAgent =
     typeof merged.defaultAgent === "string"
-      ? (parseProvider(merged.defaultAgent) ?? DEFAULT_CONFIG.defaultAgent)
+      ? (parseHarness(merged.defaultAgent) ?? DEFAULT_CONFIG.defaultAgent)
       : DEFAULT_CONFIG.defaultAgent;
   if (!Number.isFinite(merged.mentionBudgetChars) || merged.mentionBudgetChars <= 0) {
     merged.mentionBudgetChars = DEFAULT_CONFIG.mentionBudgetChars;

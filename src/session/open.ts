@@ -23,7 +23,7 @@ export const CRASH_RECOVERY_NOTICE_TITLE =
  * 打开即独占（会话锁）+ 归一化（crash recovery）：任何入口拿到的会话保证终态干净、
  * 每个 turn 都有 summary。recovery 的核心价值不在 UI 状态（busy 来自 runtime），
  * 而在 catch-up 与 @ 引用只读 turn-summary——没有 summary 的半截 turn
- * 对后续 provider 同步是永久盲区。
+ * 对后续 harness 同步是永久盲区。
  */
 export function openBatonSession(
   store: SessionStore,
@@ -101,37 +101,37 @@ function recoverInterruptedState(session: SessionHandle): boolean {
   for (const requestId of state.pendingPermissions.keys()) {
     session.append({
       kind: "permission_resolved",
-      provider: "baton",
+      harness: "baton",
       payload: { requestId, outcome: "cancelled" },
     });
   }
   for (const requestId of state.pendingQuestions.keys()) {
     session.append({
       kind: "question_resolved",
-      provider: "baton",
+      harness: "baton",
       payload: { requestId, outcome: "cancelled" },
     });
   }
   for (const requestId of state.pendingHookTrusts.keys()) {
     session.append({
       kind: "hook_trust_resolved",
-      provider: "baton",
+      harness: "baton",
       payload: { requestId, outcome: "cancelled" },
     });
   }
   // 每个未收口的 turn 各补一份终态 + 中断标记（并发崩溃不止一个；恒带 turnId，
   // 让 per-turn reducer 精确收口，不误清并发 turn）
   for (const turnId of interruptedTurns) {
-    const provider = events.findLast((ev) => ev.turnId === turnId)?.provider || "baton";
+    const harness = events.findLast((ev) => ev.turnId === turnId)?.harness || "baton";
     session.append({
       kind: "state_update",
-      provider,
+      harness,
       turnId,
       payload: { state: "idle", stopReason: "cancelled" },
     });
     session.append({
       kind: "_baton_notice",
-      provider,
+      harness,
       turnId,
       payload: { level: "warning", title: CRASH_RECOVERY_NOTICE_TITLE },
     });

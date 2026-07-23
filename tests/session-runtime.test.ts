@@ -5,21 +5,21 @@ import { join } from "node:path";
 
 import type {
   AdapterCapabilities,
-  AgentAdapter,
+  HarnessAdapter,
   EffortOption,
   EventSink,
   ModelOption,
   OpenOptions,
   PromptInput,
   PromptReceipt,
-  ProviderSessionRef,
+  HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { AnyEventEnvelope, PermissionRequest, PromptBlock, QuestionRequest } from "../src/events/types.ts";
 import { textOf } from "../src/events/types.ts";
 import { BatonSessionRuntime, type InteractionHandlers } from "../src/session/runtime.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
-class FakeAdapter implements AgentAdapter {
+class FakeAdapter implements HarnessAdapter {
   readonly capabilities: AdapterCapabilities = { prompt: {} };
   openOptions?: OpenOptions;
   sink?: EventSink;
@@ -29,68 +29,68 @@ class FakeAdapter implements AgentAdapter {
   prompts: string[] = [];
 
   constructor(
-    readonly provider: string,
+    readonly harness: string,
     private readonly hooks: { enter?: () => void; leave?: () => void; delayMs?: number } = {},
   ) {}
 
-  async open(opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+  async open(opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
     this.openOptions = opts;
     this.sink = sink;
     return {
-      provider: this.provider,
-      providerSessionId: `${this.provider}-runtime-ref`,
+      harness: this.harness,
+      harnessSessionId: `${this.harness}-runtime-ref`,
       resumed: Boolean(opts.resumeSessionId),
     };
   }
 
-  nativeSessionId(_ref: ProviderSessionRef): string {
-    return `${this.provider}-native`;
+  nativeSessionId(_ref: HarnessSessionRef): string {
+    return `${this.harness}-native`;
   }
 
-  async syncContext(_ref: ProviderSessionRef, blocks: PromptBlock[]): Promise<void> {
+  async syncContext(_ref: HarnessSessionRef, blocks: PromptBlock[]): Promise<void> {
     this.synced.push(textOf(blocks));
   }
 
-  async listModels(_ref: ProviderSessionRef): Promise<ModelOption[]> {
+  async listModels(_ref: HarnessSessionRef): Promise<ModelOption[]> {
     return [{ id: "default", label: "Default" }, { id: "fast", label: "Fast" }];
   }
 
-  async setModel(_ref: ProviderSessionRef, modelId: string | null): Promise<void> {
+  async setModel(_ref: HarnessSessionRef, modelId: string | null): Promise<void> {
     this.model = modelId === "default" ? null : modelId;
   }
 
-  currentModel(_ref: ProviderSessionRef): string | null {
+  currentModel(_ref: HarnessSessionRef): string | null {
     return this.model;
   }
 
-  async listEfforts(_ref: ProviderSessionRef): Promise<EffortOption[]> {
+  async listEfforts(_ref: HarnessSessionRef): Promise<EffortOption[]> {
     return [{ id: "default", label: "Default" }, { id: "high", label: "High" }];
   }
 
-  async setEffort(_ref: ProviderSessionRef, effortId: string | null): Promise<void> {
+  async setEffort(_ref: HarnessSessionRef, effortId: string | null): Promise<void> {
     this.effort = effortId === "default" ? null : effortId;
   }
 
-  currentEffort(_ref: ProviderSessionRef): string | null {
+  currentEffort(_ref: HarnessSessionRef): string | null {
     return this.effort;
   }
 
   /** submit 立即回执；事件（含终态）异步经 open 绑定的 sink 上报。user_message 由 runtime 落盘 */
-  async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.hooks.enter?.();
     this.prompts.push(textOf(input.blocks));
     void (async () => {
       if (this.hooks.delayMs) await Bun.sleep(this.hooks.delayMs);
       this.sink?.({
         kind: "agent_message",
-        provider: this.provider,
+        harness: this.harness,
         turnId: input.turnId,
         payload: { messageId: `${input.turnId}-agent`, content: [{ type: "text", text: "done" }] },
       });
       this.hooks.leave?.();
       this.sink?.({
         kind: "state_update",
-        provider: this.provider,
+        harness: this.harness,
         turnId: input.turnId,
         payload: { state: "idle", stopReason: "end_turn" },
       });
@@ -98,25 +98,25 @@ class FakeAdapter implements AgentAdapter {
     return { accepted: true };
   }
 
-  async cancel(_ref: ProviderSessionRef): Promise<void> {}
-  async close(_ref: ProviderSessionRef): Promise<void> {}
+  async cancel(_ref: HarnessSessionRef): Promise<void> {}
+  async close(_ref: HarnessSessionRef): Promise<void> {}
 }
 
 class CompactAdapter extends FakeAdapter {
   override readonly capabilities: AdapterCapabilities = { prompt: {}, compact: { supported: true } };
   compactCalls: string[] = [];
 
-  async compactContext(_ref: ProviderSessionRef, turnId: string): Promise<PromptReceipt> {
+  async compactContext(_ref: HarnessSessionRef, turnId: string): Promise<PromptReceipt> {
     this.compactCalls.push(turnId);
     this.sink?.({
       kind: "_baton_run_status",
-      provider: this.provider,
+      harness: this.harness,
       turnId,
       payload: { phase: "compacting", title: "Compacting context…" },
     });
     this.sink?.({
       kind: "state_update",
-      provider: this.provider,
+      harness: this.harness,
       turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
@@ -136,22 +136,22 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function completedTurn(handle: SessionHandle, provider: string, turnId: string, text: string): void {
+function completedTurn(handle: SessionHandle, harness: string, turnId: string, text: string): void {
   handle.append({
     kind: "user_message",
-    provider,
+    harness,
     turnId,
     payload: { messageId: `${turnId}-user`, content: [{ type: "text", text }] },
   });
   handle.append({
     kind: "agent_message",
-    provider,
+    harness,
     turnId,
     payload: { messageId: `${turnId}-agent`, content: [{ type: "text", text: `${text}-done` }] },
   });
   handle.append({
     kind: "state_update",
-    provider,
+    harness,
     turnId,
     payload: { state: "idle", stopReason: "end_turn" },
   });
@@ -163,7 +163,7 @@ describe("BatonSessionRuntime", () => {
     class ManualAdapter extends FakeAdapter {
       turnId?: string;
 
-      override async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+      override async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
         this.turnId = input.turnId;
         return { accepted: true };
       }
@@ -184,7 +184,7 @@ describe("BatonSessionRuntime", () => {
     const beforeChunk = runtimeChanges;
     adapter.sink({
       kind: "agent_message_chunk",
-      provider: "codex",
+      harness: "codex",
       turnId: adapter.turnId,
       payload: { messageId: "m_stream", content: { type: "text", text: "a" } },
     });
@@ -192,20 +192,20 @@ describe("BatonSessionRuntime", () => {
 
     adapter.sink({
       kind: "state_update",
-      provider: "codex",
+      harness: "codex",
       turnId: adapter.turnId,
       payload: { state: "idle", stopReason: "end_turn" },
     });
     await turn;
   });
 
-  test("accepts provider IDs outside the initially bundled registry", async () => {
-    const adapter = new FakeAdapter("example-provider");
+  test("accepts harness IDs outside the initially bundled registry", async () => {
+    const adapter = new FakeAdapter("example-harness");
     const runtime = new BatonSessionRuntime({
       session,
       mentionBudgetChars: 4096,
-      createAdapter: (provider) => {
-        expect(provider).toBe("example");
+      createAdapter: (harness) => {
+        expect(harness).toBe("example");
         return adapter;
       },
     });
@@ -213,8 +213,8 @@ describe("BatonSessionRuntime", () => {
     await runtime.submit("example", [{ type: "text", text: "hello" }]);
 
     expect(adapter.prompts).toEqual(["hello"]);
-    expect(session.meta.providerSessions["example-provider"]?.providerSessionId).toBe(
-      "example-provider-native",
+    expect(session.meta.harnessSessions["example-harness"]?.harnessSessionId).toBe(
+      "example-harness-native",
     );
   });
 
@@ -235,7 +235,7 @@ describe("BatonSessionRuntime", () => {
     expect(events.filter((event) => event.kind === "agent_message")).toHaveLength(1);
   });
 
-  test("serializes turns across providers into one BatonSession timeline", async () => {
+  test("serializes turns across harnesses into one BatonSession timeline", async () => {
     let active = 0;
     let maxActive = 0;
     const order: string[] = [];
@@ -243,20 +243,20 @@ describe("BatonSessionRuntime", () => {
     const runtime = new BatonSessionRuntime({
       session,
       mentionBudgetChars: 4096,
-      createAdapter: (provider) => {
-        const adapter = new FakeAdapter(provider === "claude" ? "claude-code" : provider, {
+      createAdapter: (harness) => {
+        const adapter = new FakeAdapter(harness === "claude" ? "claude-code" : harness, {
           delayMs: 10,
           enter: () => {
             active++;
             maxActive = Math.max(maxActive, active);
-            order.push(`start:${provider}`);
+            order.push(`start:${harness}`);
           },
           leave: () => {
-            order.push(`end:${provider}`);
+            order.push(`end:${harness}`);
             active--;
           },
         });
-        adapters.set(provider, adapter);
+        adapters.set(harness, adapter);
         return adapter;
       },
     });
@@ -294,7 +294,7 @@ describe("BatonSessionRuntime", () => {
     expect(adapter.prompts).toEqual(["one", "two"]);
   });
 
-  test("rebuilds full BatonSession history for a fresh provider before prompting", async () => {
+  test("rebuilds full BatonSession history for a fresh harness before prompting", async () => {
     completedTurn(session, "codex", "t_old", "existing work");
     const claude = new FakeAdapter("claude-code");
     const runtime = new BatonSessionRuntime({
@@ -309,15 +309,15 @@ describe("BatonSessionRuntime", () => {
     expect(claude.synced[0]).toContain("BatonSession history");
     expect(claude.synced[0]).toContain("existing work");
     expect(claude.prompts).toEqual(["continue"]);
-    expect(session.meta.providerSessions["claude-code"]?.syncedSeq).toBeGreaterThan(0);
+    expect(session.meta.harnessSessions["claude-code"]?.syncedSeq).toBeGreaterThan(0);
   });
 
-  test("resumes native session, restores config, and syncs only other-provider progress", async () => {
+  test("resumes native session, restores config, and syncs only other-harness progress", async () => {
     completedTurn(session, "codex", "t_codex", "old codex work");
     const watermark = session.readEvents().at(-1)?.seq ?? 0;
-    session.setProviderSession("codex", {
-      provider: "codex",
-      providerSessionId: "thread-old",
+    session.setHarnessSession("codex", {
+      harness: "codex",
+      harnessSessionId: "thread-old",
       model: "fast",
       effort: "high",
       syncedSeq: watermark,
@@ -339,10 +339,10 @@ describe("BatonSessionRuntime", () => {
     expect(codex.effort).toBe("high");
     expect(codex.synced[0]).toContain("new claude work");
     expect(codex.synced[0]).not.toContain("old codex work");
-    expect(session.meta.providerSessions.codex?.providerSessionId).toBe("codex-native");
+    expect(session.meta.harnessSessions.codex?.harnessSessionId).toBe("codex-native");
   });
 
-  test("uses the remembered provider model for a new BatonSession", async () => {
+  test("uses the remembered harness model for a new BatonSession", async () => {
     const codex = new FakeAdapter("codex");
     const runtime = new BatonSessionRuntime({
       session,
@@ -354,10 +354,10 @@ describe("BatonSessionRuntime", () => {
     await runtime.submit("codex", [{ type: "text", text: "next" }]);
 
     expect(codex.model).toBe("fast");
-    expect(session.meta.providerSessions.codex?.model).toBe("fast");
+    expect(session.meta.harnessSessions.codex?.model).toBe("fast");
   });
 
-  test("uses the remembered provider effort for a new BatonSession", async () => {
+  test("uses the remembered harness effort for a new BatonSession", async () => {
     const codex = new FakeAdapter("codex");
     const runtime = new BatonSessionRuntime({
       session,
@@ -369,7 +369,7 @@ describe("BatonSessionRuntime", () => {
     await runtime.submit("codex", [{ type: "text", text: "next" }]);
 
     expect(codex.effort).toBe("high");
-    expect(session.meta.providerSessions.codex?.effort).toBe("high");
+    expect(session.meta.harnessSessions.codex?.effort).toBe("high");
   });
 
   test("compacts through a control turn without persisting a user message", async () => {
@@ -392,7 +392,7 @@ describe("BatonSessionRuntime", () => {
     expect(events.filter((event) => event.kind === "_baton_turn_summary")).toHaveLength(1);
   });
 
-  test("rejects /compact when the provider does not declare the capability", async () => {
+  test("rejects /compact when the harness does not declare the capability", async () => {
     const runtime = new BatonSessionRuntime({
       session,
       mentionBudgetChars: 4096,
@@ -409,21 +409,21 @@ describe("BatonSessionRuntime", () => {
 
 describe("interaction resolver registry", () => {
   /** 先审批、后提问、再收口的交互式 fake adapter；handlers 由 runtime 经 createAdapter 注入 */
-  class InteractiveAdapter implements AgentAdapter {
-    readonly provider = "codex";
+  class InteractiveAdapter implements HarnessAdapter {
+    readonly harness = "codex";
     readonly capabilities: AdapterCapabilities = { prompt: {} };
     sink?: EventSink;
 
     constructor(private readonly handlers: InteractionHandlers) {}
 
-    async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+    async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
       this.sink = sink;
-      return { provider: this.provider, providerSessionId: "ia-ref", resumed: false };
+      return { harness: this.harness, harnessSessionId: "ia-ref", resumed: false };
     }
 
-    async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+    async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
       const emit = (ev: Parameters<EventSink>[0]) => this.sink?.({ ...ev, turnId: input.turnId });
-      emit({ kind: "state_update", provider: this.provider, payload: { state: "running" } });
+      emit({ kind: "state_update", harness: this.harness, payload: { state: "running" } });
       void (async () => {
         const request: PermissionRequest = {
           kind: "permission",
@@ -433,11 +433,11 @@ describe("interaction resolver registry", () => {
             { optionId: "allow", name: "Allow", polarity: "allow" as const, lifetime: "once" as const },
           ],
         };
-        emit({ kind: "permission_request", provider: this.provider, payload: request });
+        emit({ kind: "permission_request", harness: this.harness, payload: request });
         const decision = await this.handlers.requestHandler(request);
         emit({
           kind: "permission_resolved",
-          provider: this.provider,
+          harness: this.harness,
           payload: {
             requestId: "ar_1",
             outcome: "selected",
@@ -450,11 +450,11 @@ describe("interaction resolver registry", () => {
           requestId: "qr_1",
           questions: [{ questionId: "q1", header: "Scope", question: "Which scope?" }],
         };
-        emit({ kind: "question_request", provider: this.provider, payload: question });
+        emit({ kind: "question_request", harness: this.harness, payload: question });
         const answers = await this.handlers.requestHandler(question);
         emit({
           kind: "question_resolved",
-          provider: this.provider,
+          harness: this.harness,
           payload: {
             requestId: "qr_1",
             outcome: "answered",
@@ -462,13 +462,13 @@ describe("interaction resolver registry", () => {
           },
         });
 
-        emit({ kind: "state_update", provider: this.provider, payload: { state: "idle", stopReason: "end_turn" } });
+        emit({ kind: "state_update", harness: this.harness, payload: { state: "idle", stopReason: "end_turn" } });
       })();
       return { accepted: true };
     }
 
-    async cancel(_ref: ProviderSessionRef): Promise<void> {}
-    async close(_ref: ProviderSessionRef): Promise<void> {}
+    async cancel(_ref: HarnessSessionRef): Promise<void> {}
+    async close(_ref: HarnessSessionRef): Promise<void> {}
   }
 
   test("resolve wakes the adapter exactly once; unknown/stale ids report false", async () => {
@@ -502,20 +502,20 @@ describe("interaction resolver registry", () => {
     expect(state.pendingQuestions.size).toBe(0);
   });
 
-  test("a provider-startup hook trust request belongs to the preparing turn", async () => {
-    class StartupTrustAdapter implements AgentAdapter {
-      readonly provider = "codex";
+  test("a harness-startup hook trust request belongs to the preparing turn", async () => {
+    class StartupTrustAdapter implements HarnessAdapter {
+      readonly harness = "codex";
       readonly capabilities: AdapterCapabilities = { prompt: {} };
       private sink?: EventSink;
 
       constructor(private readonly handlers: InteractionHandlers) {}
 
-      async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+      async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
         this.sink = sink;
         const request = {
           kind: "hook_trust" as const,
           requestId: "htr_start",
-          providerName: "Codex",
+          harnessName: "Codex",
           hooks: [
             {
               key: "hook1",
@@ -526,23 +526,23 @@ describe("interaction resolver registry", () => {
             },
           ],
         };
-        sink({ kind: "hook_trust_request", provider: this.provider, payload: request });
+        sink({ kind: "hook_trust_request", harness: this.harness, payload: request });
         const response = await this.handlers.requestHandler(request);
         sink({
           kind: "hook_trust_resolved",
-          provider: this.provider,
+          harness: this.harness,
           payload: {
             requestId: request.requestId,
             outcome: response.kind === "hook_trust" && response.decision === "trust" ? "trusted" : "skipped",
           },
         });
-        return { provider: this.provider, providerSessionId: "startup-trust", resumed: false };
+        return { harness: this.harness, harnessSessionId: "startup-trust", resumed: false };
       }
 
-      async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+      async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
         this.sink?.({
           kind: "state_update",
-          provider: this.provider,
+          harness: this.harness,
           turnId: input.turnId,
           payload: { state: "idle", stopReason: "end_turn" },
         });
@@ -569,15 +569,15 @@ describe("interaction resolver registry", () => {
 
   test("setup-phase attribution covers any request kind, not just hook trust", async () => {
     // setup 阶段（slot 创建 → open 完成）的归属规则按"是不是 request"判断：
-    // 新 provider 的冷启动若阻塞征询 permission / question，不需要再回 runtime 加 kind 特判。
-    class SetupPermissionAdapter implements AgentAdapter {
-      readonly provider = "codex";
+    // 新 harness 的冷启动若阻塞征询 permission / question，不需要再回 runtime 加 kind 特判。
+    class SetupPermissionAdapter implements HarnessAdapter {
+      readonly harness = "codex";
       readonly capabilities: AdapterCapabilities = { prompt: {} };
       private sink?: EventSink;
 
       constructor(private readonly handlers: InteractionHandlers) {}
 
-      async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+      async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
         this.sink = sink;
         const request = {
           kind: "permission" as const,
@@ -587,24 +587,24 @@ describe("interaction resolver registry", () => {
             { optionId: "allow", name: "Allow once", polarity: "allow" as const, lifetime: "once" as const },
           ],
         };
-        sink({ kind: "permission_request", provider: this.provider, payload: request });
+        sink({ kind: "permission_request", harness: this.harness, payload: request });
         const response = await this.handlers.requestHandler(request);
         sink({
           kind: "permission_resolved",
-          provider: this.provider,
+          harness: this.harness,
           payload: {
             requestId: request.requestId,
             outcome: "selected",
             optionId: response.kind === "permission" ? response.optionId : "allow",
           },
         });
-        return { provider: this.provider, providerSessionId: "setup-permission", resumed: false };
+        return { harness: this.harness, harnessSessionId: "setup-permission", resumed: false };
       }
 
-      async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+      async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
         this.sink?.({
           kind: "state_update",
-          provider: this.provider,
+          harness: this.harness,
           turnId: input.turnId,
           payload: { state: "idle", stopReason: "end_turn" },
         });
@@ -630,27 +630,27 @@ describe("interaction resolver registry", () => {
   });
 });
 
-// 委托状态必须对当前活跃 provider 可见（kernel §3 审批闭环），但可见性的来源只能是
-// provider 自己报的生效路由——不是 baton 的配置意图。曾经投影层直接读
+// 委托状态必须对当前活跃 harness 可见（kernel §3 审批闭环），但可见性的来源只能是
+// harness 自己报的生效路由——不是 baton 的配置意图。曾经投影层直接读
 // config.codexApprovalReviewer，于是跟 claude 对话时 footer 也显示 codex 的委托状态。
-describe("runtime.approvalRoute reports the provider's own effective route", () => {
+describe("runtime.approvalRoute reports the harness's own effective route", () => {
   class RoutableAdapter extends FakeAdapter {
     readonly capabilities: AdapterCapabilities = { prompt: {}, approvalRouting: { supported: true } };
     constructor(
-      provider: string,
+      harness: string,
       private readonly route: "user" | "delegated" | null,
     ) {
-      super(provider);
+      super(harness);
     }
     approvalRoute(): "user" | "delegated" | null {
       return this.route;
     }
   }
 
-  const routeAfterOpen = async (adapter: AgentAdapter, provider: string) => {
+  const routeAfterOpen = async (adapter: HarnessAdapter, harness: string) => {
     const runtime = new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
-    await runtime.submit(provider, [{ type: "text", text: "hi" }]);
-    return runtime.approvalRoute(provider);
+    await runtime.submit(harness, [{ type: "text", text: "hi" }]);
+    return runtime.approvalRoute(harness);
   };
 
   test("a delegated route is visible", async () => {
@@ -661,12 +661,12 @@ describe("runtime.approvalRoute reports the provider's own effective route", () 
     expect(await routeAfterOpen(new RoutableAdapter("codex", "user"), "codex")).toBe("user");
   });
 
-  test("a provider that cannot report stays null — never guessed", async () => {
+  test("a harness that cannot report stays null — never guessed", async () => {
     expect(await routeAfterOpen(new RoutableAdapter("codex", null), "codex")).toBeNull();
   });
 
-  // 不声明 approvalRouting 的 provider（如 claude）不该被安上别家的委托状态
-  test("a provider without the capability stays null (no cross-provider bleed)", async () => {
+  // 不声明 approvalRouting 的 harness（如 claude）不该被安上别家的委托状态
+  test("a harness without the capability stays null (no cross-harness bleed)", async () => {
     expect(await routeAfterOpen(new FakeAdapter("claude-code"), "claude")).toBeNull();
   });
 });

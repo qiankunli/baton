@@ -10,34 +10,34 @@ import { join } from "node:path";
 import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
 import type {
   AdapterCapabilities,
-  AgentAdapter,
+  HarnessAdapter,
   EventSink,
   OpenOptions,
   PromptInput,
   PromptReceipt,
-  ProviderSessionRef,
+  HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import type { AnyEventEnvelope, AnyNewEvent, StopReason } from "../src/events/types.ts";
 import { BatonSessionRuntime, INTERRUPTED_NOTICE_TITLE } from "../src/session/runtime.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 /** 事件完全由测试脚本控制的 adapter：submit 只回执，终态由测试显式注入 */
-class ScriptedAdapter implements AgentAdapter {
+class ScriptedAdapter implements HarnessAdapter {
   readonly capabilities: AdapterCapabilities = { prompt: {} };
   sink?: EventSink;
   submits: PromptInput[] = [];
   cancels = 0;
   onCancel?: () => void;
 
-  constructor(readonly provider: string = "scripted") {}
+  constructor(readonly harness: string = "scripted") {}
 
-  async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+  async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
     this.sink = sink;
-    return { provider: this.provider, providerSessionId: `${this.provider}-ref` };
+    return { harness: this.harness, harnessSessionId: `${this.harness}-ref` };
   }
 
   // 新契约：user_message / running 由 runtime 出队时落盘，adapter submit 只做 admission
-  async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.submits.push(input);
     return { accepted: true };
   }
@@ -49,18 +49,18 @@ class ScriptedAdapter implements AgentAdapter {
   idle(turnId: string, stopReason: StopReason): void {
     this.emit({
       kind: "state_update",
-      provider: this.provider,
+      harness: this.harness,
       turnId,
       payload: { state: "idle", stopReason },
     });
   }
 
-  async cancel(_ref: ProviderSessionRef): Promise<void> {
+  async cancel(_ref: HarnessSessionRef): Promise<void> {
     this.cancels++;
     this.onCancel?.();
   }
 
-  async close(_ref: ProviderSessionRef): Promise<void> {}
+  async close(_ref: HarnessSessionRef): Promise<void> {}
 }
 
 async function until(cond: () => boolean, timeoutMs = 2000): Promise<void> {
@@ -138,7 +138,7 @@ describe("idempotent turn finalize", () => {
 });
 
 describe("cancel", () => {
-  test("provider-confirmed cancel leaves an interrupted notice and advances the queue", async () => {
+  test("harness-confirmed cancel leaves an interrupted notice and advances the queue", async () => {
     const adapter = new ScriptedAdapter();
     const runtime = makeRuntime(adapter);
     adapter.onCancel = () => adapter.idle(adapter.submits.at(-1)!.turnId, "cancelled");
@@ -172,7 +172,7 @@ describe("cancel", () => {
 
   test("cancel grace expiry synthesizes error + cancelled terminal and unblocks the queue", async () => {
     const adapter = new ScriptedAdapter();
-    const runtime = makeRuntime(adapter, 20); // provider 永不确认
+    const runtime = makeRuntime(adapter, 20); // harness 永不确认
     const outcome = runtime.submit("scripted", [{ type: "text", text: "stuck" }]);
     await until(() => adapter.submits.length === 1);
 

@@ -4,9 +4,9 @@
 
 > Pass context between coding agents like a baton.
 
-baton is a terminal-native workspace for coding agents, built around durable, provider-independent sessions and inspired by [tutti](https://github.com/tutti-os/tutti). Today, it lets you use Claude Code and Codex in one TUI and switch between them without carrying context. Because BatonSession is owned by baton rather than any provider, the same foundation can grow from agent handoffs into multi-agent collaboration and orchestration. Claude Code and Codex are the first bundled providers, not a closed support list.
+baton is a terminal-native workspace for coding agents, built around durable, harness-independent sessions and inspired by [tutti](https://github.com/tutti-os/tutti). Today, it lets you use Claude Code and Codex in one TUI and switch between them without carrying context. Because BatonSession is owned by baton rather than any harness, the same foundation can grow from agent handoffs into multi-agent collaboration and orchestration. Claude Code and Codex are the first bundled harnesses, not a closed support list.
 
-Provider-native sessions are resume optimizations; BatonSession history remains available even when a native session cannot be resumed.
+Harness-native sessions are resume optimizations; BatonSession history remains available even when a native session cannot be resumed.
 
 ## Philosophy
 
@@ -14,22 +14,22 @@ The most common shape of multi-agent work today is a human acting as a context c
 
 Two fundamentals are in place today:
 
-- **Context portability**: a BatonSession is a durable, unified history owned by the user that outlives any single provider. Switching agents requires no context carrying; provider-native sessions only accelerate resume and are never a prerequisite for the history to survive.
+- **Context portability**: a BatonSession is a durable, unified history owned by the user that outlives any single harness. Switching agents requires no context carrying; harness-native sessions only accelerate resume and are never a prerequisite for the history to survive.
 - **Native experience**: baton preserves each agent's own input, completion, streaming, tool-call, and approval experience as much as possible, adding only a few commands of its own (such as `/codex` and `/claude`).
 
 On top of these, three directions are on the roadmap (**none implemented yet**):
 
-- **Multi-provider collaboration**: from relaying within one session toward dispatching the same task to multiple providers in parallel, with results merged back into one unified history. The near-term path is draft sessions — when a new idea strikes mid-task, fork a draft session (optionally on a different provider) to explore in parallel without interrupting the mainline.
+- **Multi-harness collaboration**: from relaying within one session toward dispatching the same task to multiple harnesses in parallel, with results merged back into one unified history. The near-term path is draft sessions — when a new idea strikes mid-task, fork a draft session (optionally on a different harness) to explore in parallel without interrupting the mainline.
 - **Context intake**: the mainline is not a raw transcript of everything but the canonical history the user endorses. After a draft session produces results, the user decides whether to merge its conclusions into the mainline or discard them; discarding is not deletion — drafts stay durable and referenceable.
 - **Event-driven long-running loops**: listen to external events such as pushed commits or merged PRs and wake the corresponding session to continue its work, so agents are no longer confined to an interactive terminal.
 
 ## Architecture at a glance
 
-baton is one bidirectional pipeline: chat-tui carries `intent`/`render` only, the runtime owns the `Input` lifecycle + the driven-turn queue, adapters translate each provider's wire to a single normalized event stream, and `session.jsonl` persists it. The event stream is the sole source of truth; the UI is a projection.
+baton is one bidirectional pipeline: chat-tui carries `intent`/`render` only, the runtime owns the `Input` lifecycle + the driven-turn queue, adapters translate each harness's wire to a single normalized event stream, and `session.jsonl` persists it. The event stream is the sole source of truth; the UI is a projection.
 
 ![baton kernel: one bidirectional pipeline](docs/kernel-pipeline.png)
 
-See [`docs/kernel.md`](docs/kernel.md) for the stable kernel — core concepts, invariants, the pipeline, and the provider extension contract.
+See [`docs/kernel.md`](docs/kernel.md) for the stable kernel — core concepts, invariants, the pipeline, and the harness extension contract.
 
 ## Features
 
@@ -39,7 +39,7 @@ See [`docs/kernel.md`](docs/kernel.md) for the stable kernel — core concepts, 
 - Continue the latest session in a project with `baton -c`, or open one by ID with `baton -s <id>`
 - Reference previous sessions with `@<session-id>` and inject a compact summary automatically
 - Record messages, thoughts, tool calls, file changes, plans, and token usage in a unified format
-- Preserve provider startup interactions such as Codex hook trust, reusing unchanged trusted definitions with a visible notice
+- Preserve harness startup interactions such as Codex hook trust, reusing unchanged trusted definitions with a visible notice
 - Append events to a local `session.jsonl` for state reconstruction and future references
 - Reuse local Claude Code and Codex credentials without storing them in baton
 - Use a headless REPL to debug agent integrations
@@ -71,7 +71,7 @@ showThoughts: true
 
 See [`config.yaml.example`](config.yaml.example) for all available options and usage notes.
 
-Codex approvals follow Codex's own configuration by default — your `~/.codex/config.toml`, profiles and any enterprise policy all apply, and Codex itself defaults to reviewing with you. Set `codexApprovalReviewer: auto_review` to delegate to its risk reviewer instead; Baton keeps that delegation visible in Provider Status and records each automatic decision beside its target tool.
+Codex approvals follow Codex's own configuration by default — your `~/.codex/config.toml`, profiles and any enterprise policy all apply, and Codex itself defaults to reviewing with you. Set `codexApprovalReviewer: auto_review` to delegate to its risk reviewer instead; Baton keeps that delegation visible in Harness Status and records each automatic decision beside its target tool.
 
 If Claude Code uses a custom executable, set `claudeExecutable` in the configuration or override it temporarily with an environment variable (`BATON_CLAUDE_BIN=/path/to/claude baton`). Configuration precedence: environment variables > `config.yaml` > defaults.
 
@@ -84,13 +84,13 @@ Start the TUI and type a prompt to send it.
 /codex or /cx        Switch to Codex
 /cc <message>        Switch to Claude Code and send the message immediately
 /cx <message>        Switch to Codex and send the message immediately
-/cla <message>       Unique provider-name prefixes work too
-/model               Open the model picker for the active provider
+/cla <message>       Unique harness-name prefixes work too
+/model               Open the model picker for the active harness
 /model <id>          Select the model used by subsequent turns
-/effort              Open the reasoning-effort picker for the active provider
+/effort              Open the reasoning-effort picker for the active harness
 /effort <level>      Select the reasoning effort used by subsequent turns
-/compact             Ask the active provider to compact its context
-/status              Show the active provider/model context usage and session information
+/compact             Ask the active harness to compact its context
+/status              Show the active harness/model context usage and session information
 /sessions            Open the BatonSession picker
 /new                 Start a new BatonSession in the current project
 @bs_...               Reference another baton session
@@ -99,7 +99,7 @@ Esc                   Interrupt the current turn
 /exit                 Exit
 ```
 
-Ambiguous prefixes such as `/c <message>` are not sent to a provider; baton reports the matching providers in the transcript.
+Ambiguous prefixes such as `/c <message>` are not sent to a harness; baton reports the matching harnesses in the transcript.
 
 Common CLI commands:
 
@@ -120,7 +120,7 @@ Reference an ID returned by `baton sessions` in your prompt:
 @bs_01... Implement this feature based on Claude's earlier analysis
 ```
 
-baton reads the referenced session's compact summary and passes it to the active provider as context.
+baton reads the referenced session's compact summary and passes it to the active harness as context.
 
 ## Data storage
 
@@ -134,7 +134,7 @@ baton stores its data in `~/.baton/` by default:
     └── session.jsonl
 ```
 
-Sessions are grouped by working directory under `projects/`; the original `cwd` is stored in `meta.json`. `session.jsonl` is the durable logical history used for rendering, recovery, provider handoff, and cross-session references. Claude Code and Codex still manage their private native sessions; baton stores their IDs only to accelerate resume and never modifies their native session files.
+Sessions are grouped by working directory under `projects/`; the original `cwd` is stored in `meta.json`. `session.jsonl` is the durable logical history used for rendering, recovery, harness handoff, and cross-session references. Claude Code and Codex still manage their private native sessions; baton stores their IDs only to accelerate resume and never modifies their native session files.
 
 ## License
 

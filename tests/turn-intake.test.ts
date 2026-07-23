@@ -1,6 +1,6 @@
 // driven turn 的用户事实由 runtime 出队即落盘（owner 边界，design §4.1）：
-// - user_message/running 不等 provider 冷启动——首启延迟不能绑住 Transcript；
-// - 正典 user_message 是原始输入，<baton-sync> prepend 只进 provider transport；
+// - user_message/running 不等 harness 冷启动——首启延迟不能绑住 Transcript；
+// - 正典 user_message 是原始输入，<baton-sync> prepend 只进 harness transport；
 // - preparing（冷启动中）可取消：Esc 立即合成 cancelled 终态 + notice + summary；
 // - 启动失败合成 error + idle + summary——不再有"输入消失且无历史"的半状态。
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
@@ -10,19 +10,19 @@ import { join } from "node:path";
 
 import type {
   AdapterCapabilities,
-  AgentAdapter,
+  HarnessAdapter,
   EventSink,
   OpenOptions,
   PromptInput,
   PromptReceipt,
-  ProviderSessionRef,
+  HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import { textOf } from "../src/events/types.ts";
 import { BatonSessionRuntime } from "../src/session/runtime.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
-/** open() 被外部 gate 控制的 adapter：制造稳定的"provider 冷启动中"窗口 */
-class GatedOpenAdapter implements AgentAdapter {
+/** open() 被外部 gate 控制的 adapter：制造稳定的"harness 冷启动中"窗口 */
+class GatedOpenAdapter implements HarnessAdapter {
   readonly capabilities: AdapterCapabilities = { prompt: {} };
   sink?: EventSink;
   prompts: string[] = [];
@@ -33,27 +33,27 @@ class GatedOpenAdapter implements AgentAdapter {
     this.openFail = reject;
   });
 
-  constructor(readonly provider: string) {}
+  constructor(readonly harness: string) {}
 
-  async open(_opts: OpenOptions, sink: EventSink): Promise<ProviderSessionRef> {
+  async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
     this.sink = sink;
     await this.gate;
-    return { provider: this.provider, providerSessionId: `${this.provider}-ref`, resumed: false };
+    return { harness: this.harness, harnessSessionId: `${this.harness}-ref`, resumed: false };
   }
 
   /** admission 后立即自动完成本 turn（终态经 sink 报告） */
-  async submit(_ref: ProviderSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  async submit(_ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
     this.prompts.push(textOf(input.blocks));
     queueMicrotask(() => {
       this.sink?.({
         kind: "agent_message",
-        provider: this.provider,
+        harness: this.harness,
         turnId: input.turnId,
         payload: { messageId: `${input.turnId}-agent`, content: [{ type: "text", text: "done" }] },
       });
       this.sink?.({
         kind: "state_update",
-        provider: this.provider,
+        harness: this.harness,
         turnId: input.turnId,
         payload: { state: "idle", stopReason: "end_turn" },
       });
@@ -61,8 +61,8 @@ class GatedOpenAdapter implements AgentAdapter {
     return { accepted: true };
   }
 
-  async cancel(_ref: ProviderSessionRef): Promise<void> {}
-  async close(_ref: ProviderSessionRef): Promise<void> {}
+  async cancel(_ref: HarnessSessionRef): Promise<void> {}
+  async close(_ref: HarnessSessionRef): Promise<void> {}
 }
 
 let root: string;
@@ -77,21 +77,21 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function runtimeWith(adapter: AgentAdapter): BatonSessionRuntime {
+function runtimeWith(adapter: HarnessAdapter): BatonSessionRuntime {
   return new BatonSessionRuntime({ session, mentionBudgetChars: 4096, createAdapter: () => adapter });
 }
 
-/** 直接写入一个已收口、带 summary 的 turn（另一 provider 的既有历史） */
-function completedTurn(handle: SessionHandle, provider: string, turnId: string, text: string): void {
+/** 直接写入一个已收口、带 summary 的 turn（另一 harness 的既有历史） */
+function completedTurn(handle: SessionHandle, harness: string, turnId: string, text: string): void {
   handle.append({
     kind: "user_message",
-    provider,
+    harness,
     turnId,
     payload: { messageId: `${turnId}-user`, content: [{ type: "text", text }] },
   });
   handle.append({
     kind: "state_update",
-    provider,
+    harness,
     turnId,
     payload: { state: "idle", stopReason: "end_turn" },
   });
@@ -99,7 +99,7 @@ function completedTurn(handle: SessionHandle, provider: string, turnId: string, 
 }
 
 describe("runtime-owned user_message at dequeue", () => {
-  test("user_message and running are persisted before the provider finishes opening", async () => {
+  test("user_message and running are persisted before the harness finishes opening", async () => {
     const adapter = new GatedOpenAdapter("codex");
     const runtime = runtimeWith(adapter);
 
@@ -119,7 +119,7 @@ describe("runtime-owned user_message at dequeue", () => {
     expect(
       events.some((ev) => ev.kind === "_baton_run_status" && (ev.payload as { phase: string | null }).phase === "starting"),
     ).toBe(true);
-    expect(adapter.prompts).toHaveLength(0); // 尚未提交给 provider
+    expect(adapter.prompts).toHaveLength(0); // 尚未提交给 harness
 
     adapter.openGate();
     expect(await outcome).toBe("completed");
@@ -127,7 +127,7 @@ describe("runtime-owned user_message at dequeue", () => {
     expect(session.readEvents().filter((ev) => ev.kind === "user_message")).toHaveLength(1);
   });
 
-  test("canonical user_message keeps the original input; <baton-sync> only reaches the provider prompt", async () => {
+  test("canonical user_message keeps the original input; <baton-sync> only reaches the harness prompt", async () => {
     completedTurn(session, "claude-code", "t_prev", "earlier claude work");
     const adapter = new GatedOpenAdapter("codex"); // 无 syncContext ⇒ prepend 注入路径
     adapter.openGate();
@@ -135,14 +135,14 @@ describe("runtime-owned user_message at dequeue", () => {
 
     await runtime.submit("codex", [{ type: "text", text: "next step" }]);
 
-    // provider 收到的 prompt 带 sync 块
+    // harness 收到的 prompt 带 sync 块
     expect(adapter.prompts[0]).toContain("<baton-sync>");
     expect(adapter.prompts[0]).toContain("earlier claude work");
     expect(adapter.prompts[0]).toContain("next step");
     // 正典 user_message 是原始输入，且 catch-up 注入不含本 turn 自己的输入（无自回声）
     const userMessage = session
       .readEvents()
-      .filter((ev) => ev.kind === "user_message" && ev.provider === "codex")
+      .filter((ev) => ev.kind === "user_message" && ev.harness === "codex")
       .at(-1)!;
     expect(textOf((userMessage.payload as { content: Array<{ type: string; text: string }> }).content)).toBe(
       "next step",
@@ -169,7 +169,7 @@ describe("runtime-owned user_message at dequeue", () => {
     expect(events.filter((ev) => ev.kind === "_baton_turn_summary")).toHaveLength(1);
 
     // 启动随后完成：slot 复用，后续 turn 正常执行；被取消的 turn 从未作为 prompt 提交给
-    // provider——但它属于正典历史，fresh native session 经 <baton-sync> 恢复完整逻辑历史时
+    // harness——但它属于正典历史，fresh native session 经 <baton-sync> 恢复完整逻辑历史时
     // 会带上它（标记 cancelled），这是预期语义而非泄漏
     adapter.openGate();
     expect(await first).toBe("completed");
@@ -179,7 +179,7 @@ describe("runtime-owned user_message at dequeue", () => {
     expect(adapter.prompts[0]).toContain("(cancelled)");
   });
 
-  test("provider startup failure leaves error + idle + summary instead of a vanished input", async () => {
+  test("harness startup failure leaves error + idle + summary instead of a vanished input", async () => {
     const adapter = new GatedOpenAdapter("codex");
     const runtime = runtimeWith(adapter);
 

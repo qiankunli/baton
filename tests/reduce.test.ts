@@ -17,7 +17,7 @@ function ev<K extends EventKind>(kind: K, payload: EventPayloadMap[K], turnId?: 
     ts: new Date(0).toISOString(),
     seq: ++seq,
     batonSessionId: "bs_test",
-    provider: "test",
+    harness: "test",
     kind,
     payload,
     turnId,
@@ -85,7 +85,7 @@ describe("tool call upsert semantics", () => {
     ]);
     const tc = state.toolCalls.get("tc1")!;
     expect(tc.status).toBe("completed");
-    expect(tc.provider).toBe("test");
+    expect(tc.harness).toBe("test");
     expect(tc.kind).toBe("read");
     expect(tc.title).toBeUndefined();
   });
@@ -146,7 +146,7 @@ describe("state / permission / plan / usage", () => {
     const request = {
       kind: "hook_trust" as const,
       requestId: "htr1",
-      providerName: "Codex",
+      harnessName: "Codex",
       hooks: [
         {
           key: "hook1",
@@ -173,7 +173,7 @@ describe("state / permission / plan / usage", () => {
       ev("plan_update", { planId: "pl1", entries: [{ content: "step1", priority: "high", status: "completed" }] }),
     ]);
     expect(state.plans.get("pl1")!.entries[0]!.status).toBe("completed");
-    expect(state.plans.get("pl1")!.provider).toBe("test");
+    expect(state.plans.get("pl1")!.harness).toBe("test");
     expect(state.timeline.filter((t) => t.type === "plan")).toHaveLength(1);
   });
 
@@ -257,7 +257,7 @@ describe("snapshot vs delta semantics", () => {
     ]);
     expect(state.usage.inputTokens).toBe(13);
     expect(state.usage.outputTokens).toBe(7);
-    expect(state.perProvider.get("test")?.contextUsage).toEqual({ contextUsed: 1500, contextSize: 200000 });
+    expect(state.perHarness.get("test")?.contextUsage).toEqual({ contextUsed: 1500, contextSize: 200000 });
   });
 
   test("context_usage_update snapshot replaces omitted fields too — no field-level merge", () => {
@@ -265,27 +265,27 @@ describe("snapshot vs delta semantics", () => {
       ev("context_usage_update", { contextUsed: 1000, cost: { amount: 1.5, currency: "USD" } }),
       ev("context_usage_update", { contextUsed: 1200 }),
     ]);
-    expect(state.perProvider.get("test")?.contextUsage?.cost).toBeUndefined();
+    expect(state.perHarness.get("test")?.contextUsage?.cost).toBeUndefined();
   });
 
-  test("context snapshots remain independently addressable per provider", () => {
+  test("context snapshots remain independently addressable per harness", () => {
     const state = reduceEvents([
-      { ...ev("context_usage_update", { contextSize: 200_000 }), provider: "codex" },
-      { ...ev("context_usage_update", { contextSize: 1_000_000 }), provider: "claude-code" },
+      { ...ev("context_usage_update", { contextSize: 200_000 }), harness: "codex" },
+      { ...ev("context_usage_update", { contextSize: 1_000_000 }), harness: "claude-code" },
     ]);
-    expect(state.perProvider.get("codex")?.contextUsage?.contextSize).toBe(200_000);
-    expect(state.perProvider.get("claude-code")?.contextUsage?.contextSize).toBe(1_000_000);
+    expect(state.perHarness.get("codex")?.contextUsage?.contextSize).toBe(200_000);
+    expect(state.perHarness.get("claude-code")?.contextUsage?.contextSize).toBe(1_000_000);
   });
 
-  test("plan_update records the provider's latest plan id in the per-provider slot", () => {
-    // pinned plan 的归属查询键：投影按 perProvider.lastPlanId 直取，不再全表扫描
+  test("plan_update records the harness's latest plan id in the per-harness slot", () => {
+    // pinned plan 的归属查询键：投影按 perHarness.lastPlanId 直取，不再全表扫描
     const state = reduceEvents([
-      { ...ev("plan_update", { planId: "p1", entries: [{ content: "a", status: "pending", priority: "medium" }] }), provider: "codex" },
-      { ...ev("plan_update", { planId: "p2", entries: [{ content: "b", status: "pending", priority: "medium" }] }), provider: "claude-code" },
-      { ...ev("plan_update", { planId: "p3", entries: [{ content: "c", status: "pending", priority: "medium" }] }), provider: "codex" },
+      { ...ev("plan_update", { planId: "p1", entries: [{ content: "a", status: "pending", priority: "medium" }] }), harness: "codex" },
+      { ...ev("plan_update", { planId: "p2", entries: [{ content: "b", status: "pending", priority: "medium" }] }), harness: "claude-code" },
+      { ...ev("plan_update", { planId: "p3", entries: [{ content: "c", status: "pending", priority: "medium" }] }), harness: "codex" },
     ]);
-    expect(state.perProvider.get("codex")?.lastPlanId).toBe("p3");
-    expect(state.perProvider.get("claude-code")?.lastPlanId).toBe("p2");
+    expect(state.perHarness.get("codex")?.lastPlanId).toBe("p3");
+    expect(state.perHarness.get("claude-code")?.lastPlanId).toBe("p2");
   });
 });
 
@@ -351,7 +351,7 @@ describe("per-turn run state aggregation", () => {
   test("concurrent turns close independently; runState derives from the set", () => {
     const state = reduceEvents([
       ev("state_update", { state: "running" }, "t_driven"),
-      ev("state_update", { state: "running", origin: "provider" }, "t_obs"),
+      ev("state_update", { state: "running", origin: "harness" }, "t_obs"),
     ]);
     expect([...state.activeTurns.keys()].sort()).toEqual(["t_driven", "t_obs"]);
     expect(state.runState).toBe("running");
@@ -378,7 +378,7 @@ describe("per-turn run state aggregation", () => {
     expect(state.runState).toBe("requires_action");
 
     // 并发场景：任一 turn requires_action 即上浮
-    applyEvent(state, ev("state_update", { state: "running", origin: "provider" }, "t_obs"));
+    applyEvent(state, ev("state_update", { state: "running", origin: "harness" }, "t_obs"));
     expect(state.runState).toBe("requires_action");
 
     // 用户应答后回到 running（requires_action ↔ running 可来回迁移）
@@ -440,7 +440,7 @@ describe("per-turn run state aggregation", () => {
   test("legacy idle without turnId closes everything (旧 jsonl 兼容)", () => {
     const state = reduceEvents([
       ev("state_update", { state: "running" }, "t1"),
-      ev("state_update", { state: "running", origin: "provider" }, "t2"),
+      ev("state_update", { state: "running", origin: "harness" }, "t2"),
       ev("state_update", { state: "idle", stopReason: "cancelled" }),
     ]);
     expect(state.activeTurns.size).toBe(0);
@@ -449,10 +449,10 @@ describe("per-turn run state aggregation", () => {
 
   test("duplicate running keeps the original startedAt and origin", () => {
     const state = reduceEvents([
-      ev("state_update", { state: "running", origin: "provider" }, "t1"),
+      ev("state_update", { state: "running", origin: "harness" }, "t1"),
       ev("state_update", { state: "running" }, "t1"),
     ]);
-    expect(state.activeTurns.get("t1")?.origin).toBe("provider");
+    expect(state.activeTurns.get("t1")?.origin).toBe("harness");
   });
 });
 

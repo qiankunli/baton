@@ -12,7 +12,7 @@ import { ensureConfigFile, loadConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
 import { newId } from "../events/ids.ts";
 import type { InteractionRequest } from "../events/types.ts";
-import { createProviderAdapter, parseProvider } from "../providers/registry.ts";
+import { createHarnessAdapter, parseHarness } from "../harnesses/registry.ts";
 import { SessionStore, sessionDisplayTitle } from "../store/store.ts";
 
 function argValue(flag: string): string | undefined {
@@ -37,7 +37,7 @@ async function askRequest(req: InteractionRequest): Promise<InteractionResponse>
     }
   }
   if (req.kind === "hook_trust") {
-    stdout.write(`\n⚠ Trust ${req.hooks.length} ${req.providerName} hook${req.hooks.length === 1 ? "" : "s"}?\n`);
+    stdout.write(`\n⚠ Trust ${req.hooks.length} ${req.harnessName} hook${req.hooks.length === 1 ? "" : "s"}?\n`);
     req.hooks.forEach((hook) => {
       stdout.write(`  - ${hook.pluginId ?? hook.source}: ${hook.sourcePath} [${hook.trustStatus}]\n`);
     });
@@ -73,8 +73,8 @@ async function main(): Promise<void> {
   ensureConfigFile(rootArg);
   const config = loadConfig(rootArg);
   const requested = argValue("--agent") ?? config.defaultAgent;
-  // registry 全路径接管：不再手写 provider 分支（未知值以前静默落到 codex，现在显式报错）
-  const agentName = parseProvider(requested);
+  // registry 全路径接管：不再手写 harness 分支（未知值以前静默落到 codex，现在显式报错）
+  const agentName = parseHarness(requested);
   if (!agentName) {
     stdout.write(`unknown agent: ${requested}\n`);
     process.exit(1);
@@ -84,7 +84,7 @@ async function main(): Promise<void> {
   const session = store.createSession({ cwd });
   stdout.write(`baton session: ${session.id}\nlog: ${session.dir}/session.jsonl\n`);
 
-  const adapter = createProviderAdapter(agentName, {
+  const adapter = createHarnessAdapter(agentName, {
     requestHandler: askRequest,
     diagnostic: (entry) => session.diagnostic(entry),
     config,
@@ -98,7 +98,7 @@ async function main(): Promise<void> {
     session.append(ev);
     if (ev.kind === "agent_message_chunk" && ev.payload.content.type === "text") {
       if (!sawOutput) {
-        stdout.write(`${adapter.provider}> `);
+        stdout.write(`${adapter.harness}> `);
         sawOutput = true;
       }
       stdout.write((ev.payload.content as { text: string }).text);
@@ -109,8 +109,8 @@ async function main(): Promise<void> {
     }
     if (ev.kind === "state_update" && ev.payload.state === "idle") turnDone?.();
   });
-  session.setProviderSession(adapter.provider, { provider: adapter.provider, providerSessionId: ref.providerSessionId });
-  stdout.write(`${adapter.provider} session: ${ref.providerSessionId}\nType to chat, /exit to quit\n\n`);
+  session.setHarnessSession(adapter.harness, { harness: adapter.harness, harnessSessionId: ref.harnessSessionId });
+  stdout.write(`${adapter.harness} session: ${ref.harnessSessionId}\nType to chat, /exit to quit\n\n`);
 
   for (;;) {
     const line = (await rl.question("you> ")).trim();
@@ -138,11 +138,11 @@ async function main(): Promise<void> {
     // user_message/running 由 REPL 落盘，adapter 只报告执行过程与终态
     session.append({
       kind: "user_message",
-      provider: adapter.provider,
+      harness: adapter.harness,
       turnId,
       payload: { messageId, content: [{ type: "text", text: prompt }] },
     });
-    session.append({ kind: "state_update", provider: adapter.provider, turnId, payload: { state: "running" } });
+    session.append({ kind: "state_update", harness: adapter.harness, turnId, payload: { state: "running" } });
     try {
       // submit 只确认接收；进展与终结经 open 时绑定的 sink 上报
       await adapter.submit(ref, { turnId, messageId, blocks: [{ type: "text", text: prompt }] });
@@ -150,8 +150,8 @@ async function main(): Promise<void> {
       const message = err instanceof Error ? err.message : String(err);
       stdout.write(`\nerror: ${message}\n`);
       // user_message 已落盘：admission 失败也要有结局，不留无终态的半状态
-      session.append({ kind: "_baton_error_update", provider: adapter.provider, turnId, payload: { message, retryable: false } });
-      session.append({ kind: "state_update", provider: adapter.provider, turnId, payload: { state: "idle", stopReason: "error" } });
+      session.append({ kind: "_baton_error_update", harness: adapter.harness, turnId, payload: { message, retryable: false } });
+      session.append({ kind: "state_update", harness: adapter.harness, turnId, payload: { state: "idle", stopReason: "error" } });
       continue;
     }
     await done;
@@ -162,7 +162,7 @@ async function main(): Promise<void> {
     if (isNativeSessionIdentifiable(adapter)) {
       const nativeId = adapter.nativeSessionId(ref);
       if (nativeId) {
-        session.setProviderSession(adapter.provider, { provider: adapter.provider, providerSessionId: nativeId });
+        session.setHarnessSession(adapter.harness, { harness: adapter.harness, harnessSessionId: nativeId });
       }
     }
     stdout.write(`\n— turn done (${summary.stopReason ?? "?"}, in:${summary.usage?.inputTokens ?? 0} out:${summary.usage?.outputTokens ?? 0})\n\n`);

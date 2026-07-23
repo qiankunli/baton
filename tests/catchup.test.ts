@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildCatchUpContext, buildProviderCatchUpContext } from "../src/context/mention.ts";
+import { buildCatchUpContext, buildHarnessCatchUpContext } from "../src/context/mention.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
 let root: string;
@@ -20,21 +20,21 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-function turn(provider: string, i: number, agentText: string): void {
-  const turnId = `t_${provider}_${i}`;
-  h.append({ kind: "user_message", provider, turnId, payload: { messageId: `${turnId}_u`, content: [{ type: "text", text: `q${i}` }] } });
-  h.append({ kind: "agent_message", provider, turnId, payload: { messageId: `${turnId}_a`, content: [{ type: "text", text: agentText }] } });
-  h.append({ kind: "state_update", provider, turnId, payload: { state: "idle", stopReason: "end_turn" } });
+function turn(harness: string, i: number, agentText: string): void {
+  const turnId = `t_${harness}_${i}`;
+  h.append({ kind: "user_message", harness, turnId, payload: { messageId: `${turnId}_u`, content: [{ type: "text", text: `q${i}` }] } });
+  h.append({ kind: "agent_message", harness, turnId, payload: { messageId: `${turnId}_a`, content: [{ type: "text", text: agentText }] } });
+  h.append({ kind: "state_update", harness, turnId, payload: { state: "idle", stopReason: "end_turn" } });
   h.summarizeTurn(turnId);
 }
 
 describe("buildCatchUpContext", () => {
-  test("null when no turns from other providers", () => {
+  test("null when no turns from other harnesses", () => {
     turn("codex", 1, "codex did a thing");
     expect(buildCatchUpContext(h, "codex")).toBeNull();
   });
 
-  test("includes other providers' turns for a newcomer", () => {
+  test("includes other harnesses' turns for a newcomer", () => {
     turn("codex", 1, "codex 决定用 pnpm");
     const ctx = buildCatchUpContext(h, "claude-code");
     expect(ctx).toContain("codex");
@@ -57,29 +57,29 @@ describe("buildCatchUpContext", () => {
   });
 });
 
-describe("buildProviderCatchUpContext", () => {
+describe("buildHarnessCatchUpContext", () => {
   test("fresh native session receives the complete BatonSession history", () => {
     turn("codex", 1, "codex history");
     turn("claude-code", 2, "claude history");
-    const result = buildProviderCatchUpContext(h, {
-      provider: "codex",
+    const result = buildHarnessCatchUpContext(h, {
+      harness: "codex",
       sinceSeq: 0,
-      includeProviderTurns: true,
+      includeHarnessTurns: true,
     });
     expect(result?.text).toContain("codex history");
     expect(result?.text).toContain("claude history");
     expect(result?.throughSeq).toBe(h.readEvents().at(-1)?.seq);
   });
 
-  test("resumed native session only receives other providers after its watermark", () => {
+  test("resumed native session only receives other harnesses after its watermark", () => {
     turn("codex", 1, "already native");
     const watermark = h.readEvents().at(-1)!.seq;
     turn("codex", 2, "also native");
     turn("claude-code", 3, "missing context");
-    const result = buildProviderCatchUpContext(h, {
-      provider: "codex",
+    const result = buildHarnessCatchUpContext(h, {
+      harness: "codex",
       sinceSeq: watermark,
-      includeProviderTurns: false,
+      includeHarnessTurns: false,
     });
     expect(result?.text).toContain("missing context");
     expect(result?.text).not.toContain("already native");
