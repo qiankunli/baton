@@ -19,7 +19,7 @@ import type {
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
-import type { AnyNewEvent } from "../src/events/types.ts";
+import type { AnyEventDraft } from "../src/events/types.ts";
 import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 import { BatonChatProtocol } from "../src/tui/protocol.ts";
@@ -43,7 +43,7 @@ afterEach(() => {
 // 投影正确性不允许依赖 controller 的 turn 状态——这正是当年丢消息的机制。
 
 describe("projection invariant: every appended event reaches the view", () => {
-  const arrivals: Array<{ name: string; before: AnyNewEvent[] }> = [
+  const arrivals: Array<{ name: string; before: AnyEventDraft[] }> = [
     { name: "while idle (between turns)", before: [] },
     {
       name: "while a driven turn of the same harness is running",
@@ -60,8 +60,9 @@ describe("projection invariant: every appended event reaches the view", () => {
   for (const arrival of arrivals) {
     test(arrival.name, async () => {
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
-      for (const ev of arrival.before) session.append(ev);
+      for (const ev of arrival.before) session.append({ ...ev, source: { type: "baton" } } as never);
       session.append({
+        source: { type: "harness", harnessTargetId: "claude" },
         kind: "agent_message",
         harness: "claude-code",
         turnId: "t_observed",
@@ -79,10 +80,11 @@ describe("observed turn presentation", () => {
   test("busy + background run-status line while an observed turn runs; cleared on idle", async () => {
     const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
     session.append({
+      source: { type: "harness", harnessTargetId: "claude" },
       kind: "state_update",
       harness: "claude-code",
       turnId: "t_obs",
-      payload: { state: "running", origin: "harness" },
+      payload: { state: "running" },
     });
     let view = protocol.getView();
     expect(view.busy).toBe(true);
@@ -96,6 +98,7 @@ describe("observed turn presentation", () => {
     expect(line?.hint).toBeUndefined();
 
     session.append({
+      source: { type: "harness", harnessTargetId: "claude" },
       kind: "state_update",
       harness: "claude-code",
       turnId: "t_obs",
@@ -115,10 +118,11 @@ describe("observed turn presentation", () => {
     const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
     for (const turnId of ["t_obs1", "t_obs2"]) {
       session.append({
+        source: { type: "harness", harnessTargetId: "claude" },
         kind: "state_update",
         harness: "claude-code",
         turnId,
-        payload: { state: "running", origin: "harness" },
+        payload: { state: "running" },
       });
     }
     let view = protocol.getView();
@@ -128,6 +132,7 @@ describe("observed turn presentation", () => {
 
     // 一个收口不影响另一个（单槽时代任何 idle 都会全局清空）
     session.append({
+      source: { type: "harness", harnessTargetId: "claude" },
       kind: "state_update",
       harness: "claude-code",
       turnId: "t_obs1",
@@ -182,7 +187,7 @@ class WakingAdapter implements HarnessAdapter {
         kind: "state_update",
         harness: this.harness,
         turnId: "t_wake",
-        payload: { state: "running", origin: "harness" },
+        payload: { state: "running" },
       });
       this.sink?.({
         kind: "agent_message",
@@ -244,7 +249,7 @@ describe("claude adapter observed-turn minting", () => {
     expect(startsObservedTurn("result", done)).toBe(false);
   });
 
-  test("mintObservedTurn opens with running(origin: harness) under a fresh turn id", async () => {
+  test("mintObservedTurn opens with running under a fresh turn id", async () => {
     const adapter = new ClaudeAdapter({ requestHandler: async (req) => ({ kind: "permission", requestId: req.requestId, optionId: "deny" }) });
     const events: Array<{ kind: string; turnId?: string; payload: Record<string, unknown> }> = [];
     const ref = await adapter.open({ cwd: "/tmp" }, (ev) => events.push(ev as never));
@@ -261,7 +266,7 @@ describe("claude adapter observed-turn minting", () => {
     expect(events[0]).toMatchObject({
       kind: "state_update",
       turnId: observed.turnId,
-      payload: { state: "running", origin: "harness" },
+      payload: { state: "running" },
     });
   });
 });

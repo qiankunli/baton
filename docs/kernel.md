@@ -11,7 +11,7 @@
 | 概念 | 语义 | 绑定的不变量 |
 |---|---|---|
 | **BatonSession** | 用户拥有的持久逻辑历史，跨 harness 的唯一时间线 | 身份锚点：历史跟随 session，项目归属跟随发起 cwd（跨项目 fork = 同一段逻辑历史落到另一 cwd + 全新 HarnessSession）|
-| **Event（信封）** | 最小 append-only 记录：归一字段 `payload` + 原始 wire `raw` | 事件流是**感知的唯一真相源**；UI / 崩溃恢复 / resume 全是它的 reduce/投影，无旁路通道 |
+| **Event（信封）** | 最小 append-only 事实：必填 `source` + 归一 `payload` + 原始 wire `raw`；来源与 Harness/Turn 执行坐标正交 | 事件流是**感知的唯一真相源**；UI / 崩溃恢复 / resume 全是它的 reduce/投影，无旁路通道 |
 | **Turn** | 一段有始有终的 harness 活动（带 stopReason）| "谁发起"是属性（driven / observed），不是存在条件；**每个被 admit 的 turn 恰好收口一次** |
 | **HarnessTarget** | Baton 配置与调度侧的一份具体 Harness 目标 | 执行位置与协议类型分离：`Controller` slot、原生 session 和同步水位按 target 隔离，不按 Harness 名称混用 |
 | **Adapter + Capability** | harness 方言的**唯一**居所：小核心 `HarnessAdapter` + 可选能力 descriptor | 差异表达为"能力有无"，type-guard 发现、契约测试钉住；**内核永不 `if harness===`** |
@@ -32,7 +32,7 @@ PluginInstance 等配置对象使用各自作用域内的稳定配置 ID。fork 
 
 内核的正确性压在这三条上；违反任意一条，加 harness 就会渗进核心。
 
-1. **单通道真相**：一切经 `event → append → broadcast → reduce → projection`。live 与 resume 是同一条 reduce 路径。不允许第二条投影通道（per-turn 回调曾是第二通道，导致 observed turn 的回复"只持久化、不投影"，重开会话才可见）。自愈也走这条：合成的终态事件重新进 `onAdapterEvent`，不直接改 state。由 `tests/harness-initiated-turn.test.ts` 的参数化契约测试钉住。
+1. **单通道真相**：一切经 `event → append → broadcast → reduce → projection`。live 与 resume 是同一条 reduce 路径。不允许第二条投影通道（per-turn 回调曾是第二通道，导致 observed turn 的回复"只持久化、不投影"，重开会话才可见）。自愈也走这条：合成的终态事件重新进 `appendEvent`，不直接改 state。由 `tests/harness-initiated-turn.test.ts` 的参数化契约测试钉住。
 
 2. **终态封闭 + 悲观兜底**：内部状态是**封闭词表**，adapter 在边界把 harness 的开放 / UNSTABLE 字符串归一进来；**未知一律保守**（未知终态 → `failed` 不是 `completed`；未知 verdict → 不 finalize）。"悲观、绝不失声"是感知面的承重原则。
 
@@ -55,6 +55,7 @@ PluginInstance 等配置对象使用各自作用域内的稳定配置 ID。fork 
              → harness wire
 感知（入站）  harness wire
              → Adapter 归一（→ 封闭词表，未知 fail-closed，保留 raw）
+             → 宿主可信入口盖 source:harness
              → Event append → broadcast
              → reduce → Projection 快照
              → chat-tui 渲染
@@ -62,8 +63,8 @@ PluginInstance 等配置对象使用各自作用域内的稳定配置 ID。fork 
 
 **Turn 生命周期**（内核心跳）：
 
-- `admit`（Controller，driven turn）：出队即由 controller 落 `user_message` + `state_update(running)`——用户输入是 BatonSession 的事实，不等 harness 冷启动；driven turn 全局串行、finalize 推进队列。
-- `observe`（adapter，observed turn）：harness 自发。adapter 在终态后的同一消息流上检测到新活动，铸新 turnId、以 `state_update(running, origin:"harness")` 开界、idle 收界；controller 只划界记账、投影，**不进队列**（它已在跑，调度它无意义、阻塞用户输入更是倒置）。全局串行约定据此收窄为：**driven turn 全局串行，observed turn 与其正交**。
+- `admit`（Controller，driven turn）：出队即落 `user_message(source:user)` + `state_update(running, source:baton)`——用户输入是 BatonSession 的事实，不等 harness 冷启动；driven turn 全局串行、finalize 推进队列。
+- `observe`（adapter，observed turn）：harness 自发。adapter 在终态后的同一消息流上检测到新活动，铸新 turnId、以 `state_update(running, source:harness)` 开界、idle 收界；controller 只划界记账、投影，**不进队列**（它已在跑，调度它无意义、阻塞用户输入更是倒置）。全局串行约定据此收窄为：**driven turn 全局串行，observed turn 与其正交**。
 - `terminal`（恰好一次）：adapter 在任何退出路径（正常 / wire error / 子进程退出 / transport close）都必须报告或合成一次 `state_update(idle)`；错误路径先发 `_baton_error_update`。重复 / 迟到的物理终态允许存在，controller 按 baton turn id 幂等 finalize。
 - `setup`（harness 冷启动，turn 之外的活动窗口）：slot 创建 → open 完成之间，adapter 可能阻塞征询用户（hook trust / 登录确认）、拉模型目录、失败退出。setup 不自成 turn——其间的 request 事件一律归属**触发冷启动的 driven turn**（唯一事件入口按"是不是 request"补归属，不按 kind 特判）；setup 期间 adapter 自行启动的资源（子进程、探测 query）由 **adapter 负责清理**——open 未返回 ref 前 controller 无从 close，失败路径不清理即泄漏。
 - `finalize`：落 turn-summary、推进队列（仅 driven）。
@@ -89,7 +90,7 @@ interface HarnessAdapter {
 
 **MUST**：
 
-- 实现小核心 `HarnessAdapter`；把 wire 方言归一进 Event 信封并保 `raw`；未知终态按不变量 #2 保守收口。
+- 实现小核心 `HarnessAdapter`；把 wire 方言归一成 Event 草稿并保 `raw`；adapter 不能自填 `source`，宿主在接入边界统一标为 Harness 来源；未知终态按不变量 #2 保守收口。
 - 可选能力（`Steerable` / `Reconcilable` / `ModelConfigurable` / …）**声明即必须实现**，由契约测试保证；不声明 = 优雅降级，绝不是核心分支。
 - 经 `harness/registry`（Harness 定义 + adapter 工厂）+ `harness/ids`（无 SDK 身份目录：id + aliases）注册。
 
@@ -110,7 +111,7 @@ interface HarnessAdapter {
 
 - **默认：单个 harness 的特性留在 adapter + `raw`**，或表达为一个 optional capability。一家有、别家没有的东西不进内核——否则内核长出只服务一家的字段，就退化成"harness 分支的联合体"，§2 不变量 #3 名存实亡。
 - **提升触发：同一特性在 ≥2 个 harness 上独立出现**，说明它是这个问题域的普遍形状、而非某家方言——此时才把它归一进内核。cross-harness 证据是门槛，单家便利不是。
-- **加法优先、语义封闭**：优先新增事件类型 / Turn 属性 / capability，尽量不改既有 `payload` 的既定含义——旧 `session.jsonl` 必须仍能 replay 出相同累计结果（§2 不变量 #1）。能用 optional capability 表达的，就不进核心必选。
+- **加法优先、语义封闭**：优先新增事件类型 / Turn 属性 / capability，尽量不改既有 `payload` 的既定含义。确需改变信封契约时递增 envelope version，明确迁移或不兼容边界，不能让两种语义共用同一版本。能用 optional capability 表达的，就不进核心必选。
 
 **两个演进方向：**
 

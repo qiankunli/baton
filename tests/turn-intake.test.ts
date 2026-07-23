@@ -84,12 +84,14 @@ function controllerWith(adapter: HarnessAdapter): Controller {
 /** 直接写入一个已收口、带 summary 的 turn（另一 harness 的既有历史） */
 function completedTurn(handle: SessionHandle, harness: string, turnId: string, text: string): void {
   handle.append({
+    source: { type: "baton" },
     kind: "user_message",
     harness,
     turnId,
     payload: { messageId: `${turnId}-user`, content: [{ type: "text", text }] },
   });
   handle.append({
+    source: { type: "baton" },
     kind: "state_update",
     harness,
     turnId,
@@ -109,12 +111,14 @@ describe("controller-owned user_message at dequeue", () => {
     const events = session.readEvents();
     const userMessages = events.filter((ev) => ev.kind === "user_message");
     expect(userMessages).toHaveLength(1);
+    expect(userMessages[0]!.source).toEqual({ type: "user" });
     expect(textOf((userMessages[0]!.payload as { content: Array<{ type: string; text: string }> }).content)).toBe(
       "hello",
     );
-    expect(
-      events.some((ev) => ev.kind === "state_update" && (ev.payload as { state: string }).state === "running"),
-    ).toBe(true);
+    const running = events.find(
+      (ev) => ev.kind === "state_update" && (ev.payload as { state: string }).state === "running",
+    );
+    expect(running?.source).toEqual({ type: "baton" });
     // 冷启动阶段对用户可见
     expect(
       events.some((ev) => ev.kind === "_baton_run_status" && (ev.payload as { phase: string | null }).phase === "starting"),
@@ -124,7 +128,15 @@ describe("controller-owned user_message at dequeue", () => {
     adapter.openGate();
     expect(await outcome).toBe("completed");
     // adapter 不再重复发用户消息：正典历史里恰好一条
-    expect(session.readEvents().filter((ev) => ev.kind === "user_message")).toHaveLength(1);
+    const completedEvents = session.readEvents();
+    expect(completedEvents.filter((ev) => ev.kind === "user_message")).toHaveLength(1);
+    expect(completedEvents.find((ev) => ev.kind === "agent_message")?.source).toEqual({
+      type: "harness",
+      harnessTargetId: "codex",
+    });
+    expect(completedEvents.find((ev) => ev.kind === "_baton_turn_summary")?.source).toEqual({
+      type: "baton",
+    });
   });
 
   test("canonical user_message keeps the original input; <baton-sync> only reaches the harness prompt", async () => {

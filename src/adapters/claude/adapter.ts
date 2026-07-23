@@ -654,7 +654,7 @@ export class ClaudeAdapter implements HarnessAdapter {
   }
 
   /**
-   * 铸造 observed turn 并以 running(origin:"harness") 开界（design §5.10）。
+   * 铸造 observed turn 并以 harness 来源的 running 开界（design §5.10）。
    * 刻意不写 rt.activeTurn：observed turn 不占 admission 槽——用户此刻仍可 submit
    * 新 driven turn（走新 query），宿主队列语义不受 harness 自发活动影响。
    */
@@ -662,7 +662,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     const observed: ClaudeTurn = { turnId: newId("t"), finalized: false, cancelRequested: false };
     this.emit(
       rt,
-      { kind: "state_update", harness: this.harness, payload: { state: "running", origin: "harness" } },
+      { kind: "state_update", harness: this.harness, payload: { state: "running" } },
       observed,
     );
     return observed;

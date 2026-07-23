@@ -158,18 +158,21 @@ afterEach(() => {
 
 function completedTurn(handle: SessionHandle, harness: string, turnId: string, text: string): void {
   handle.append({
+    source: { type: "baton" },
     kind: "user_message",
     harness,
     turnId,
     payload: { messageId: `${turnId}-user`, content: [{ type: "text", text }] },
   });
   handle.append({
+    source: { type: "baton" },
     kind: "agent_message",
     harness,
     turnId,
     payload: { messageId: `${turnId}-agent`, content: [{ type: "text", text: `${text}-done` }] },
   });
   handle.append({
+    source: { type: "baton" },
     kind: "state_update",
     harness,
     turnId,
@@ -292,6 +295,14 @@ describe("Controller", () => {
       .readEvents()
       .filter((event) => event.kind === "_baton_turn_summary");
     expect(summaries.map((event) => event.harnessTargetId)).toEqual(["codex-a", "codex-b"]);
+    const harnessSources = session
+      .readEvents()
+      .filter((event) => event.kind === "agent_message")
+      .map((event) => event.source);
+    expect(harnessSources).toEqual([
+      { type: "harness", harnessTargetId: "codex-a" },
+      { type: "harness", harnessTargetId: "codex-b" },
+    ]);
 
     const launchSnapshot = session.meta.harnessSessions["codex-a"]?.launchSnapshot;
     await controller.setModel("codex-a", null);

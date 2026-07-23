@@ -6,7 +6,7 @@ import type { RequestHandler } from "../src/adapters/types.ts";
 import { expect, test } from "bun:test";
 
 import { ClaudeAdapter } from "../src/adapters/claude/adapter.ts";
-import type { AnyNewEvent } from "../src/events/types.ts";
+import type { AnyEventDraft } from "../src/events/types.ts";
 
 const requestHandler: RequestHandler = async (req) =>
   req.kind === "permission"
@@ -25,8 +25,8 @@ test("late stream-drain finalize from the previous turn must not close the next 
   const ref = await adapter.open({ cwd: "/tmp" }, (ev) => events.push(ev as never));
   const seams = adapter as unknown as {
     sessions: Map<string, { activeTurn?: TurnState }>;
-    emit(rt: unknown, ev: AnyNewEvent, turn?: TurnState): void;
-    finishTurn(rt: unknown, emit: (ev: AnyNewEvent) => void, turn: TurnState, stopReason: string): void;
+    emit(rt: unknown, ev: AnyEventDraft, turn?: TurnState): void;
+    finishTurn(rt: unknown, emit: (ev: AnyEventDraft) => void, turn: TurnState, stopReason: string): void;
   };
   const rt = seams.sessions.get(ref.harnessSessionId);
   if (!rt) throw new Error("runtime not registered by open()");
@@ -34,7 +34,7 @@ test("late stream-drain finalize from the previous turn must not close the next 
   // turn A：admission 后被 result 消息正常终结
   const turnA: TurnState = { turnId: "t_A", finalized: false, cancelRequested: false };
   rt.activeTurn = turnA;
-  const emitA = (ev: AnyNewEvent) => seams.emit(rt, ev, turnA);
+  const emitA = (ev: AnyEventDraft) => seams.emit(rt, ev, turnA);
   seams.finishTurn(rt, emitA, turnA, "end_turn");
 
   // steer：controller 在毫秒级内提交下一 turn（模拟 submit 的 admission 段）

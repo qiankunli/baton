@@ -7,16 +7,23 @@ import {
   type EventEnvelope,
   type EventKind,
   type EventPayloadMap,
+  type EventSource,
 } from "../src/events/types.ts";
 import { applyEvent, emptySessionState, reduceEvents } from "../src/store/reduce.ts";
 
 let seq = 0;
-function ev<K extends EventKind>(kind: K, payload: EventPayloadMap[K], turnId?: string): EventEnvelope<K> {
+function ev<K extends EventKind>(
+  kind: K,
+  payload: EventPayloadMap[K],
+  turnId?: string,
+  source: EventSource = { type: "baton" },
+): EventEnvelope<K> {
   return {
     v: ENVELOPE_VERSION,
     ts: new Date(0).toISOString(),
     seq: ++seq,
     batonSessionId: "bs_test",
+    source,
     harness: "test",
     kind,
     payload,
@@ -351,7 +358,7 @@ describe("per-turn run state aggregation", () => {
   test("concurrent turns close independently; runState derives from the set", () => {
     const state = reduceEvents([
       ev("state_update", { state: "running" }, "t_driven"),
-      ev("state_update", { state: "running", origin: "harness" }, "t_obs"),
+      ev("state_update", { state: "running" }, "t_obs", { type: "harness", harnessTargetId: "test" }),
     ]);
     expect([...state.activeTurns.keys()].sort()).toEqual(["t_driven", "t_obs"]);
     expect(state.runState).toBe("running");
@@ -378,7 +385,10 @@ describe("per-turn run state aggregation", () => {
     expect(state.runState).toBe("requires_action");
 
     // 并发场景：任一 turn requires_action 即上浮
-    applyEvent(state, ev("state_update", { state: "running", origin: "harness" }, "t_obs"));
+    applyEvent(
+      state,
+      ev("state_update", { state: "running" }, "t_obs", { type: "harness", harnessTargetId: "test" }),
+    );
     expect(state.runState).toBe("requires_action");
 
     // 用户应答后回到 running（requires_action ↔ running 可来回迁移）
@@ -440,19 +450,19 @@ describe("per-turn run state aggregation", () => {
   test("legacy idle without turnId closes everything (旧 jsonl 兼容)", () => {
     const state = reduceEvents([
       ev("state_update", { state: "running" }, "t1"),
-      ev("state_update", { state: "running", origin: "harness" }, "t2"),
+      ev("state_update", { state: "running" }, "t2", { type: "harness", harnessTargetId: "test" }),
       ev("state_update", { state: "idle", stopReason: "cancelled" }),
     ]);
     expect(state.activeTurns.size).toBe(0);
     expect(state.runState).toBe("idle");
   });
 
-  test("duplicate running keeps the original startedAt and origin", () => {
+  test("duplicate running keeps the original startedAt and role", () => {
     const state = reduceEvents([
-      ev("state_update", { state: "running", origin: "harness" }, "t1"),
+      ev("state_update", { state: "running" }, "t1", { type: "harness", harnessTargetId: "test" }),
       ev("state_update", { state: "running" }, "t1"),
     ]);
-    expect(state.activeTurns.get("t1")?.origin).toBe("harness");
+    expect(state.activeTurns.get("t1")?.role).toBe("observed");
   });
 });
 

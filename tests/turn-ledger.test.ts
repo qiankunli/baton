@@ -20,7 +20,7 @@ import type {
   PromptReceipt,
   HarnessSessionRef,
 } from "../src/adapters/types.ts";
-import type { AnyNewEvent } from "../src/events/types.ts";
+import type { AnyEventDraft } from "../src/events/types.ts";
 import { Controller } from "../src/session/controller.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 
@@ -85,7 +85,7 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
       kind: "state_update",
       harness: adapter.harness,
       turnId: "t_obs",
-      payload: { state: "running", origin: "harness" },
+      payload: { state: "running" },
     });
     adapter.sink?.({
       kind: "agent_message",
@@ -125,7 +125,7 @@ describe("terminal routing by turnId (bug#2 regression)", () => {
       kind: "state_update",
       harness: adapter.harness,
       turnId: "t_obs",
-      payload: { state: "running", origin: "harness" },
+      payload: { state: "running" },
     });
     // driven 先收口
     adapter.sink?.({
@@ -231,8 +231,8 @@ describe("adapter contract: terminal state_update carries a turnId", () => {
     const ref = await adapter.open({ cwd: "/tmp" }, (ev) => events.push(ev as never));
     const seams = adapter as unknown as {
       sessions: Map<string, { activeTurn?: unknown }>;
-      emit(rt: unknown, ev: AnyNewEvent, turn?: unknown): void;
-      finishTurn(rt: unknown, emit: (ev: AnyNewEvent) => void, turn: unknown, stopReason: string): void;
+      emit(rt: unknown, ev: AnyEventDraft, turn?: unknown): void;
+      finishTurn(rt: unknown, emit: (ev: AnyEventDraft) => void, turn: unknown, stopReason: string): void;
     };
     const rt = seams.sessions.get(ref.harnessSessionId);
     if (!rt) throw new Error("controller not registered by open()");
@@ -264,7 +264,7 @@ describe("adapter contract: terminal state_update carries a turnId", () => {
       turnId: undefined as string | undefined,
       activeTurn: undefined as { turnId: string; finalized: boolean } | undefined,
       codexTurnId: undefined as string | undefined,
-      sink: (ev: AnyNewEvent) => events.push(ev as never),
+      sink: (ev: AnyEventDraft) => events.push(ev as never),
     };
     const seams = adapter as unknown as {
       threads: Map<string, unknown>;

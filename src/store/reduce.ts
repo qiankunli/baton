@@ -88,8 +88,8 @@ export interface UsageTotal {
 export interface ActiveTurnState {
   turnId: string;
   harness?: string;
-  /** 缺省 user=driven turn；harness=agent 自发的 observed turn（design §5.10） */
-  origin: "user" | "harness";
+  /** driven 由 Baton admit；observed 由 Harness 自发开界（design §5.10）。 */
+  role: "driven" | "observed";
   /** 本 turn 当前非 idle 态（running / requires_action）：保真透传，不折叠成 running */
   state: Exclude<SessionRunState, "idle">;
   startedAt?: number;
@@ -288,7 +288,7 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
           state.activeTurns.clear();
         }
       } else if (ev.turnId) {
-        // 非 idle 态（running / requires_action）：turn 在场。startedAt/origin
+        // 非 idle 态（running / requires_action）：turn 在场。startedAt/role
         // 以首个 running 为准，重复 running（reconnect 重放）不重置起点；
         // state 保真透传（requires_action ↔ running 可来回迁移），但 pending blocking
         // request 在场时钉在 requires_action——重放的 running 不得掩盖未决审批卡片。
@@ -296,7 +296,7 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
         state.activeTurns.set(ev.turnId, {
           turnId: ev.turnId,
           harness: ev.harness ?? existing?.harness,
-          origin: p.origin ?? existing?.origin ?? "user",
+          role: existing?.role ?? (ev.source.type === "harness" ? "observed" : "driven"),
           state: hasPendingBlocking(state, ev.turnId) ? "requires_action" : p.state,
           startedAt: existing?.startedAt ?? (ev.ts ? Date.parse(ev.ts) || undefined : undefined),
           phase: existing?.phase,
@@ -399,7 +399,7 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       break;
     case "context_usage_update":
       // 快照替换语义（与 usage 的增量累加不同）；多 harness 各有自己的原生上下文
-      harnessScoped(state, ev.harness).contextUsage = { ...ev.payload };
+      if (ev.harness) harnessScoped(state, ev.harness).contextUsage = { ...ev.payload };
       break;
     case "_baton_error_update":
       state.lastError = { ...ev.payload, seq: ev.seq };

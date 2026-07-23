@@ -1,7 +1,8 @@
 // Adapter 统一抽象："小核心 + 可选能力"（见 docs/design.md §5.1）。
-// 各家用原生协议接入，翻译成内部事件（AnyNewEvent）交给 sink；信封字段由 Store 补齐。
+// 各家用原生协议接入，翻译成内部 Event 草稿交给 sink；source 由宿主在可信边界补齐，
+// 其余信封字段由 Store 补齐。
 
-import type { AnyNewEvent, InteractionRequest, PromptBlock } from "../events/types.ts";
+import type { AnyEventDraft, InteractionRequest, PromptBlock } from "../events/types.ts";
 
 export interface HarnessSessionRef {
   harness: string;
@@ -10,8 +11,8 @@ export interface HarnessSessionRef {
   resumed?: boolean;
 }
 
-/** adapter 产出的事件由宿主决定去向（append 到 Store、推给 TUI…） */
-export type EventSink = (ev: AnyNewEvent) => void;
+/** adapter 产出的 Event 草稿由宿主归因为 harness 事实，再决定去向。 */
+export type EventSink = (ev: AnyEventDraft) => void;
 
 export interface OpenOptions {
   cwd: string;
