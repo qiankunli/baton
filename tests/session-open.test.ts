@@ -62,17 +62,25 @@ describe("openBatonSession", () => {
 describe("crash recovery on open", () => {
   test("normalizes an interrupted turn: idle + notice + summary", () => {
     const h = store.createSession({ cwd: "/repo" });
-    h.append({ kind: "state_update", payload: { state: "running" }, harness: "codex", turnId: "t1" });
+    h.append({
+      kind: "state_update",
+      payload: { state: "running" },
+      harness: "codex",
+      harnessTargetId: "codex-work",
+      turnId: "t1",
+    });
     h.append({
       kind: "user_message",
       payload: { messageId: "m1", content: [{ type: "text", text: "hi" }] },
       harness: "codex",
+      harnessTargetId: "codex-work",
       turnId: "t1",
     });
     h.append({
       kind: "agent_message_chunk",
       payload: { messageId: "m2", content: { type: "text", text: "partial" } },
       harness: "codex",
+      harnessTargetId: "codex-work",
       turnId: "t1",
     });
 
@@ -85,6 +93,12 @@ describe("crash recovery on open", () => {
     // 中断 turn 补上 summary：catch-up / @ 引用只读 summary，缺失即永久盲区
     expect(state.turnSummaries.map((s) => s.turnId)).toEqual(["t1"]);
     expect(state.turnSummaries[0]!.stopReason).toBe("cancelled");
+    expect(
+      result.session
+        .readEvents()
+        .filter((event) => event.turnId === "t1")
+        .every((event) => event.harnessTargetId === "codex-work"),
+    ).toBe(true);
   });
 
   test("concurrent interrupted turns each get idle + notice + summary", () => {

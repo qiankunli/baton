@@ -102,6 +102,26 @@ class FakeAdapter implements HarnessAdapter {
   async close(_ref: HarnessSessionRef): Promise<void> {}
 }
 
+class TargetedFakeAdapter extends FakeAdapter {
+  constructor(readonly instanceId: string) {
+    super("codex");
+  }
+
+  override async open(opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
+    this.openOptions = opts;
+    this.sink = sink;
+    return {
+      harness: this.harness,
+      harnessSessionId: `${this.instanceId}-runtime-ref`,
+      resumed: Boolean(opts.resumeSessionId),
+    };
+  }
+
+  override nativeSessionId(_ref: HarnessSessionRef): string {
+    return `${this.instanceId}-native`;
+  }
+}
+
 class CompactAdapter extends FakeAdapter {
   override readonly capabilities: AdapterCapabilities = { prompt: {}, compact: { supported: true } };
   compactCalls: string[] = [];
@@ -213,9 +233,70 @@ describe("BatonSessionRuntime", () => {
     await runtime.submit("example", [{ type: "text", text: "hello" }]);
 
     expect(adapter.prompts).toEqual(["hello"]);
-    expect(session.meta.harnessSessions["example-harness"]?.harnessSessionId).toBe(
-      "example-harness-native",
-    );
+    expect(session.meta.harnessSessions.example).toMatchObject({
+      harnessTargetId: "example",
+      harness: "example-harness",
+      harnessSessionId: "example-harness-native",
+    });
+  });
+
+  test("isolates two targets backed by the same Harness and preserves launch provenance", async () => {
+    const adapters: TargetedFakeAdapter[] = [];
+    const runtime = new BatonSessionRuntime({
+      session,
+      mentionBudgetChars: 4096,
+      modelPreferences: { "codex-a": "fast" },
+      resolveTarget: (harnessTargetId) => ({ id: harnessTargetId, harness: "codex" }),
+      createAdapter: (harness) => {
+        expect(harness).toBe("codex");
+        const adapter = new TargetedFakeAdapter(`instance-${adapters.length + 1}`);
+        adapters.push(adapter);
+        return adapter;
+      },
+    });
+    session.setHarnessSession("codex-b", {
+      harnessTargetId: "codex-b",
+      harness: "codex",
+      harnessSessionId: "instance-2-old",
+      syncedSeq: 0,
+    });
+
+    await runtime.submit("codex-a", [{ type: "text", text: "first target" }]);
+    await runtime.submit("codex-b", [{ type: "text", text: "second target" }]);
+
+    expect(adapters).toHaveLength(2);
+    expect(adapters[0]?.prompts).toEqual(["first target"]);
+    expect(adapters[1]?.prompts).toEqual(["second target"]);
+    expect(adapters[1]?.openOptions?.resumeSessionId).toBe("instance-2-old");
+    expect(adapters[1]?.synced[0]).toContain("first target");
+    expect(session.meta.harnessSessions["codex-a"]).toMatchObject({
+      harnessTargetId: "codex-a",
+      harness: "codex",
+      harnessSessionId: "instance-1-native",
+      model: "fast",
+      launchSnapshot: {
+        harnessTargetId: "codex-a",
+        harness: "codex",
+        harnessSessionKey: "codex",
+        cwd: "/repo",
+        model: "fast",
+      },
+    });
+    expect(session.meta.harnessSessions["codex-b"]).toMatchObject({
+      harnessTargetId: "codex-b",
+      harness: "codex",
+      harnessSessionId: "instance-2-native",
+    });
+
+    const summaries = session
+      .readEvents()
+      .filter((event) => event.kind === "_baton_turn_summary");
+    expect(summaries.map((event) => event.harnessTargetId)).toEqual(["codex-a", "codex-b"]);
+
+    const launchSnapshot = session.meta.harnessSessions["codex-a"]?.launchSnapshot;
+    await runtime.setModel("codex-a", null);
+    expect(session.meta.harnessSessions["codex-a"]?.model).toBeUndefined();
+    expect(session.meta.harnessSessions["codex-a"]?.launchSnapshot).toEqual(launchSnapshot);
   });
 
   test("publishes the persisted turn summary to event-stream subscribers", async () => {
@@ -309,13 +390,14 @@ describe("BatonSessionRuntime", () => {
     expect(claude.synced[0]).toContain("BatonSession history");
     expect(claude.synced[0]).toContain("existing work");
     expect(claude.prompts).toEqual(["continue"]);
-    expect(session.meta.harnessSessions["claude-code"]?.syncedSeq).toBeGreaterThan(0);
+    expect(session.meta.harnessSessions.claude?.syncedSeq).toBeGreaterThan(0);
   });
 
   test("resumes native session, restores config, and syncs only other-harness progress", async () => {
     completedTurn(session, "codex", "t_codex", "old codex work");
     const watermark = session.readEvents().at(-1)?.seq ?? 0;
     session.setHarnessSession("codex", {
+      harnessTargetId: "codex",
       harness: "codex",
       harnessSessionId: "thread-old",
       model: "fast",

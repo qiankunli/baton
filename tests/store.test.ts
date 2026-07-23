@@ -152,6 +152,7 @@ describe("session lifecycle", () => {
   test("harness session meta persists as a native resume optimization", () => {
     const h = store.createSession({ cwd: "/tmp/proj" });
     h.setHarnessSession("codex", {
+      harnessTargetId: "codex",
       harness: "codex",
       harnessSessionId: "thread_123",
       resumeCursor: "42",
@@ -163,6 +164,16 @@ describe("session lifecycle", () => {
     expect(reopened.meta.harnessSessions["codex"]!.resumeCursor).toBe("42");
     expect(reopened.meta.harnessSessions["codex"]!.model).toBe("gpt-5");
     expect(reopened.meta.harnessSessions["codex"]!.effort).toBe("high");
+  });
+
+  test("harness session metadata cannot be stored under another target", () => {
+    const h = store.createSession({ cwd: "/tmp/proj" });
+    expect(() =>
+      h.setHarnessSession("codex-a", {
+        harnessTargetId: "codex-b",
+        harness: "codex",
+      }),
+    ).toThrow("harness target key mismatch");
   });
 });
 
@@ -451,6 +462,7 @@ describe("forkSession", () => {
   test("harnessSessions keep only harness config (child must not resume source native sessions)", () => {
     const source = store.createSession({ cwd: "/tmp/proj" });
     source.setHarnessSession("codex", {
+      harnessTargetId: "codex",
       harness: "codex",
       harnessSessionId: "thread_123",
       resumeCursor: "42",
@@ -458,11 +470,23 @@ describe("forkSession", () => {
       model: "gpt-5",
       effort: "high",
     });
-    source.setHarnessSession("claude-code", { harness: "claude-code", harnessSessionId: "sess_9" });
+    source.setHarnessSession("claude", {
+      harnessTargetId: "claude",
+      harness: "claude-code",
+      harnessSessionId: "sess_9",
+    });
 
     const child = store.forkSession(source.id);
-    expect(child.meta.harnessSessions["codex"]).toEqual({ harness: "codex", model: "gpt-5", effort: "high" });
-    expect(child.meta.harnessSessions["claude-code"]).toEqual({ harness: "claude-code" });
+    expect(child.meta.harnessSessions.codex).toEqual({
+      harnessTargetId: "codex",
+      harness: "codex",
+      model: "gpt-5",
+      effort: "high",
+    });
+    expect(child.meta.harnessSessions.claude).toEqual({
+      harnessTargetId: "claude",
+      harness: "claude-code",
+    });
   });
 
   test("throughSeq bounds the copied prefix", () => {

@@ -16,6 +16,7 @@ export interface ParsedMention {
 
 interface HarnessSummary {
   harness: string;
+  harnessTargetId?: string;
   seq: number;
   summary: TurnSummary;
 }
@@ -118,7 +119,12 @@ function harnessSummaries(handle: SessionHandle): HarnessSummary[] {
   return handle
     .readEvents()
     .filter((e) => e.kind === "_baton_turn_summary")
-    .map((e) => ({ harness: e.harness, seq: e.seq, summary: e.payload as TurnSummary }));
+    .map((e) => ({
+      harness: e.harness,
+      harnessTargetId: e.harnessTargetId,
+      seq: e.seq,
+      summary: e.payload as TurnSummary,
+    }));
 }
 
 /**
@@ -138,15 +144,21 @@ export function buildHarnessCatchUpContext(
   handle: SessionHandle,
   opts: {
     harness: string;
+    harnessTargetId?: string;
     sinceSeq: number;
     includeHarnessTurns: boolean;
     budgetChars?: number;
   },
 ): HarnessCatchUpContext | null {
   const summaries = harnessSummaries(handle);
-  const missed = summaries.filter(
-    (item) => item.seq > opts.sinceSeq && (opts.includeHarnessTurns || item.harness !== opts.harness),
-  );
+  const missed = summaries.filter((item) => {
+    if (item.seq <= opts.sinceSeq) return false;
+    if (opts.includeHarnessTurns) return true;
+    const isOwnTarget = opts.harnessTargetId
+      ? item.harnessTargetId === opts.harnessTargetId
+      : item.harness === opts.harness;
+    return !isOwnTarget;
+  });
   if (missed.length === 0) return null;
 
   const header = opts.includeHarnessTurns

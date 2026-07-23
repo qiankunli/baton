@@ -12,7 +12,8 @@ import { ensureConfigFile, loadConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
 import { newId } from "../events/ids.ts";
 import type { InteractionRequest } from "../events/types.ts";
-import { createHarnessAdapter, parseHarness } from "../harnesses/registry.ts";
+import { createHarnessAdapter, defaultHarnessTarget, parseHarness } from "../harnesses/registry.ts";
+import { createHarnessLaunchSnapshot } from "../harnesses/target.ts";
 import { SessionStore, sessionDisplayTitle } from "../store/store.ts";
 
 function argValue(flag: string): string | undefined {
@@ -90,12 +91,23 @@ async function main(): Promise<void> {
     config,
     rootDir: store.rootDir,
   });
+  const target = defaultHarnessTarget(agentName);
+  const launchSnapshot = createHarnessLaunchSnapshot({
+    target,
+    harnessSessionKey: adapter.harness,
+    cwd,
+  });
+  session.setHarnessSession(target.id, {
+    harnessTargetId: target.id,
+    harness: adapter.harness,
+    launchSnapshot,
+  });
 
   // open 时绑定 session 级 sink；turn 完成以 idle 终态事件为准（design §4.1）
   let sawOutput = false;
   let turnDone: (() => void) | undefined;
   const ref = await adapter.open({ cwd }, (ev) => {
-    session.append(ev);
+    session.append({ ...ev, harnessTargetId: target.id });
     if (ev.kind === "agent_message_chunk" && ev.payload.content.type === "text") {
       if (!sawOutput) {
         stdout.write(`${adapter.harness}> `);
@@ -109,7 +121,13 @@ async function main(): Promise<void> {
     }
     if (ev.kind === "state_update" && ev.payload.state === "idle") turnDone?.();
   });
-  session.setHarnessSession(adapter.harness, { harness: adapter.harness, harnessSessionId: ref.harnessSessionId });
+  session.setHarnessSession(target.id, {
+    ...session.meta.harnessSessions[target.id],
+    harnessTargetId: target.id,
+    harness: adapter.harness,
+    launchSnapshot,
+    harnessSessionId: ref.harnessSessionId,
+  });
   stdout.write(`${adapter.harness} session: ${ref.harnessSessionId}\nType to chat, /exit to quit\n\n`);
 
   for (;;) {
@@ -139,10 +157,17 @@ async function main(): Promise<void> {
     session.append({
       kind: "user_message",
       harness: adapter.harness,
+      harnessTargetId: target.id,
       turnId,
       payload: { messageId, content: [{ type: "text", text: prompt }] },
     });
-    session.append({ kind: "state_update", harness: adapter.harness, turnId, payload: { state: "running" } });
+    session.append({
+      kind: "state_update",
+      harness: adapter.harness,
+      harnessTargetId: target.id,
+      turnId,
+      payload: { state: "running" },
+    });
     try {
       // submit 只确认接收；进展与终结经 open 时绑定的 sink 上报
       await adapter.submit(ref, { turnId, messageId, blocks: [{ type: "text", text: prompt }] });
@@ -150,8 +175,20 @@ async function main(): Promise<void> {
       const message = err instanceof Error ? err.message : String(err);
       stdout.write(`\nerror: ${message}\n`);
       // user_message 已落盘：admission 失败也要有结局，不留无终态的半状态
-      session.append({ kind: "_baton_error_update", harness: adapter.harness, turnId, payload: { message, retryable: false } });
-      session.append({ kind: "state_update", harness: adapter.harness, turnId, payload: { state: "idle", stopReason: "error" } });
+      session.append({
+        kind: "_baton_error_update",
+        harness: adapter.harness,
+        harnessTargetId: target.id,
+        turnId,
+        payload: { message, retryable: false },
+      });
+      session.append({
+        kind: "state_update",
+        harness: adapter.harness,
+        harnessTargetId: target.id,
+        turnId,
+        payload: { state: "idle", stopReason: "error" },
+      });
       continue;
     }
     await done;
@@ -162,7 +199,13 @@ async function main(): Promise<void> {
     if (isNativeSessionIdentifiable(adapter)) {
       const nativeId = adapter.nativeSessionId(ref);
       if (nativeId) {
-        session.setHarnessSession(adapter.harness, { harness: adapter.harness, harnessSessionId: nativeId });
+        session.setHarnessSession(target.id, {
+          ...session.meta.harnessSessions[target.id],
+          harnessTargetId: target.id,
+          harness: adapter.harness,
+          launchSnapshot,
+          harnessSessionId: nativeId,
+        });
       }
     }
     stdout.write(`\n— turn done (${summary.stopReason ?? "?"}, in:${summary.usage?.inputTokens ?? 0} out:${summary.usage?.outputTokens ?? 0})\n\n`);

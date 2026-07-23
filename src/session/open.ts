@@ -122,16 +122,20 @@ function recoverInterruptedState(session: SessionHandle): boolean {
   // 每个未收口的 turn 各补一份终态 + 中断标记（并发崩溃不止一个；恒带 turnId，
   // 让 per-turn reducer 精确收口，不误清并发 turn）
   for (const turnId of interruptedTurns) {
-    const harness = events.findLast((ev) => ev.turnId === turnId)?.harness || "baton";
+    const latest = events.findLast((ev) => ev.turnId === turnId);
+    const harness = latest?.harness || "baton";
+    const harnessTargetId = latest?.harnessTargetId;
     session.append({
       kind: "state_update",
       harness,
+      ...(harnessTargetId ? { harnessTargetId } : {}),
       turnId,
       payload: { state: "idle", stopReason: "cancelled" },
     });
     session.append({
       kind: "_baton_notice",
       harness,
+      ...(harnessTargetId ? { harnessTargetId } : {}),
       turnId,
       payload: { level: "warning", title: CRASH_RECOVERY_NOTICE_TITLE },
     });

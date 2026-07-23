@@ -9,6 +9,7 @@ import type { BatonConfig } from "../config/config.ts";
 import { FileHookTrustStore } from "../config/hook.ts";
 import type { DiagnosticSink } from "../diagnostics.ts";
 import { HARNESS_IDENTITIES, HARNESSES, parseHarness, type HarnessName } from "./ids.ts";
+import type { HarnessTarget } from "./target.ts";
 
 export { HARNESSES, parseHarness, type HarnessName };
 
@@ -27,9 +28,9 @@ export interface HarnessDefinition<Id extends string = string> {
   /** picker / 帮助文案里的展示长名 */
   label: string;
   /**
-   * wire/持久化 key：事件 harness 字段与 meta harnessSessions 的 key。
-   * **冻结值，永不变更**——已持久化的 session.jsonl 与 meta.json 都用它，
-   * 改动意味着同一文件里新旧值并存，所有按 harness 过滤的逻辑都要背 alias 集合。
+   * wire key：事件 harness 字段与 HarnessSessionMeta.harness。
+   * **冻结值，永不变更**——session.jsonl 用它；HarnessSessionMeta 则按 harnessTargetId
+   * 索引，使同一种 Harness 的多个 target 不会共享原生 session。
    */
   sessionKey: string;
   /** 时间线 author 短名，同时是着色 key（agentColorFor 的输入） */
@@ -90,6 +91,15 @@ export function createHarnessAdapter(
   const definition = HARNESS_REGISTRY.find((candidate) => candidate.id === harness);
   if (!definition) throw new Error(`Harness not registered: ${harness}`);
   return definition.create(options);
+}
+
+/**
+ * v2 target 模型的零功能迁移入口：现有 `/codex`、`/claude` 各映射到同名默认 target。
+ * target identity 与 Harness identity 即使当前值相同也保持两个字段，后续增加第二个同类
+ * target 时不再改动 BatonSession/runtime 主链路。
+ */
+export function defaultHarnessTarget(harness: HarnessName): HarnessTarget {
+  return Object.freeze({ id: harness, harness });
 }
 
 export function harnessSessionKey(harness: HarnessName): string {

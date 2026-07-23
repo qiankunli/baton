@@ -38,10 +38,14 @@ import {
   type TurnSummaryToolCall,
   type UsageUpdate,
 } from "../events/types.ts";
+import type { HarnessLaunchSnapshot } from "../harnesses/target.ts";
 import { reduceEvents, type SessionState } from "./reduce.ts";
 
 export interface HarnessSessionMeta {
+  harnessTargetId: string;
   harness: string;
+  /** 当前原生 session 最近一次 create/resume 实际采用的配置快照。 */
+  launchSnapshot?: HarnessLaunchSnapshot;
   harnessSessionId?: string;
   /** 该 harness session 后续 turn 使用的模型；缺省表示 harness 默认值。 */
   model?: string;
@@ -72,6 +76,7 @@ export interface SessionMeta {
   cwd: string;
   createdAt: string;
   updatedAt?: string;
+  /** harnessTargetId → 当前原生 HarnessSession 绑定与 target 级偏好。 */
   harnessSessions: Record<string, HarnessSessionMeta>;
   forkedFrom?: SessionForkOrigin;
 }
@@ -262,9 +267,9 @@ export class SessionStore {
    * 复制的前缀与源是同一段逻辑历史（git-branch 语义）：seq 与 turn/message/toolCall ID
    * 原样保留，只换 batonSessionId——不做 ID remap（toolCallId 等本就是 harness 原生
    * ID，remap 只会破坏与 raw 的对照），谱系由 meta.forkedFrom 表达。
-   * harnessSessions 只保留 harness 与 model / effort 偏好：child 不得 resume 源的原生
-   * HarnessSession（否则两个 BatonSession 会写进同一份 harness 历史）；child 首 turn
-   * 由 runtime 走 fresh native + 全量补课（syncedSeq 缺省=0）重建上下文。
+   * harnessSessions 只保留 target identity、Harness 与 model / effort 偏好：child 不得
+   * 继承原生 session 绑定或 launch snapshot（否则两个 BatonSession 会写进同一份 harness
+   * 历史）；child 首 turn 由 runtime 走 fresh native + 全量补课（syncedSeq 缺省=0）重建上下文。
    * opts.cwd 支持跨 project fork：历史跟源走，project 归属跟 fork 发起位置走；
    * 缺省沿用源 cwd。
    */
@@ -288,6 +293,7 @@ export class SessionStore {
     const harnessSessions: Record<string, HarnessSessionMeta> = {};
     for (const [key, hs] of Object.entries(source.meta.harnessSessions)) {
       harnessSessions[key] = {
+        harnessTargetId: hs.harnessTargetId,
         harness: hs.harness,
         ...(hs.model !== undefined ? { model: hs.model } : {}),
         ...(hs.effort !== undefined ? { effort: hs.effort } : {}),
@@ -530,8 +536,13 @@ export class SessionHandle {
     if (title) this.updateMeta({ title });
   }
 
-  setHarnessSession(key: string, hs: HarnessSessionMeta): void {
-    this.meta.harnessSessions = { ...this.meta.harnessSessions, [key]: hs };
+  setHarnessSession(harnessTargetId: string, hs: HarnessSessionMeta): void {
+    if (hs.harnessTargetId !== harnessTargetId) {
+      throw new Error(
+        `harness target key mismatch: key=${harnessTargetId}, meta=${hs.harnessTargetId}`,
+      );
+    }
+    this.meta.harnessSessions = { ...this.meta.harnessSessions, [harnessTargetId]: hs };
     writeMetaAtomic(this.dir, this.meta);
   }
 
@@ -592,7 +603,14 @@ export class SessionHandle {
       endedAt: turnEvents[turnEvents.length - 1]?.ts,
     };
     const harness = turnEvents[0]?.harness ?? "baton";
-    const event = this.append({ kind: "_baton_turn_summary", payload: summary, harness, turnId }) as EventEnvelope<"_baton_turn_summary">;
+    const harnessTargetId = turnEvents.find((event) => event.harnessTargetId)?.harnessTargetId;
+    const event = this.append({
+      kind: "_baton_turn_summary",
+      payload: summary,
+      harness,
+      ...(harnessTargetId ? { harnessTargetId } : {}),
+      turnId,
+    }) as EventEnvelope<"_baton_turn_summary">;
     this.updateMeta({ updatedAt: summary.endedAt ?? new Date().toISOString() });
     return event;
   }

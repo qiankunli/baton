@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
 import {
   createHarnessAdapter,
+  defaultHarnessTarget,
   parseHarness,
   HARNESS_REGISTRY,
   HARNESSES,
@@ -31,6 +32,11 @@ describe("harness registry", () => {
     const options = { requestHandler, config: DEFAULT_CONFIG };
     expect(createHarnessAdapter("codex", options).harness).toBe("codex");
     expect(createHarnessAdapter("claude", options).harness).toBe("claude-code");
+  });
+
+  test("maps current commands to explicit default HarnessTargets", () => {
+    expect(defaultHarnessTarget("codex")).toEqual({ id: "codex", harness: "codex" });
+    expect(defaultHarnessTarget("claude")).toEqual({ id: "claude", harness: "claude" });
   });
 
   test("normalizes canonical id and wire key to one definition (三套命名空间的唯一汇合点)", () => {
