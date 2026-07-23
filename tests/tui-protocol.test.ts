@@ -98,6 +98,7 @@ describe("BatonChatProtocol status command", () => {
         source: { type: "baton" },
         kind: "context_usage_update",
         harness: "codex",
+        harnessTargetId: "codex",
         payload: { model: "default", contextUsed: 12_500, contextSize: 200_000 },
       });
       const eventCount = session.readEvents().length;
@@ -119,10 +120,9 @@ describe("BatonChatProtocol status command", () => {
     }
   });
 
-  test("context lookup keys by wire sessionKey, not canonical id (claude vs claude-code)", async () => {
-    // 回归：事件信封 harness 是 sessionKey（"claude-code"），曾用 canonical id（"claude"）
-    // 查 per-harness 槽，导致 claude 的 /status context 永远 unavailable。codex 两键相同，
-    // 只有 claude 能暴露这个错位。
+  test("context lookup keys by HarnessTarget id, not the Harness wire key", async () => {
+    // Harness 描述协议类型（"claude-code"），Target（"claude"）才是状态实例的查询键。
+    // 两者故意取不同值，防止投影重新拿 Harness 代替 Target。
     const root = mkdtempSync(join(tmpdir(), "baton-tui-status-claude-"));
     try {
       const store = new SessionStore(root);
@@ -131,6 +131,7 @@ describe("BatonChatProtocol status command", () => {
         source: { type: "baton" },
         kind: "context_usage_update",
         harness: "claude-code",
+        harnessTargetId: "claude",
         payload: { model: "default", contextUsed: 40_000, contextSize: 200_000 },
       });
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
@@ -288,13 +289,14 @@ describe("BatonChatProtocol view projection", () => {
   type ViewInternals = {
     state: {
       plans: Map<string, { planId: string; harness?: string; entries: Array<{ content: string; status: string }> }>;
-      perHarness: Map<string, { lastPlanId?: string }>;
+      perTarget: Map<string, { lastPlanId?: string }>;
       timeline: Array<{ type: string; id: string }>;
       activeTurns: Map<
         string,
         {
           turnId: string;
           harness?: string;
+          harnessTargetId?: string;
           role: "driven" | "observed";
           state: "running" | "requires_action";
           startedAt?: number;
@@ -336,12 +338,21 @@ describe("BatonChatProtocol view projection", () => {
         source: { type: "baton" },
         kind: "context_usage_update",
         harness: "codex",
+        harnessTargetId: "codex",
         payload: { model: "default", contextUsed: 12_500, contextSize: 200_000 },
       });
       session.append({
         source: { type: "baton" },
         kind: "context_usage_update",
+        harness: "codex",
+        harnessTargetId: "codex-secondary",
+        payload: { model: "default", contextUsed: 150_000, contextSize: 200_000 },
+      });
+      session.append({
+        source: { type: "baton" },
+        kind: "context_usage_update",
         harness: "claude-code",
+        harnessTargetId: "claude",
         payload: { model: "default", contextUsed: 80_000, contextSize: 200_000 },
       });
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
@@ -371,6 +382,7 @@ describe("BatonChatProtocol view projection", () => {
         source: { type: "baton" },
         kind: "context_usage_update",
         harness: "codex",
+        harnessTargetId: "codex",
         payload: { model: "gpt-old", contextUsed: 190_000, contextSize: 200_000 },
       });
       const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
@@ -402,12 +414,13 @@ describe("BatonChatProtocol view projection", () => {
         ],
       });
       internals.state.timeline.push({ type: "plan", id: "p1" });
-      // 归属查询键在统一 per-harness 槽（reduce 里由 plan_update 维护；这里直接摆内部状态）
-      internals.state.perHarness.set("codex", { lastPlanId: "p1" });
+      // 归属查询键在统一 per-Target 槽（reduce 里由 plan_update 维护；这里直接摆内部状态）
+      internals.state.perTarget.set("codex", { lastPlanId: "p1" });
       // pin 是"现在时"层：需有回合在运行（observed run 也算）
       internals.state.activeTurns.set("t_obs", {
         turnId: "t_obs",
         harness: "codex",
+        harnessTargetId: "codex",
         role: "observed",
         state: "running",
       });
@@ -436,10 +449,24 @@ describe("BatonChatProtocol view projection", () => {
       expect(protocol.getView().footer).not.toContain("plan:");
       expect(planInTranscript()).toBe(true);
 
-      // 回合重新开跑：未完成 plan 重新上 pin，transcript 卡随之撤下
+      // 同一种 Harness 的另一个 Target 在跑，不得把当前 Target 的 plan 重新上 pin。
+      internals.state.activeTurns.set("t_sibling", {
+        turnId: "t_sibling",
+        harness: "codex",
+        harnessTargetId: "codex-secondary",
+        role: "observed",
+        state: "running",
+      });
+      internals.changed();
+      expect(protocol.getView().plan).toBeUndefined();
+      expect(planInTranscript()).toBe(true);
+
+      // 当前 Target 的回合重新开跑：未完成 plan 重新上 pin，transcript 卡随之撤下
+      internals.state.activeTurns.clear();
       internals.state.activeTurns.set("t_obs", {
         turnId: "t_obs",
         harness: "codex",
+        harnessTargetId: "codex",
         role: "observed",
         state: "running",
       });

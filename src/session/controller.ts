@@ -230,8 +230,8 @@ export class Controller {
   private readonly queue: InputRecord[] = [];
   private nextQueueId = 1;
   private draining = false;
-  private processingHarness?: string;
-  private processingStartedAt?: number;
+  /** driven 工作从 Harness setup 开始即对 UI 可见；Target 是实例坐标，Harness 仅是协议类型。 */
+  private processing?: { target: HarnessTarget; startedAt: number };
   /** turn 台账：turnId → 记录。finalized 记录保留，作迟到终态的幂等判定依据 */
   private readonly turns = new Map<string, TurnRecord>();
   /** 队列策略指针：当前唯一 driven turn（本轮 driven ≤ 1；见类 docstring） */
@@ -336,8 +336,9 @@ export class Controller {
     return record && record.status === "active" ? record : undefined;
   }
 
-  get activeHarness(): string | undefined {
-    return this.processingHarness;
+  /** 当前 driven turn 的具体配置目标；Harness 类型只用于选择 Adapter。 */
+  get activeHarnessTargetId(): string | undefined {
+    return this.processing?.target.id ?? this.activeDriven()?.harnessTargetId;
   }
 
   /** 当前 driven turn 的 baton turn id；TUI 据此做 per-turn 投影（运行阶段等） */
@@ -347,7 +348,7 @@ export class Controller {
 
   /** 当前 turn 的起跑时刻（epoch ms）；elapsed 跳秒由 TUI 组件自理，这里只给起点 */
   get activeStartedAt(): number | undefined {
-    return this.processingStartedAt;
+    return this.processing?.startedAt ?? this.activeDriven()?.startedAt;
   }
 
   get queueLength(): number {
@@ -570,8 +571,7 @@ export class Controller {
 
   private async runContextCompaction(harnessTargetId: string): Promise<void> {
     const target = this.targetFor(harnessTargetId);
-    this.processingHarness = target.harness;
-    this.processingStartedAt = Date.now();
+    this.processing = { target, startedAt: Date.now() };
     let record: TurnRecord | undefined;
     try {
       const slot = await this.ensureHarness(harnessTargetId);
@@ -605,8 +605,7 @@ export class Controller {
       }
       throw error;
     } finally {
-      this.processingHarness = undefined;
-      this.processingStartedAt = undefined;
+      this.processing = undefined;
     }
   }
 
@@ -771,8 +770,7 @@ export class Controller {
   }
 
   private async runTurn(turn: InputRecord): Promise<void> {
-    this.processingHarness = turn.target.harness;
-    this.processingStartedAt = Date.now();
+    this.processing = { target: turn.target, startedAt: Date.now() };
 
     // 出队即入账、即落盘：用户输入是 BatonSession 的事实，owner 是 controller——
     // 不等 harness 冷启动（codex 首启要 spawn → initialize → thread resume/start，
@@ -905,8 +903,7 @@ export class Controller {
         cause: error,
       });
     } finally {
-      this.processingHarness = undefined;
-      this.processingStartedAt = undefined;
+      this.processing = undefined;
       this.changed();
     }
   }

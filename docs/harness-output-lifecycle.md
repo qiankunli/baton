@@ -63,7 +63,7 @@ completed 但整个 turn 零产出，说明 prompt 在进模型前被丢弃（ho
 | 计划 | `plan_update`（整体替换 entries） | `TodoWrite` 归一并抑制其工具卡 | `turn/plan/updated` | 已支持 |
 | 运行阶段（compacting…） | `_baton_run_status`（phase 开放字符串，null 清除） | `system/status`（SDKStatus 原生即 phase-or-null） | `contextCompaction` item 并抑制其工具卡 | 已支持 |
 | token 用量 | `usage_update`（delta，baton 既有语义） | SDK usage | usage 差分 | 已支持 |
-| context 用量 | `context_usage_update`（按 harness 保存的 snapshot，映射 ACP v2 usage） | result `modelUsage` | `thread/tokenUsage/updated` 的 `last` + `modelContextWindow` | 已支持；`/status` 展示当前 harness/model 快照 |
+| context 用量 | `context_usage_update`（按 HarnessTarget 保存的 snapshot，映射 ACP v2 usage） | result `modelUsage` | `thread/tokenUsage/updated` 的 `last` + `modelContextWindow` | 已支持；`/status` 展示当前 Target/model 快照 |
 | 终态 | `state_update(idle, stopReason)` | 消息流结束 / interrupt | `turn/completed` | 已支持；退出路径均合成 |
 | 错误 | `_baton_error_update` + `idle(failed)` | SDK error | wire error / 响应终态 | 已支持 |
 | 空回合 | `_baton_notice`（warning，不改生命周期） | 无此形态（SDK 进程内 hook 报错走 error 流） | completed 且零产出 + `hook/completed`（仅 userPromptSubmit/sessionStart 的 blocked/stopped 会让 codex 静默空结束） | Codex 已支持 |

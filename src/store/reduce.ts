@@ -34,6 +34,8 @@ export interface MessageState {
   turnId?: string;
   /** 产生该消息的 harness（多 agent 同时间线时用于标注说话人） */
   harness?: string;
+  /** 产生该消息的具体配置目标；状态归属与查询使用它，不用 Harness 类型代替。 */
+  harnessTargetId?: string;
   /** 仅 user 消息：effective delivery（steer = 中途注入当前 turn），缺省 = prompt */
   delivery?: SubmitDelivery;
 }
@@ -42,6 +44,8 @@ export interface ToolCallState {
   toolCallId: string;
   /** 产生该工具活动的 harness；多 harness 时间线展示归属时使用。 */
   harness?: string;
+  /** 产生该工具活动的具体配置目标。 */
+  harnessTargetId?: string;
   title?: string;
   kind?: string;
   status: ToolCallStatus;
@@ -55,19 +59,26 @@ export interface ToolCallState {
 export interface PlanState extends PlanUpdate {
   /** 产生该计划的 harness；pinned plan 只跟随当前输入目标。 */
   harness?: string;
+  /** 产生该计划的具体配置目标。 */
+  harnessTargetId?: string;
 }
 
 /**
- * harness-scoped 会话状态的统一槽位，键 = 事件信封 `harness`（即 registry 的
- * sessionKey / wire key，不是 canonical id——两套词汇混用曾让投影查空）。
- * 约定：新增"每个 harness 各有一份"的状态时，在这里加字段，不要在 SessionState
- * 再长平行的 Map<harness, X>（plan/contextUsage 都曾各自长过一个，事后才收敛）。
+ * HarnessTarget-scoped 会话状态的统一槽位，键 = 事件信封 `harnessTargetId`。
+ * `harness` 只描述协议/Adapter 类型，不能作为状态实例的查询键：同一种 Harness
+ * 可以有多个 Target。新增“每个 Target 各有一份”的状态时统一加在这里。
  */
-export interface HarnessScopedState {
+export interface HarnessTargetState {
+  /** 该 Target 使用的 Harness 协议类型；仅供展示和能力解释。 */
+  harness?: string;
   /** 最近 context 占用快照（整体替换）。带 model 标签：切 model 后旧快照按标签判失效 */
   contextUsage?: ContextUsageUpdate;
-  /** 该 harness 最近一次 plan 的 id（pinned plan 的归属查询键；plan 本体在 plans） */
+  /** 该 Target 最近一次 plan 的 id（plan 本体在 plans）。 */
   lastPlanId?: string;
+  /** 该 Target 最近一次可用命令完整快照。 */
+  availableCommands: AvailableCommand[];
+  /** 该 Target 最近一次配置项完整快照。 */
+  configOptions: SessionConfigOption[];
 }
 
 /** TUI 时间线条目：message / tool_call / plan / notice 按首次出现排序 */
@@ -89,6 +100,7 @@ export interface UsageTotal {
 export interface ActiveTurnState {
   turnId: string;
   harness?: string;
+  harnessTargetId?: string;
   /** driven 由 Baton admit；observed 由 Harness 自发开界（design §5.10）。 */
   role: "driven" | "observed";
   /** 本 turn 当前非 idle 态（running / requires_action）：保真透传，不折叠成 running */
@@ -130,12 +142,8 @@ export interface SessionState {
    */
   approvalReviews: Map<string, ApprovalReviewUpdate>;
   usage: UsageTotal;
-  /** harness command 完整快照：available_commands_update 整体替换，不做增量合并 */
-  availableCommands: AvailableCommand[];
-  /** session config 完整快照：config_option_update 整体替换（model 变化可联动其他选项） */
-  configOptions: SessionConfigOption[];
-  /** harness-scoped 状态统一入口（contextUsage / lastPlanId…），键 = 信封 harness（sessionKey） */
-  perHarness: Map<string, HarnessScopedState>;
+  /** Target-scoped 状态统一入口；Harness 类型不是状态实例的查询键。 */
+  perTarget: Map<string, HarnessTargetState>;
   /** 最近一次结构化错误；willRetry 时 runState 仍应为 running（由事件源保证） */
   lastError?: ErrorUpdate & { seq: number };
   /**
@@ -166,9 +174,7 @@ export function emptySessionState(): SessionState {
       reasoningTokens: 0,
       hasEstimated: false,
     },
-    availableCommands: [],
-    configOptions: [],
-    perHarness: new Map(),
+    perTarget: new Map(),
     notices: [],
     turnSummaries: [],
     lastSeq: 0,
@@ -187,25 +193,44 @@ function getOrCreateMessage(
   role: MessageRole,
   turnId?: string,
   harness?: string,
+  harnessTargetId?: string,
 ): MessageState {
   let msg = state.messages.get(id);
   if (!msg) {
-    msg = { messageId: id, role, content: [], turnId, harness };
+    msg = { messageId: id, role, content: [], turnId, harness, harnessTargetId };
     state.messages.set(id, msg);
     state.timeline.push({ type: "message", id });
+  } else {
+    if (!msg.harness) msg.harness = harness;
+    if (!msg.harnessTargetId) msg.harnessTargetId = harnessTargetId;
   }
   return msg;
 }
 
-function getOrCreateToolCall(state: SessionState, id: string, turnId?: string, harness?: string): ToolCallState {
+function getOrCreateToolCall(
+  state: SessionState,
+  id: string,
+  turnId?: string,
+  harness?: string,
+  harnessTargetId?: string,
+): ToolCallState {
   let tc = state.toolCalls.get(id);
   if (!tc) {
-    tc = { toolCallId: id, harness, status: "pending", content: [], locations: [], turnId };
+    tc = {
+      toolCallId: id,
+      harness,
+      harnessTargetId,
+      status: "pending",
+      content: [],
+      locations: [],
+      turnId,
+    };
     state.toolCalls.set(id, tc);
     state.timeline.push({ type: "tool_call", id });
   } else if (!tc.harness) {
     tc.harness = harness;
   }
+  if (!tc.harnessTargetId) tc.harnessTargetId = harnessTargetId;
   return tc;
 }
 
@@ -215,7 +240,14 @@ function applyMessageUpsert(
   role: MessageRole,
 ): void {
   const p = ev.payload;
-  const msg = getOrCreateMessage(state, p.messageId, role, ev.turnId, ev.harness);
+  const msg = getOrCreateMessage(
+    state,
+    p.messageId,
+    role,
+    ev.turnId,
+    ev.harness,
+    eventTargetId(ev),
+  );
   // 三态：省略=不变；null/[]=清空；数组=整体替换
   if (p.content !== undefined) {
     msg.content = p.content === null ? [] : [...p.content];
@@ -234,14 +266,27 @@ function applyMessageChunk(
   role: MessageRole,
 ): void {
   const p = ev.payload;
-  const msg = getOrCreateMessage(state, p.messageId, role, ev.turnId, ev.harness);
+  const msg = getOrCreateMessage(
+    state,
+    p.messageId,
+    role,
+    ev.turnId,
+    ev.harness,
+    eventTargetId(ev),
+  );
   msg.content.push(p.content);
   if (role !== "user") msg.streamStatus = "in_progress";
 }
 
 function applyToolCallUpdate(state: SessionState, ev: EventEnvelope<"tool_call_update">): void {
   const p = ev.payload;
-  const tc = getOrCreateToolCall(state, p.toolCallId, ev.turnId, ev.harness);
+  const tc = getOrCreateToolCall(
+    state,
+    p.toolCallId,
+    ev.turnId,
+    ev.harness,
+    eventTargetId(ev),
+  );
   if (p.title !== undefined) tc.title = p.title === null ? undefined : p.title;
   if (p.kind !== undefined) tc.kind = p.kind === null ? undefined : p.kind;
   if (p.status !== undefined && p.status !== null) tc.status = p.status;
@@ -298,6 +343,7 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
         state.activeTurns.set(ev.turnId, {
           turnId: ev.turnId,
           harness: ev.harness ?? existing?.harness,
+          harnessTargetId: eventTargetId(ev) ?? existing?.harnessTargetId,
           role: existing?.role ?? (ev.source.type === "harness" ? "observed" : "driven"),
           state: hasPendingBlocking(state, ev.turnId) ? "requires_action" : p.state,
           startedAt: existing?.startedAt ?? (ev.ts ? Date.parse(ev.ts) || undefined : undefined),
@@ -321,7 +367,13 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
       break;
     case "tool_call_content_chunk": {
       const p = ev.payload;
-      const tc = getOrCreateToolCall(state, p.toolCallId, ev.turnId, ev.harness);
+      const tc = getOrCreateToolCall(
+        state,
+        p.toolCallId,
+        ev.turnId,
+        ev.harness,
+        eventTargetId(ev),
+      );
       tc.content.push(p.content);
       break;
     }
@@ -334,9 +386,10 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
         planId: p.planId,
         entries: [...p.entries],
         harness,
+        harnessTargetId: eventTargetId(ev) ?? existing?.harnessTargetId,
       });
-      // 归属查询键落统一槽位：投影按 harness 取"最近 plan"不再全表扫描
-      if (harness) harnessScoped(state, harness).lastPlanId = p.planId;
+      const target = targetScoped(state, ev);
+      if (target) target.lastPlanId = p.planId;
       break;
     }
     // Interaction opened/resolved 驱动 per-turn requires_action ↔ running：不变量收在 reducer，
@@ -376,16 +429,22 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
     case "usage_update":
       accumulateUsage(state.usage, ev.payload);
       break;
-    case "available_commands_update":
-      state.availableCommands = [...ev.payload.commands];
+    case "available_commands_update": {
+      const target = targetScoped(state, ev);
+      if (target) target.availableCommands = [...ev.payload.commands];
       break;
-    case "config_option_update":
-      state.configOptions = [...ev.payload.options];
+    }
+    case "config_option_update": {
+      const target = targetScoped(state, ev);
+      if (target) target.configOptions = [...ev.payload.options];
       break;
-    case "context_usage_update":
-      // 快照替换语义（与 usage 的增量累加不同）；多 harness 各有自己的原生上下文
-      if (ev.harness) harnessScoped(state, ev.harness).contextUsage = { ...ev.payload };
+    }
+    case "context_usage_update": {
+      // 快照替换语义（与 usage 的增量累加不同）；每个 Target 各有自己的原生上下文
+      const target = targetScoped(state, ev);
+      if (target) target.contextUsage = { ...ev.payload };
       break;
+    }
     case "_baton_error_update":
       state.lastError = { ...ev.payload, seq: ev.seq };
       break;
@@ -415,12 +474,28 @@ export function applyEvent(state: SessionState, ev: AnyEventEnvelope): SessionSt
   return state;
 }
 
-/** 取或建 harness 状态槽；键必须是信封 harness（sessionKey），调用方不要自行换算 id */
-function harnessScoped(state: SessionState, harness: string): HarnessScopedState {
-  let scoped = state.perHarness.get(harness);
+/** HarnessTarget 是唯一状态实例坐标；缺省即无 Target 归属，绝不从 Harness 类型反推。 */
+function eventTargetId(ev: Pick<AnyEventEnvelope, "harnessTargetId">): string | undefined {
+  return ev.harnessTargetId;
+}
+
+/** 取或建 Target 状态槽；所有 Target-scoped 快照只经过这一处归属。 */
+function targetScoped(
+  state: SessionState,
+  ev: Pick<AnyEventEnvelope, "harnessTargetId" | "harness">,
+): HarnessTargetState | undefined {
+  const targetId = eventTargetId(ev);
+  if (!targetId) return undefined;
+  let scoped = state.perTarget.get(targetId);
   if (!scoped) {
-    scoped = {};
-    state.perHarness.set(harness, scoped);
+    scoped = {
+      harness: ev.harness,
+      availableCommands: [],
+      configOptions: [],
+    };
+    state.perTarget.set(targetId, scoped);
+  } else if (!scoped.harness && ev.harness) {
+    scoped.harness = ev.harness;
   }
   return scoped;
 }

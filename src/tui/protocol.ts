@@ -22,7 +22,6 @@ import {
   parseHarness,
   parseHarnessRoute,
   type CommandName,
-  type HarnessName,
 } from "../commands/registry.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { loadEffortPreferences, saveEffortPreference } from "../config/effort-preferences.ts";
@@ -41,6 +40,7 @@ import {
   harnessDefinitionFor,
   harnessSessionKey,
   harnessShortName,
+  type HarnessName,
 } from "../harness/registry.ts";
 import type {
   HookTrustInteraction,
@@ -210,7 +210,8 @@ export class BatonChatProtocol implements ChatProtocol {
   private session: SessionHandle;
   private state: SessionState;
   private controller: Controller;
-  private agent: HarnessName;
+  /** 当前输入与控制命令的具体配置目标；默认 Target ID 与 Harness ID 相同。 */
+  private harnessTargetId: string;
   private status: StatusMessage | null = null;
   private commandOutput: TranscriptItem | null = null;
   private picker: PendingPicker | null = null;
@@ -236,7 +237,7 @@ export class BatonChatProtocol implements ChatProtocol {
   ) {
     this.session = opened.session;
     this.syncTerminalTitle();
-    this.agent = config.defaultAgent;
+    this.harnessTargetId = config.defaultAgent;
     this.modelPreferences = loadModelPreferences(store.rootDir);
     this.effortPreferences = loadEffortPreferences(store.rootDir);
     if (opened.recovered) {
@@ -285,7 +286,7 @@ export class BatonChatProtocol implements ChatProtocol {
       return;
     }
     if (route?.kind === "matched") {
-      this.agent = route.harness;
+      this.harnessTargetId = route.harness;
       this.status = null;
       this.commandOutput = null;
       this.changed();
@@ -299,7 +300,7 @@ export class BatonChatProtocol implements ChatProtocol {
     // 用户实际提交的内容进历史；一次新提交结束当前的 ↑ 浏览会话。
     this.recordHistory(text);
     this.resetHistoryNav();
-    const target = this.agent;
+    const target = this.harnessTargetId;
     this.status = null;
     this.commandOutput = null;
     const previousTitle = sessionDisplayTitle(this.session.meta);
@@ -344,7 +345,7 @@ export class BatonChatProtocol implements ChatProtocol {
     if (name !== "status") this.commandOutput = null;
     const harness = parseHarness(name);
     if (harness) {
-      this.agent = harness;
+      this.harnessTargetId = harness;
       this.status = null;
       this.changed();
       if (argument) await this.submitMessage(argument);
@@ -380,7 +381,7 @@ export class BatonChatProtocol implements ChatProtocol {
       }
       case "compact": {
         if (argument) throw new Error("/compact takes no arguments");
-        const target = this.agent;
+        const target = this.harnessTargetId;
         this.status = null;
         await this.controller.compactContext(target);
         this.status = { text: `${target} context compacted`, tone: "info" };
@@ -388,7 +389,7 @@ export class BatonChatProtocol implements ChatProtocol {
         return;
       }
       case "model": {
-        const target = this.agent;
+        const target = this.harnessTargetId;
         const models = await this.controller.listModels(target);
         if (!argument) {
           this.openPicker({
@@ -409,7 +410,7 @@ export class BatonChatProtocol implements ChatProtocol {
         return this.configureModel(target, model);
       }
       case "effort": {
-        const target = this.agent;
+        const target = this.harnessTargetId;
         const efforts = await this.controller.listEfforts(target);
         if (!argument) {
           this.openPicker({
@@ -503,9 +504,8 @@ export class BatonChatProtocol implements ChatProtocol {
     if (!recalled) return null;
     // 召回队列是另一种取回动作，结束进行中的历史浏览，避免游标错位。
     this.resetHistoryNav();
-    const harness = parseHarness(recalled.harness);
-    if (harness) this.agent = harness;
-    this.status = { text: `Recalled queued message for ${recalled.harness}; edit and resend`, tone: "info" };
+    this.harnessTargetId = recalled.harnessTargetId;
+    this.status = { text: `Recalled queued message for ${recalled.harnessTargetId}; edit and resend`, tone: "info" };
     this.changed();
     return { text: userVisibleText(textOf(recalled.blocks)) };
   }
@@ -627,7 +627,7 @@ export class BatonChatProtocol implements ChatProtocol {
     this.changed();
   }
 
-  private async configureModel(target: HarnessName, model: { id: string; label: string }): Promise<void> {
+  private async configureModel(target: string, model: { id: string; label: string }): Promise<void> {
     await this.controller.setModel(target, model.id);
     saveModelPreference(this.store.rootDir, target, model.id);
     if (model.id === "default") delete this.modelPreferences[target];
@@ -636,7 +636,7 @@ export class BatonChatProtocol implements ChatProtocol {
     this.changed();
   }
 
-  private async configureEffort(target: HarnessName, effort: { id: string; label: string }): Promise<void> {
+  private async configureEffort(target: string, effort: { id: string; label: string }): Promise<void> {
     await this.controller.setEffort(target, effort.id);
     saveEffortPreference(this.store.rootDir, target, effort.id);
     if (effort.id === "default") delete this.effortPreferences[target];
@@ -648,25 +648,22 @@ export class BatonChatProtocol implements ChatProtocol {
   /** 控制命令输出只进入当前 view，不写 session.jsonl，避免污染可恢复的会话历史。 */
   private sessionStatusItem(): TranscriptItem {
     const meta = this.session.meta;
-    const active = this.controller.activeHarness;
-    const selectedModel = this.controller.currentModel(this.agent) ?? "default";
-    const selectedEffort = this.controller.currentEffort(this.agent) ?? "default";
-    // perHarness 的键是信封 harness（= sessionKey），不是 canonical id：
-    // claude 两者不同（"claude" vs "claude-code"），曾用 id 查导致 context 永远 unavailable
-    const harnessKey = harnessDefinitionFor(this.agent)?.sessionKey ?? this.agent;
-    const context = this.state.perHarness.get(harnessKey)?.contextUsage;
+    const activeTargetId = this.controller.activeHarnessTargetId;
+    const selectedModel = this.controller.currentModel(this.harnessTargetId) ?? "default";
+    const selectedEffort = this.controller.currentEffort(this.harnessTargetId) ?? "default";
+    const context = this.state.perTarget.get(this.harnessTargetId)?.contextUsage;
     const contextText = contextUsageText(context, selectedModel);
-    const harnesses = Object.keys(meta.harnessSessions).join(", ") || "-";
+    const targets = Object.keys(meta.harnessSessions).join(", ") || "-";
     const text = [
       `Session: ${meta.batonSessionId}`,
       `Name: ${sessionDisplayTitle(meta)}`,
       ...(meta.description ? [`Description: ${meta.description}`] : []),
       `Directory: ${meta.cwd}`,
-      `Current: ${this.agent} - model ${selectedModel} - effort ${selectedEffort}`,
+      `Current: ${this.harnessTargetId} - model ${selectedModel} - effort ${selectedEffort}`,
       `Context: ${contextText}`,
-      `Harnesses: ${harnesses}`,
+      `Targets: ${targets}`,
       `Turns: ${this.state.turnSummaries.length} - tokens in ${this.state.usage.inputTokens} / out ${this.state.usage.outputTokens}`,
-      `State: ${active ? `running (${active})` : "idle"} - queue ${this.controller.queueLength}`,
+      `State: ${activeTargetId ? `running (${activeTargetId})` : "idle"} - queue ${this.controller.queueLength}`,
     ].join("\n");
     return this.batonTranscriptItem("_baton_status", text);
   }
@@ -719,7 +716,7 @@ export class BatonChatProtocol implements ChatProtocol {
 
   private buildView(): ChatViewState {
     const v = this.state;
-    const active = this.controller.activeHarness;
+    const activeTargetId = this.controller.activeHarnessTargetId;
     // Interaction 是统一持久对象；Map 保打开顺序，UI 各取最早的未解决 kind。
     const pendingInteractions = [...v.interactions.values()].filter((item) => !item.resolution);
     const interactions = pendingInteractions.map((item) => item.interaction);
@@ -737,21 +734,34 @@ export class BatonChatProtocol implements ChatProtocol {
     );
     const observedRuns = [...v.activeTurns.values()].filter((turn) => turn.role === "observed");
     const observedRun = observedRuns.at(-1);
-    // baton 当前只呈现一个 agent 的状态：driven turn 优先，其次是 harness 自发的
+    // baton 当前只呈现一个 Target 的状态：driven turn 优先，其次是 Harness 自发的
     // background turn，完全空闲时才回落到当前输入目标。状态本体与附加信息可拆成两行，
-    // 但仍是同一个 agent；多运行者并发尚未进入产品范围。
+    // 但仍是同一个 Target；多运行者并发尚未进入产品范围。
     const activeTurnId = this.controller.activeTurnId;
-    const statusHarness = active ?? observedRun?.harness ?? this.agent;
-    const statusHarnessDefinition = harnessDefinitionFor(statusHarness);
-    const statusHarnessId = statusHarnessDefinition?.id;
-    const statusModel = statusHarnessId ? (this.controller.currentModel(statusHarnessId) ?? "default") : "default";
-    const statusHarnessKey = statusHarnessDefinition?.sessionKey ?? statusHarness;
-    const contextStatus = contextUsageStatusText(v.perHarness.get(statusHarnessKey)?.contextUsage, statusModel);
+    const activeTurn = activeTurnId ? v.activeTurns.get(activeTurnId) : undefined;
+    const statusTargetId =
+      activeTargetId ??
+      observedRun?.harnessTargetId ??
+      this.harnessTargetId;
+    const targetState = v.perTarget.get(statusTargetId);
+    const statusHarness =
+      activeTurn?.harness ??
+      observedRun?.harness ??
+      targetState?.harness ??
+      harnessDefinitionFor(statusTargetId)?.sessionKey ??
+      statusTargetId;
+    // observed turn 可能来自恢复的事件流，当前 Controller 并未创建该 Target 的 slot；
+    // 此时只消费事件已报告的 model，不为展示反向启动或解析 Harness。
+    const statusModel =
+      statusTargetId === activeTargetId || statusTargetId === this.harnessTargetId
+        ? (this.controller.currentModel(statusTargetId) ?? "default")
+        : (targetState?.contextUsage?.model ?? "default");
+    const contextStatus = contextUsageStatusText(targetState?.contextUsage, statusModel);
     // 审批路由问 adapter 要（harness 自己报的生效值），不读 config——config 是意图，
     // 且投影层不得按 harness 分支（不变量 #3）。曾经这里硬编码 codexApprovalReviewer，
     // 于是跟 claude 对话时 footer 照样显示 codex 的委托状态。
     const approvalStatus =
-      statusHarnessId && this.controller.approvalRoute(statusHarnessId) === "delegated"
+      this.controller.approvalRoute(statusTargetId) === "delegated"
         ? "approvals:auto-review"
         : undefined;
     const statusDetails = [contextStatus, approvalStatus].filter((detail): detail is string => detail !== undefined);
@@ -768,10 +778,10 @@ export class BatonChatProtocol implements ChatProtocol {
         },
       ];
     };
-    const runStatus: RunStatusItem[] = active
+    const runStatus: RunStatusItem[] = activeTargetId
       ? splitStatus({
-          id: `run:${active}`,
-          author: harnessAuthor(active),
+          id: `run:${activeTargetId}`,
+          author: harnessAuthor(statusHarness),
           label: `${statusModel} · ${runStatusLabel(v, activeTurnId)}`,
           startedAt: this.controller.activeStartedAt,
           hint: "Esc to interrupt",
@@ -784,27 +794,32 @@ export class BatonChatProtocol implements ChatProtocol {
             startedAt: observedRun.startedAt,
           })
         : splitStatus({
-            id: `agent:${this.agent}`,
-            author: harnessAuthor(this.agent),
+            id: `agent:${this.harnessTargetId}`,
+            author: harnessAuthor(
+              v.perTarget.get(this.harnessTargetId)?.harness ??
+                harnessDefinitionFor(this.harnessTargetId)?.sessionKey ??
+                this.harnessTargetId,
+            ),
             label: `${statusModel} · idle`,
           });
-    const busy = active !== undefined || observedRuns.length > 0;
+    const busy = activeTargetId !== undefined || observedRuns.length > 0;
     // plan 互补显示（design §5.9）：同一时刻只出现在一个地方——进行中归 pin（现在时），
     // 盖棺归 transcript（过去时）。pin 显示期间 transcript 不渲染该 plan 卡（避免同屏两份、
     // 且过去时区域不该有实时改写的块）；全部完成 pin 停发，终态卡在 timeline 原位出现供回看。
-    // pin 还绑定当前输入目标 harness：切换 agent 即表示放弃上一家的现在时，
-    // 上一家未完成的 plan 回到 transcript；切回且该 harness 仍在运行时可恢复 pin。
-    // 同时以同 harness 的运行态门控：idle 后未完成的 plan 也归 transcript，
-    // 避免别家 harness 的回合让已搁置的 plan 重新上 pin。
-    const selectedHarness = harnessDefinitionFor(this.agent)?.sessionKey ?? this.agent;
-    const lastPlanId = v.perHarness.get(selectedHarness)?.lastPlanId;
+    // pin 绑定当前输入 Target：切换 Target 即表示放弃上一家的现在时，
+    // 上一家未完成的 plan 回到 transcript；切回且该 Target 仍在运行时可恢复 pin。
+    // 同时以同 Target 的运行态门控：idle 后未完成的 plan 也归 transcript，
+    // 避免别的 Target 回合让已搁置的 plan 重新上 pin。
+    const lastPlanId = v.perTarget.get(this.harnessTargetId)?.lastPlanId;
     const lastPlan = lastPlanId ? v.plans.get(lastPlanId) : undefined;
     const planEntries = (lastPlan?.entries ?? []).map((entry) => ({
       content: entry.content,
       status: normalizePlanStatus(entry.status),
     }));
-    const harnessRunning = [...v.activeTurns.values()].some((turn) => turn.harness === selectedHarness);
-    const planActive = harnessRunning && planEntries.some((entry) => entry.status !== "completed");
+    const targetRunning = [...v.activeTurns.values()].some(
+      (turn) => turn.harnessTargetId === this.harnessTargetId,
+    );
+    const planActive = targetRunning && planEntries.some((entry) => entry.status !== "completed");
     const pinnedPlanId = planActive ? lastPlan?.planId : undefined;
     return {
       transcript: [...buildTranscript(v, pinnedPlanId), ...(this.commandOutput ? [this.commandOutput] : [])],
@@ -814,7 +829,7 @@ export class BatonChatProtocol implements ChatProtocol {
       queued: this.controller.queuedTurns.map((turn) => ({
         id: String(turn.id),
         text: userVisibleText(textOf(turn.blocks)),
-        tag: turn.harness,
+        tag: turn.harnessTargetId,
       })),
       picker: this.picker
         ? { id: this.picker.id, title: this.picker.title, options: this.picker.options }
@@ -863,10 +878,10 @@ export class BatonChatProtocol implements ChatProtocol {
       footer: `session: ${this.session.id}  in:${v.usage.inputTokens} out:${v.usage.outputTokens}  turns:${v.turnSummaries.length}  queue:${this.controller.queueLength}${planActive ? `  plan:${planEntries.filter((entry) => entry.status === "completed").length}/${planEntries.length}` : ""}  cwd:${this.session.meta.cwd}`,
       // ↑ 召回提示只在"可召回"时出现：交互发生地是 composer（placeholder 天然只在空输入时可见）
       // busy 且可 steer 时提示 Enter 的实际语义（design §3.2：delivery 对用户可见、可预期）
-      composerPlaceholder: `Message ${this.agent} (/ commands, @ mentions, ${
+      composerPlaceholder: `Message ${this.harnessTargetId} (/ commands, @ mentions, ${
         this.controller.queueLength > 0
           ? "↑ recall queued"
-          : this.controller.canSteer(this.agent)
+          : this.controller.canSteer(this.harnessTargetId)
             ? "Enter steers current turn"
             : "Ctrl+J newline"
       })`,

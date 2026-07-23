@@ -26,6 +26,7 @@ function ev<K extends EventKind>(
     scope: { type: "session", batonSessionId: "bs_test" },
     source,
     harness: "test",
+    harnessTargetId: "test",
     kind,
     payload,
     turnId,
@@ -287,7 +288,7 @@ describe("snapshot vs delta semantics", () => {
       }),
       ev("available_commands_update", { commands: [{ name: "plan" }] }),
     ]);
-    expect(state.availableCommands.map((c) => c.name)).toEqual(["plan"]);
+    expect(state.perTarget.get("test")?.availableCommands.map((c) => c.name)).toEqual(["plan"]);
   });
 
   test("config_option_update replaces the whole snapshot", () => {
@@ -302,8 +303,8 @@ describe("snapshot vs delta semantics", () => {
         options: [{ id: "model", type: "select", name: "Model", value: "b", options: [{ value: "b", name: "B" }] }],
       }),
     ]);
-    expect(state.configOptions).toHaveLength(1);
-    expect(state.configOptions[0]).toMatchObject({ id: "model", value: "b" });
+    expect(state.perTarget.get("test")?.configOptions).toHaveLength(1);
+    expect(state.perTarget.get("test")?.configOptions[0]).toMatchObject({ id: "model", value: "b" });
   });
 
   test("usage_update accumulates (delta) while context_usage_update replaces (snapshot)", () => {
@@ -317,7 +318,7 @@ describe("snapshot vs delta semantics", () => {
     ]);
     expect(state.usage.inputTokens).toBe(13);
     expect(state.usage.outputTokens).toBe(7);
-    expect(state.perHarness.get("test")?.contextUsage).toEqual({ contextUsed: 1500, contextSize: 200000 });
+    expect(state.perTarget.get("test")?.contextUsage).toEqual({ contextUsed: 1500, contextSize: 200000 });
   });
 
   test("context_usage_update snapshot replaces omitted fields too — no field-level merge", () => {
@@ -325,27 +326,121 @@ describe("snapshot vs delta semantics", () => {
       ev("context_usage_update", { contextUsed: 1000, cost: { amount: 1.5, currency: "USD" } }),
       ev("context_usage_update", { contextUsed: 1200 }),
     ]);
-    expect(state.perHarness.get("test")?.contextUsage?.cost).toBeUndefined();
+    expect(state.perTarget.get("test")?.contextUsage?.cost).toBeUndefined();
   });
 
-  test("context snapshots remain independently addressable per harness", () => {
+  test("context snapshots remain independently addressable per HarnessTarget", () => {
     const state = reduceEvents([
-      { ...ev("context_usage_update", { contextSize: 200_000 }), harness: "codex" },
-      { ...ev("context_usage_update", { contextSize: 1_000_000 }), harness: "claude-code" },
+      { ...ev("context_usage_update", { contextSize: 200_000 }), harness: "codex", harnessTargetId: "codex" },
+      {
+        ...ev("context_usage_update", { contextSize: 1_000_000 }),
+        harness: "claude-code",
+        harnessTargetId: "claude",
+      },
     ]);
-    expect(state.perHarness.get("codex")?.contextUsage?.contextSize).toBe(200_000);
-    expect(state.perHarness.get("claude-code")?.contextUsage?.contextSize).toBe(1_000_000);
+    expect(state.perTarget.get("codex")?.contextUsage?.contextSize).toBe(200_000);
+    expect(state.perTarget.get("claude")?.contextUsage?.contextSize).toBe(1_000_000);
   });
 
-  test("plan_update records the harness's latest plan id in the per-harness slot", () => {
-    // pinned plan 的归属查询键：投影按 perHarness.lastPlanId 直取，不再全表扫描
+  test("plan_update records the Target's latest plan id in its Target-scoped slot", () => {
+    // pinned plan 的归属查询键：投影按 perTarget.lastPlanId 直取，不再全表扫描
     const state = reduceEvents([
-      { ...ev("plan_update", { planId: "p1", entries: [{ content: "a", status: "pending", priority: "medium" }] }), harness: "codex" },
-      { ...ev("plan_update", { planId: "p2", entries: [{ content: "b", status: "pending", priority: "medium" }] }), harness: "claude-code" },
-      { ...ev("plan_update", { planId: "p3", entries: [{ content: "c", status: "pending", priority: "medium" }] }), harness: "codex" },
+      {
+        ...ev("plan_update", { planId: "p1", entries: [{ content: "a", status: "pending", priority: "medium" }] }),
+        harness: "codex",
+        harnessTargetId: "codex",
+      },
+      {
+        ...ev("plan_update", { planId: "p2", entries: [{ content: "b", status: "pending", priority: "medium" }] }),
+        harness: "claude-code",
+        harnessTargetId: "claude",
+      },
+      {
+        ...ev("plan_update", { planId: "p3", entries: [{ content: "c", status: "pending", priority: "medium" }] }),
+        harness: "codex",
+        harnessTargetId: "codex",
+      },
     ]);
-    expect(state.perHarness.get("codex")?.lastPlanId).toBe("p3");
-    expect(state.perHarness.get("claude-code")?.lastPlanId).toBe("p2");
+    expect(state.perTarget.get("codex")?.lastPlanId).toBe("p3");
+    expect(state.perTarget.get("claude")?.lastPlanId).toBe("p2");
+  });
+
+  test("same Harness with two Targets keeps all Target-scoped projections isolated", () => {
+    const state = reduceEvents([
+      {
+        ...ev("context_usage_update", { contextUsed: 10, contextSize: 100 }),
+        harness: "codex",
+        harnessTargetId: "codex-work",
+      },
+      {
+        ...ev("context_usage_update", { contextUsed: 70, contextSize: 100 }),
+        harness: "codex",
+        harnessTargetId: "codex-personal",
+      },
+      {
+        ...ev("available_commands_update", { commands: [{ name: "review" }] }),
+        harness: "codex",
+        harnessTargetId: "codex-work",
+      },
+      {
+        ...ev("available_commands_update", { commands: [{ name: "ship" }] }),
+        harness: "codex",
+        harnessTargetId: "codex-personal",
+      },
+      {
+        ...ev("plan_update", {
+          planId: "p-work",
+          entries: [{ content: "review", status: "pending", priority: "medium" }],
+        }),
+        harness: "codex",
+        harnessTargetId: "codex-work",
+      },
+      {
+        ...ev("plan_update", {
+          planId: "p-personal",
+          entries: [{ content: "ship", status: "pending", priority: "medium" }],
+        }),
+        harness: "codex",
+        harnessTargetId: "codex-personal",
+      },
+      {
+        ...ev("agent_message", { messageId: "m-work", content: [{ type: "text", text: "work" }] }, "t-work"),
+        harness: "codex",
+        harnessTargetId: "codex-work",
+      },
+      {
+        ...ev("tool_call_update", { toolCallId: "tc-personal", status: "pending" }, "t-personal"),
+        harness: "codex",
+        harnessTargetId: "codex-personal",
+      },
+      {
+        ...ev("state_update", { state: "running" }, "t-work"),
+        harness: "codex",
+        harnessTargetId: "codex-work",
+      },
+      {
+        ...ev("state_update", { state: "running" }, "t-personal"),
+        harness: "codex",
+        harnessTargetId: "codex-personal",
+      },
+    ]);
+
+    expect(state.perTarget.get("codex-work")).toMatchObject({
+      harness: "codex",
+      lastPlanId: "p-work",
+      contextUsage: { contextUsed: 10, contextSize: 100 },
+      availableCommands: [{ name: "review" }],
+    });
+    expect(state.perTarget.get("codex-personal")).toMatchObject({
+      harness: "codex",
+      lastPlanId: "p-personal",
+      contextUsage: { contextUsed: 70, contextSize: 100 },
+      availableCommands: [{ name: "ship" }],
+    });
+    expect(state.messages.get("m-work")?.harnessTargetId).toBe("codex-work");
+    expect(state.toolCalls.get("tc-personal")?.harnessTargetId).toBe("codex-personal");
+    expect(state.activeTurns.get("t-work")?.harnessTargetId).toBe("codex-work");
+    expect(state.activeTurns.get("t-personal")?.harnessTargetId).toBe("codex-personal");
   });
 });
 
