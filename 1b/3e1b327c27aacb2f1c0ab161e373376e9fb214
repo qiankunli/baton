@@ -1,0 +1,21 @@
+src/tui/session-picker.tsx
+  s_3b0325debf7608::t_e6d987a8a8ef83 47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "1b3e1b327c27aacb2f1c0ab161e373376e9fb214",
+  "prompts": {},
+  "sessions": {
+    "s_3b0325debf7608": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e4b8abd6-5441-44a7-af3f-abfa30a7c2c9",
+        "model": "unknown"
+      },
+      "human_author": "liqiankun.1111 <liqiankun.1111@bytedance.com>"
+    }
+  },
+  "attestation_metadata": {},
+  "remote_transcripts": {}
+}
