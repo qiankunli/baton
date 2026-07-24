@@ -117,10 +117,15 @@ describe("plugin Manager", () => {
       store: reqloopStore,
       resourceKind: "ReqLoopRun",
       reconciler: {
-        async reconcile(context) {
-          started.push(context.resource.metadata.pluginInstanceId);
+        async reconcile(_baton, resource) {
+          started.push(resource.metadata.pluginInstanceId);
           await gate.promise;
-          return { proposedInput: { text: "Review requirement" } };
+          return {
+            output: {
+              kind: "proposed-input",
+              text: "Review requirement",
+            },
+          };
         },
       },
     });
@@ -128,8 +133,8 @@ describe("plugin Manager", () => {
       store: deployStore,
       resourceKind: "Deployment",
       reconciler: {
-        async reconcile(context) {
-          started.push(context.resource.metadata.pluginInstanceId);
+        async reconcile(_baton, resource) {
+          started.push(resource.metadata.pluginInstanceId);
         },
       },
     });
@@ -253,9 +258,9 @@ describe("plugin Manager", () => {
       resourceKind: "ReqLoopRun",
       maxConcurrency: 1,
       reconciler: {
-        async reconcile(context) {
+        async reconcile(_baton, resource) {
           started.push(
-            `${context.resource.metadata.pluginInstanceId}/${context.resource.metadata.resourceId}`,
+            `${resource.metadata.pluginInstanceId}/${resource.metadata.resourceId}`,
           );
           await gate.promise;
         },
@@ -266,9 +271,9 @@ describe("plugin Manager", () => {
       resourceKind: "Deployment",
       maxConcurrency: 1,
       reconciler: {
-        async reconcile(context) {
+        async reconcile(_baton, resource) {
           started.push(
-            `${context.resource.metadata.pluginInstanceId}/${context.resource.metadata.resourceId}`,
+            `${resource.metadata.pluginInstanceId}/${resource.metadata.resourceId}`,
           );
           await gate.promise;
         },
@@ -342,7 +347,12 @@ describe("plugin Manager", () => {
       resourceKind: "ReqLoopRun",
       reconciler: {
         async reconcile() {
-          return { proposedInput: { text: "Review requirement" } };
+          return {
+            output: {
+              kind: "proposed-input",
+              text: "Review requirement",
+            },
+          };
         },
       },
     });
@@ -402,8 +412,8 @@ describe("plugin Manager", () => {
       store: resources,
       resourceKind: "ReqLoopRun",
       reconciler: {
-        async reconcile(context) {
-          runs.push(context.resource.metadata.resourceId);
+        async reconcile(_baton, resource) {
+          runs.push(resource.metadata.resourceId);
         },
       },
     });

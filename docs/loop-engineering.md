@@ -95,7 +95,7 @@ Baton 拥有控制面，而不拥有各领域：
 - 从 Event Ledger 投影只读 Builtin Resource，供 Plugin 以 level-based 方式观察 Baton 行为；
 - 装载 Plugin，注册 Command 与 Resource Contribution；
 - 持久化 PluginResource、合并 reconcile key 并恢复 `nextReconcileAt`；
-- 将用户确认的 `proposedInput` 作为普通 Input 委托给合适的 Harness；
+- 将用户确认的 `proposed-input` Plugin Output 作为普通 Input 委托给合适的 Harness；
 - 从 Resource 与协作事实生成 Board 视图；
 - 根据目标 Harness、session 和 turn 组装 ContextBundle；
 - 保存意图、决策、执行与回执，使 loop 可追踪、可恢复。
@@ -201,7 +201,7 @@ Codex / Claude Code Plugin
 
 Baton Plugin
   → 观察 loop
-  → 首期返回 proposedInput 给人审核
+  → 首期返回 proposed-input Plugin Output 给人审核
   → 未来请求 Baton 主动调度 Harness
   → Baton 选择/恢复 Harness，组装 context 并调度 turn
 ```
@@ -219,7 +219,8 @@ Plugin 可以注册 `/requirement` 等 slash command。命令 handler 操作 Res
 - 列表、表单和选择项由 Baton 渲染；
 - 选中或输入需求后创建、恢复或修改 PluginResource；
 - Board 和 Context 由对应 Resource Contribution 投影；
-- 需要智能判断时由 Reconciler 返回 `proposedInput`，用户提交后进入普通 Input 路径。
+- 需要智能判断时由 Reconciler 返回 `kind: "proposed-input"` 的 Plugin Output，用户提交后
+  进入普通 Input 路径。
 
 这使“查看需求并放入 Board”成为 Plugin 能力，而不是 Requirement 进入 Baton core 的理由。
 
@@ -314,11 +315,11 @@ Builtin projection / PluginResource change / startup / timer due
 keyed reconcile queue
                          │ same key coalesces
                          ▼
-reconcile(latest resource snapshot, latest external state)
+reconcile(BatonSnapshot, latest Resource)
                          │
-                         ├── patch owned status / project Board
+                         ├── patch owned status through ResourceClient
                          ├── call owned Connector when authorized
-                         └── Plugin Output? / requeueAfter?
+                         └── return { output?, requeueAfterMs? }
 ```
 
 触发原因只是 wake hint，不是必须逐条执行的业务命令。同一 Resource 不并发 reconcile；
@@ -326,8 +327,9 @@ reconcile(latest resource snapshot, latest external state)
 Reconciler 可以调用自己 Plugin 的 Connector，使实际状态靠近已授权 spec；不确定外部写入使用
 稳定 operation key，并在重试前重新观察。
 
-首期 `ReconcileResult` 只有 `proposedInput?` 和 `requeueAfter?`。前者是给人审核、编辑或丢弃的
-文本，提交后才成为普通 Input；PluginResource 的后者换算成持久化 `nextReconcileAt`，进程
+首期 `ReconcileResult` 只有 `output?` 和 `requeueAfterMs?`，当前唯一 Output kind 是
+`proposed-input`，供人审核、编辑或丢弃，提交后才成为普通 Input；PluginResource 的
+`requeueAfterMs` 换算成持久化 `nextReconcileAt`，进程
 重启后恢复。Builtin Resource 的 due time 只存在于进程队列，重启时由 ledger replay 再次
 enqueue。错误都由 Baton 退避重试，空结果等待新事实。
 
@@ -453,7 +455,7 @@ BoardView、BoardSnapshot 和 ContextBundle 是同一协作状态针对不同消
 
 > **Board 更新 ≠ Context 已交付 ≠ Harness 被唤醒。**
 
-Board 变化先更新投影；ContextComposer 只在用户提交 `proposedInput`，或未来调度准备续跑时
+Board 变化先更新投影；ContextComposer 只在用户提交 `proposed-input` Output，或未来调度准备续跑时
 编译所需增量；是否创建 turn 首期只由用户 Input 决定。
 
 ### Context 交付
@@ -481,7 +483,7 @@ schema、reconcile、Board projection 与可选 Context projection 都收在该 
 
 1. 用户启用并配置随 Baton 交付的 reqloop，通过 `/requirement` 创建或恢复 ReqLoopRun；
    Requirement、验收条件和完成策略进入 `spec`。
-2. ReqLoopReconciler 返回“根据需求完成开发并提交 PR”的 `proposedInput`；用户原样提交、编辑后
+2. ReqLoopReconciler 返回“根据需求完成开发并提交 PR”的 `proposed-input` Output；用户原样提交、编辑后
    提交或丢弃。提交后才成为普通 Input，因此仍是 user-driven turn。
 3. 目标 Harness 内安装的 devloop 规范 agent 完成开发、lint/test、commit 和 PR/MR；它使用
    Codex/Claude Code 自己的 skill、hook、command 和权限机制，不注册为 Baton Plugin。
@@ -489,7 +491,7 @@ schema、reconcile、Board projection 与可选 Context projection 都收在该 
    event bridge 归一为带 ReqLoopRun reference 的 `harness.delivery.ready`；Reconciler 将 PR
    等实际交付物写入 `status`。
 5. `spec` 要求 review 时，Reconciler 调用 VerdictConnector，并通过 `requeueAfter` 轮询长耗时
-   结果；收到 changes requested 后返回包含 review 意见的修复 `proposedInput`。
+   结果；收到 changes requested 后返回包含 review 意见的修复 `proposed-input` Output。
 6. 部署、review 和修复满足 completion policy 后，Reconciler 更新 conditions，并在已授权
    `spec` 范围内调用 Connector 完成收尾。
 
@@ -578,7 +580,7 @@ scope / placement
 Loop 产品能力
 DevelopmentOutcome
   → Builtin Resource projection / PluginResource(spec / status)
-  → Reconcile + proposedInput + RequeueAfter
+  → Reconcile(BatonSnapshot, Resource) + PluginOutput + RequeueAfter
   → 未来受控 Harness 调用
   → daemon
 ```
@@ -610,7 +612,7 @@ DevelopmentOutcome
    append 感知 Baton 内部事实；
 4. 建立同 key 不并发的 reconcile queue，并将 PluginResource 的 `requeueAfter` 持久化为
    `nextReconcileAt`；
-5. 接通 Board/Context projection 和 `proposedInput`，用 reqloop + 安装了 devloop 的 Harness
+5. 接通 Board/Context projection 和 `proposed-input` Output，用 reqloop + 安装了 devloop 的 Harness
    跑通用户审核文本后驱动的 Requirement Loop；
 6. 真实场景无法由轮询、desired state 或当前进程覆盖时，再依次引入 EventSource、Schedule、
    Action 或 daemon；
@@ -635,7 +637,8 @@ Plugin/Event ledger 的关联，避免形成两份可独立修改的历史。
    generation / observedGeneration 显式表示收敛水位。
 6. Builtin Resource 是 Event Ledger 的只读、可重放投影；用户和 Plugin 都不能修改，也不
    另建持久真相。
-7. 首期 Reconciler 只返回 `proposedInput` 和 `requeueAfter`；提交文本的 owner 仍是用户。
+7. 首期 Reconciler 返回 `PluginOutput(kind: "proposed-input")` 和 `requeueAfterMs`；提交文本的
+   owner 仍是用户。
 8. 未来若实现主动 Harness 调用，Plugin 也不能直接持有 Harness runtime，必须复用 Baton
    Input/Attempt 投递路径。
 9. Event 先持久化再投影 Builtin Resource 并触发 Reconcile，触发本身不是必须执行一次的命令。

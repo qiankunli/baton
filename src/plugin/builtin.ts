@@ -8,11 +8,17 @@ import {
   type BuiltinResourceReconcileProposal,
   type ReconcileKey,
   type ReconcileResult,
+  type ResourceReconciler,
   type ReconcileScope,
   type ScheduledReconcile,
 } from "./controller.ts";
 import { ReconcileQueue } from "./queue.ts";
 import { reconcileResourceOwner } from "./reconcile-scope.ts";
+import {
+  emptyBatonSnapshot,
+  type BatonSnapshot,
+} from "./baton-snapshot.ts";
+import { validatePluginOutput } from "./output.ts";
 
 export const BATON_TURN_RESOURCE_KIND = "baton.turn" as const;
 
@@ -56,15 +62,8 @@ export type AnyBuiltinResource = {
   [K in BuiltinResourceKind]: BuiltinResource<K>;
 }[BuiltinResourceKind];
 
-export interface BuiltinReconcileContext<K extends BuiltinResourceKind> {
-  readonly resource: Readonly<BuiltinResource<K>>;
-}
-
-export interface BuiltinReconciler<K extends BuiltinResourceKind> {
-  reconcile(
-    context: BuiltinReconcileContext<K>,
-  ): Promise<ReconcileResult | void>;
-}
+export type BuiltinReconciler<K extends BuiltinResourceKind> =
+  ResourceReconciler<BuiltinResource<K>>;
 
 type BuiltinSession = Pick<
   SessionHandle,
@@ -189,6 +188,8 @@ export interface BuiltinControllerOptions<K extends BuiltinResourceKind> {
   reconciler: BuiltinReconciler<K>;
   maxConcurrency?: number;
   now?: () => Date;
+  /** 每次执行前读取最新 BatonSession 只读视图。 */
+  snapshot?: () => BatonSnapshot;
   executeWithCapacity?: <T>(execute: () => Promise<T>) => Promise<T>;
   onProposal(
     proposal: BuiltinResourceReconcileProposal,
@@ -199,10 +200,8 @@ export interface BuiltinControllerOptions<K extends BuiltinResourceKind> {
 
 function validatedResult(result: ReconcileResult | void): ReconcileResult {
   if (!result) return {};
-  if (result.proposedInput !== undefined) {
-    if (typeof result.proposedInput.text !== "string" || !result.proposedInput.text.trim()) {
-      throw new Error("reconcile proposedInput.text must not be empty");
-    }
+  if (result.output !== undefined) {
+    validatePluginOutput(result.output);
   }
   if (
     result.requeueAfterMs !== undefined &&
@@ -223,6 +222,7 @@ export class BuiltinController<K extends BuiltinResourceKind> {
   private readonly resourceKind: K;
   private readonly reconciler: BuiltinReconciler<K>;
   private readonly now: () => Date;
+  private readonly snapshot: () => BatonSnapshot;
   private readonly onProposal: BuiltinControllerOptions<K>["onProposal"];
   private readonly queue: ReconcileQueue;
   private closed = false;
@@ -236,6 +236,9 @@ export class BuiltinController<K extends BuiltinResourceKind> {
     this.projection.list(options.resourceKind);
     this.reconciler = options.reconciler;
     this.now = options.now ?? (() => new Date());
+    this.snapshot =
+      options.snapshot ??
+      (() => emptyBatonSnapshot(options.projection.batonSessionId));
     this.onProposal = options.onProposal;
     this.scope = Object.freeze({
       batonSessionId: options.projection.batonSessionId,
@@ -250,8 +253,14 @@ export class BuiltinController<K extends BuiltinResourceKind> {
         executeWithCapacity(async () => {
           if (this.closed) throw new Error("plugin Controller is closed");
           const resource = this.projection.get(this.resourceKind, key.resourceId);
+          const baton = deepFreeze(this.snapshot());
+          if (baton.session.batonSessionId !== this.scope.batonSessionId) {
+            throw new Error(
+              `BatonSnapshot batonSessionId must be ${this.scope.batonSessionId}, got ${baton.session.batonSessionId}`,
+            );
+          }
           const result = validatedResult(
-            await this.reconciler.reconcile(Object.freeze({ resource })),
+            await this.reconciler.reconcile(baton, resource),
           );
           const now = this.now();
           if (Number.isNaN(now.getTime())) {
@@ -261,11 +270,11 @@ export class BuiltinController<K extends BuiltinResourceKind> {
             result.requeueAfterMs === undefined
               ? null
               : new Date(now.getTime() + result.requeueAfterMs);
-          if (result.proposedInput) {
+          if (result.output) {
             await this.onProposal(Object.freeze({
               key,
               basedOnRevision: resource.metadata.revision,
-              text: result.proposedInput.text,
+              text: result.output.text,
             }));
           }
           options.onReconcileSuccess?.(key, nextReconcileAt);

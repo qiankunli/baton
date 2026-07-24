@@ -69,6 +69,52 @@ afterEach(() => {
 });
 
 describe("Plugin Package lifecycle", () => {
+  test("exposes a frozen, Instance-scoped Resource client to reconcile code", async () => {
+    const root = testRoot();
+    const { instances, proposals } = stores(root);
+    instances.create({
+      pluginInstanceId: "reqloop_default",
+      pluginId: "qiankun/reqloop",
+      packageVersion: "1.2.0",
+    });
+    resourceStore(root, "reqloop_default").create({
+      kind: "ReqLoopRun",
+      resourceId: "run_1",
+      spec: { requirement: "ship it" },
+      status: { phase: "pending" },
+    });
+    const foreign = resourceStore(root, "another_instance").create({
+      kind: "ReqLoopRun",
+      resourceId: "run_2",
+      spec: { requirement: "do not touch" },
+      status: { phase: "pending" },
+    });
+    let context: PluginActivationContext | undefined;
+    const manager = new Manager({
+      instances,
+      proposals,
+      packages: [reqloopPackage((activation) => {
+        context = activation;
+      })],
+      onProposal() {},
+    });
+
+    await manager.start();
+    const resource = context!.resources.get<
+      { requirement: string },
+      { phase: string }
+    >("ReqLoopRun", "run_1");
+    expect(Object.isFrozen(resource)).toBe(true);
+    const updated = context!.resources.patchStatus(resource, {
+      phase: "running",
+    });
+    expect(updated.status.phase).toBe("running");
+    expect(() =>
+      context!.resources.patchStatus(foreign, { phase: "forbidden" }),
+    ).toThrow("outside reqloop_default");
+    await manager.close();
+  });
+
   test("restores enabled instances and scopes Resource registration to each instance", async () => {
     const root = testRoot();
     const { instances, proposals } = stores(root);
@@ -101,7 +147,7 @@ describe("Plugin Package lifecycle", () => {
           context.registerResource({
             resourceKind: "ReqLoopRun",
             reconciler: {
-              async reconcile({ resource }) {
+              async reconcile(_baton, resource) {
                 reconciled.push(resource.metadata.pluginInstanceId);
               },
             },

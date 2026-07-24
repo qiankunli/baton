@@ -2,6 +2,14 @@ import type { PluginResource } from "./resource.ts";
 import { PluginResourceStore } from "./resource.ts";
 import { ReconcileQueue } from "./queue.ts";
 import { reconcileResourceOwner } from "./reconcile-scope.ts";
+import {
+  emptyBatonSnapshot,
+  type BatonSnapshot,
+} from "./baton-snapshot.ts";
+import {
+  type PluginOutput,
+  validatePluginOutput,
+} from "./output.ts";
 
 export type ReconcileResourceOwner = "plugin" | "baton";
 
@@ -17,23 +25,23 @@ export interface ReconcileKey extends ReconcileScope {
   readonly resourceId: string;
 }
 
-export interface ReconcileContext<TSpec, TStatus> {
-  readonly resource: Readonly<PluginResource<TSpec, TStatus>>;
-  patchStatus(patch: Partial<TStatus>): Promise<void>;
-}
-
 export interface ReconcileResult {
-  /** 供用户审核、编辑后作为普通 Input 提交；它本身不创建 Input。 */
-  proposedInput?: {
-    text: string;
-  };
+  /** 交给 Baton 校验、持久化并进入对应宿主生命周期。 */
+  output?: PluginOutput;
   /** 一次性动态唤醒间隔；Controller 负责换算并持久化 nextReconcileAt。 */
   requeueAfterMs?: number;
 }
 
-export interface Reconciler<TSpec, TStatus> {
-  reconcile(context: ReconcileContext<TSpec, TStatus>): Promise<ReconcileResult | void>;
+export interface ResourceReconciler<TResource> {
+  reconcile(
+    baton: Readonly<BatonSnapshot>,
+    resource: Readonly<TResource>,
+  ): Promise<ReconcileResult | void>;
 }
+
+export type Reconciler<TSpec, TStatus> = ResourceReconciler<
+  PluginResource<TSpec, TStatus>
+>;
 
 export interface PluginResourceReconcileProposal {
   readonly key: ReconcileKey;
@@ -64,6 +72,8 @@ export interface ControllerOptions<TSpec, TStatus> {
   reconciler: Reconciler<TSpec, TStatus>;
   maxConcurrency?: number;
   now?: () => Date;
+  /** 每次执行前读取最新 BatonSession 只读视图。 */
+  snapshot?: () => BatonSnapshot;
   /** Manager 注入的进程总容量；缺省表示不额外限流。 */
   executeWithCapacity?: <T>(execute: () => Promise<T>) => Promise<T>;
   onProposal(proposal: ReconcileProposal): Promise<void> | void;
@@ -110,10 +120,8 @@ function deepFreeze<T>(value: T): T {
 
 function validatedResult(result: ReconcileResult | void): ReconcileResult {
   if (!result) return {};
-  if (result.proposedInput !== undefined) {
-    if (typeof result.proposedInput.text !== "string" || !result.proposedInput.text.trim()) {
-      throw new Error("reconcile proposedInput.text must not be empty");
-    }
+  if (result.output !== undefined) {
+    validatePluginOutput(result.output);
   }
   if (
     result.requeueAfterMs !== undefined &&
@@ -139,6 +147,7 @@ export class Controller<TSpec, TStatus> {
   private readonly resourceKind: string;
   private readonly reconciler: Reconciler<TSpec, TStatus>;
   private readonly now: () => Date;
+  private readonly snapshot: () => BatonSnapshot;
   private readonly executeWithCapacity: NonNullable<
     ControllerOptions<TSpec, TStatus>["executeWithCapacity"]
   >;
@@ -152,6 +161,8 @@ export class Controller<TSpec, TStatus> {
     this.resourceKind = options.resourceKind;
     this.reconciler = options.reconciler;
     this.now = options.now ?? (() => new Date());
+    this.snapshot =
+      options.snapshot ?? (() => emptyBatonSnapshot(options.store.batonSessionId));
     this.executeWithCapacity =
       options.executeWithCapacity ?? (async (execute) => await execute());
     this.onProposal = options.onProposal;
@@ -223,24 +234,27 @@ export class Controller<TSpec, TStatus> {
         const resource = deepFreeze(
           this.store.get<TSpec, TStatus>(this.resourceKind, key.resourceId),
         );
-        let latestResourceVersion = resource.metadata.resourceVersion;
-        const context: ReconcileContext<TSpec, TStatus> = Object.freeze({
-          resource,
-          patchStatus: async (patch: Partial<TStatus>) => {
-            const updated = this.store.patchStatus<TSpec, TStatus>(
-              this.resourceKind,
-              key.resourceId,
-              patch,
-              { expectedResourceVersion: latestResourceVersion },
-            );
-            latestResourceVersion = updated.metadata.resourceVersion;
-          },
-        });
-
-        const result = validatedResult(await this.reconciler.reconcile(context));
+        const baton = deepFreeze(this.snapshot());
+        if (baton.session.batonSessionId !== this.scope.batonSessionId) {
+          throw new Error(
+            `BatonSnapshot batonSessionId must be ${this.scope.batonSessionId}, got ${baton.session.batonSessionId}`,
+          );
+        }
+        const result = validatedResult(
+          await this.reconciler.reconcile(baton, resource),
+        );
         const now = this.now();
         if (Number.isNaN(now.getTime())) {
           throw new Error("plugin Controller now() returned an invalid Date");
+        }
+        const latest = this.store.get<TSpec, TStatus>(
+          this.resourceKind,
+          key.resourceId,
+        );
+        if (latest.metadata.generation !== resource.metadata.generation) {
+          throw new Error(
+            `plugin resource generation changed during reconcile: expected ${resource.metadata.generation}, current ${latest.metadata.generation}`,
+          );
         }
         const nextReconcileAt =
           result.requeueAfterMs === undefined
@@ -250,17 +264,17 @@ export class Controller<TSpec, TStatus> {
           this.resourceKind,
           key.resourceId,
           nextReconcileAt,
-          { expectedResourceVersion: latestResourceVersion },
+          { expectedResourceVersion: latest.metadata.resourceVersion },
         );
 
         return {
           nextReconcileAt,
-          ...(result.proposedInput
+          ...(result.output
             ? {
                 proposal: Object.freeze({
                   key,
                   basedOnGeneration: resource.metadata.generation,
-                  text: result.proposedInput.text,
+                  text: result.output.text,
                 }),
               }
             : {}),
