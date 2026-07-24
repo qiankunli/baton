@@ -1,3 +1,8 @@
+import {
+  DeliveryAttempts,
+  type HarnessDeliveryAttemptState,
+} from "../controller/attempt.ts";
+import type { AnyEventEnvelope, EventEnvelope } from "../event/types.ts";
 import { reduceEvents } from "../store/reduce.ts";
 import type { SessionHandle, SessionStore } from "../store/store.ts";
 
@@ -76,6 +81,7 @@ function recoverInterruptedState(session: SessionHandle): boolean {
   const events = session.readEvents();
   if (events.length === 0) return false;
   const state = reduceEvents(events);
+  const recoveredAttempt = recoverDeliveryAttempts(session, events);
 
   const summarized = new Set<string>();
   for (const ev of events) {
@@ -93,7 +99,7 @@ function recoverInterruptedState(session: SessionHandle): boolean {
     unsummarized.length === 0 &&
     ![...state.interactions.values()].some((interaction) => !interaction.resolution)
   ) {
-    return false;
+    return recoveredAttempt;
   }
 
   for (const [interactionId, interaction] of state.interactions) {
@@ -140,4 +146,69 @@ function recoverInterruptedState(session: SessionHandle): boolean {
   }
   for (const turnId of unsummarized) session.summarizeTurnEvent(turnId);
   return true;
+}
+
+/**
+ * 打开期只做能从已有事实证明的收敛：
+ * - prepared 从未进入 dispatching，可确认 not_accepted；
+ * - Harness idle 是权威终态 Receipt，可 final；
+ * - dispatching/accepted 但无 Harness 终态时只能标 uncertain，不能猜失败后重投。
+ */
+function recoverDeliveryAttempts(
+  session: SessionHandle,
+  events: AnyEventEnvelope[],
+): boolean {
+  const attempts = new DeliveryAttempts<SessionHandle>(
+    (handle, event) =>
+      handle.append({
+        ...event,
+        source: { type: "baton" },
+      }) as EventEnvelope<"_baton_delivery_attempt_update">,
+    events,
+  );
+  let changed = false;
+  for (const attempt of attempts.values()) {
+    if (attempt.phase === "finalized") continue;
+    const terminal = findLaterHarnessTerminal(events, attempt);
+    if (terminal) {
+      attempts.observeTerminal(session, terminal);
+      changed = true;
+      continue;
+    }
+    if (attempt.phase === "prepared") {
+      attempts.finalize(session, attempt, "not_accepted", {
+        detail: "Baton exited before dispatch began",
+      });
+      changed = true;
+      continue;
+    }
+    if (attempt.phase !== "uncertain") {
+      attempts.markUncertain(
+        session,
+        attempt,
+        "Baton exited before Harness delivery could be reconciled",
+      );
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function findLaterHarnessTerminal(
+  events: AnyEventEnvelope[],
+  attempt: HarnessDeliveryAttemptState,
+): EventEnvelope<"state_update"> | undefined {
+  for (let index = events.length - 1; index >= 0; index--) {
+    const event = events[index] as AnyEventEnvelope;
+    if (event.seq <= attempt.preparedSeq) break;
+    if (
+      event.kind === "state_update" &&
+      event.turnId === attempt.turnId &&
+      event.source.type === "harness" &&
+      event.payload.state === "idle"
+    ) {
+      return event;
+    }
+  }
+  return undefined;
 }

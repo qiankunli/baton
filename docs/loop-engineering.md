@@ -2,7 +2,8 @@
 
 > 状态：讨论草案。本文描述 Baton 的长期演进方向，不改变当前 v1“统一会话与跨
 > Harness 上下文接力”的实施范围。本文统一使用 `Harness` 表示 Codex、Claude Code 等
-> 智能执行环境。支撑这些能力的 v2 内核目标见 [Baton v2](./baton-v2.md)。
+> 智能执行环境。支撑这些能力的 v2 内核目标见 [Baton v2](./baton-v2.md)；当前已经用
+> 用户驱动的 Harness submit 落下首个 Intent / Attempt / Receipt 可靠投递切片。
 
 ## 1. 要解决的问题
 
@@ -633,8 +634,9 @@ DevelopmentOutcome
 2. **Event、Interaction 与 Signal 收敛**：Event v3 使用稳定 `eventId + scope + source`；
    permission/question/hook trust 共用 `Interaction opened/resolved` 生命周期；wake、文件通知和
    projection invalidation 只作为可合并的 signal。signal 触发权威读取，不能直接改变状态。
-3. **可靠工作投递**：为 ActionIntent 先建立通用的 Intent/Attempt/Receipt、幂等 identity 与
-   payload digest、`uncertain` 状态和 reconcile，再让 Harness Work 复用这条路径。
+3. **可靠工作投递**：先让现有用户驱动的 Harness submit 进入 Attempt ledger，以已持久化
+   Input 作为上游，验证先记账再投递、`uncertain` 和恢复语义；再抽成 ActionIntent 与未来
+   HarnessWorkIntent 共用的 Intent/Attempt/Receipt 路径，并在需要自动重试时补齐幂等身份。
 4. **上下文可对账**：建立有 owner/key 的 ContextSource、ContextSnapshot、ContextEpoch 和
    ContextDeliveryReceipt；明确 Board 更新、context 交付和 Harness 唤醒是三个独立转换。
 

@@ -217,7 +217,11 @@ describe("codex transport failure", () => {
     });
     const events: AnyEventDraft[] = [];
     const ref = await adapter.open({ cwd: "/tmp" }, (ev) => events.push(ev));
-    await adapter.submit(ref, { turnId: "t_1", messageId: "m_1", blocks: [{ type: "text", text: "go" }] });
+    await adapter.submit(ref, {
+      turnId: "t_1",
+      messageId: "m_1",
+      blocks: [{ type: "text", text: "go" }],
+    });
 
     await until(() =>
       events.some((ev) => ev.kind === "state_update" && (ev.payload as { state: string }).state === "idle"),

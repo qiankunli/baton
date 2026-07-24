@@ -6,7 +6,28 @@
 
 ## 1. 核心概念
 
-内核由七个概念承重。每个概念绑定一条不能被 harness 差异侵蚀的不变量。
+### 三域视角：Input / Controller / Harness
+
+从最高层看，Baton 内核先收束为三个协作域。这是判断概念归属、依赖方向与新能力落点的
+**指导模型**，不等同于当前物理目录，也不要求代码立即按三域重排：
+
+| 域 | 负责什么 | 不负责什么 |
+|---|---|---|
+| **Input** | 抽象进入 Baton 的刺激；以 `source` 区分 user、monitor、external event 等来源，各来源再以 `kind` / `mode` 表达 prompt、control、interaction resolution、steer 等真实语义 | 不感知 Harness wire，不决定排队、重试或 Turn 生命周期 |
+| **Controller** | 连接两侧并拥有 Baton 的协调状态：接收 Input，完成 admission、queue、Attempt、Turn / Interaction 收口、Event 持久化，并将 Projection 反馈给页面 / 用户 | 不实现 Harness 方言，也不把某个 UI 的展示形状下沉为核心规则 |
+| **Harness** | 抽象执行侧：HarnessTarget、Adapter、Capability、原生 HarnessSession，以及 Harness 操作和输出事实的归一 | 不拥有用户输入生命周期，不直接向页面投影 |
+
+依赖与数据流保持单向可解释：`Input → Controller → Harness` 表达控制，
+`Harness → Controller → Projection → 页面 / 用户` 表达感知；Input 与 Harness 不直接依赖，
+只有 Controller 同时理解两侧契约。store、event、queue、projection 等是支撑这条协调链路的
+内核机制，不再各自升级成与三域平级的问题域。
+
+当前主要来源是 user；未来出现 monitor 输入或外部事件时，先作为 Input 的新 `source` / 子类型；
+只有其 owner、生命周期或不变量确实独立时，才提升为新的平级域。三域视角先作为演进方向约束
+概念归属，代码结构按真实改动压力渐进收敛。
+
+在三域之下，当前由以下内核对象承载具体语义。它们是域内对象，不再与 Input /
+Controller / Harness 平铺为同一层概念；每个对象仍绑定一条不能被 harness 差异侵蚀的不变量。
 
 | 概念 | 语义 | 绑定的不变量 |
 |---|---|---|
@@ -14,6 +35,7 @@
 | **Event（信封）** | 最小 append-only 事实：稳定 `eventId` + 单一 `scope` + 必填 `source` + 归一 `payload` + 原始 wire `raw`；归属、来源与执行坐标正交，归因字段由可信宿主入口填写 | 事件流是**感知的唯一真相源**；UI / 崩溃恢复 / resume 全是它的 reduce/投影，无旁路通道 |
 | **Turn** | 一段有始有终的 harness 活动（带 stopReason）| "谁发起"是属性（driven / observed），不是存在条件；**每个被 admit 的 turn 恰好收口一次** |
 | **Interaction** | Baton 持有的持久待决交互；`kind` 区分 permission / question / hook trust，`requester` 指明谁在等待 | identity 与 opened/resolved 生命周期由 Controller 统一签发和收口；Adapter 只提交 kind-specific draft 并等待结果 |
+| **Delivery Attempt** | Controller 域内向 Harness 投递一轮已 admit Input 的持久执行记录 | 先持久化 `prepared` 再 dispatch；`accepted` 只确认 Adapter 接受投递责任，Harness 终态才给出最终 `outcome`；无法证明是否接收或结束时保持 `uncertain`，不盲目重投 |
 | **HarnessTarget** | Baton 配置、调度与状态查询侧的一份具体 Harness 目标 | 实例坐标与协议类型分离：Target ID 只经显式 resolver 解析，未知值 fail closed；Adapter 工厂接收完整 Target；`Controller` processing / queue、`HarnessBinding`、原生 session、同步水位、偏好 / 授权和 Target-scoped 投影状态均按 `harnessTargetId` 隔离，不按 Harness 名称混用 |
 | **Adapter + Capability** | harness 方言的**唯一**居所：小核心 `HarnessAdapter` + 可选能力 descriptor | 差异表达为"能力有无"，type-guard 发现、契约测试钉住；**内核永不 `if harness===`** |
 | **Projection** | 纯函数：event reduce → 视图快照 | 只产展示形状；chat-tui 消费形状不消费语义；未变返回同引用（快照一致）|
@@ -23,12 +45,13 @@ baton 优先用 `harnessSessionId` 加速恢复，但它缺失只降级、不能
 每次 create/resume 使用不可变 `HarnessLaunchSnapshot` 记录当时的 target、cwd、model 和 effort；
 快照解释既有执行，后续配置变化不能回写它。
 
-**ID 规则**：Baton 签发的 event / interaction / session / turn / message / tool call 等对象使用带前缀 ULID
-（`ev_` / `ix_` / `bs_` / `hs_` / `t_` / `m_` / `tc_`），从第一天起稳定、可外部引用；HarnessTarget、
-PluginInstance 等配置对象使用各自作用域内的稳定配置 ID。fork 复制的 turn / interaction /
-message / tool call 等领域对象与源**共享对象 ID**（git-branch 语义）；Event envelope 因进入
-新的 session scope 而重新签发 `eventId`，保证一个 event id 只属于一个权威 ledger。跨会话
-引用领域对象以 `bs_ + 对象 ID` 消歧（why 见 `resume-fork.md`）。
+**ID 规则**：Baton 签发的 event / interaction / session / turn / message / tool call /
+delivery attempt 等对象使用带前缀 ULID（`ev_` / `ix_` / `bs_` / `hs_` / `t_` / `m_` /
+`tc_` / `att_`），从第一天起稳定、可外部引用；HarnessTarget、PluginInstance 等配置对象使用
+各自作用域内的稳定配置 ID。fork 复制的 turn / interaction / message / tool call 等领域对象
+与源**共享对象 ID**（git-branch 语义）；Event envelope 因进入新的 session scope 而重新签发
+`eventId`，保证一个 event id 只属于一个权威 ledger。跨会话引用领域对象以
+`bs_ + 对象 ID` 消歧（why 见 `resume-fork.md`）。
 
 ## 2. 三条不变量
 
@@ -44,7 +67,7 @@ message / tool call 等领域对象与源**共享对象 ID**（git-branch 语义
 
 内核只有一条流水线，双向流动。observed turn、stall 自愈、审批闭环都是它的特例，不是另起的机制。
 
-**开发次序：两个边界的形态先钉死，中间处理慢慢打磨。** 先定死用户侧的 I/O 形态（用户→baton：Input / Interaction resolution / Control；baton→用户：render 投影——transcript / 交互浮层 / footer）和 harness 侧的 I/O 形态（harness→baton：归一 Event 或 Interaction draft；baton→harness：capability 操作与 Interaction resolution）。这两个边界一旦稳定，baton 的**中间处理**（Controller 调度、queue、reduce、projection）就能渐进重构而不惊动边界契约——接入方（chat-tui）与 harness（adapter）不被中间打磨波及。这也是内核纪律钉在**边界**（§4 扩展契约、§2 不变量）、而演进（§5）主要作用于中间与概念提升的原因。
+**开发次序：两个边界的形态先钉死，中间处理慢慢打磨。** 先定死 Input 域的入站形态（当前 user 输入按 kind 区分 prompt / interaction resolution / control，未来可增加 monitor / external event source）和 Harness 域的 I/O 形态（harness→baton：归一 Event 或 Interaction draft；baton→harness：capability 操作与 Interaction resolution）。这两个边界一旦稳定，baton 的**中间处理**（Controller 调度、queue、reduce、projection）就能渐进重构而不惊动边界契约——接入方（chat-tui）与 harness（adapter）不被中间打磨波及。这也是内核纪律钉在**边界**（§4 扩展契约、§2 不变量）、而演进（§5）主要作用于中间与概念提升的原因。
 
 ![baton 内核：一条双向流水线（用户→baton 有 Input、Interaction resolution 与 Control；baton→用户 render 分 transcript、Interaction 浮层和 status；中间 Controller+queue、event/turn 单通道、Adapter 的 capability 出站与归一入站、session.jsonl 持久化）](kernel-pipeline.svg)
 
@@ -53,6 +76,7 @@ message / tool call 等领域对象与源**共享对象 ID**（git-branch 语义
 ```text
 控制（出站）  chat-tui intent
              → Controller（拥有 Input 生命周期，调度 driven turn）
+             → Delivery Attempt（prepared → dispatching → accepted）
              → Adapter（按 capability 映射 submit / steer / cancel / approve）
              → harness wire
 感知（入站）  harness wire
@@ -93,6 +117,8 @@ interface HarnessAdapter {
 **MUST**：
 
 - 实现小核心 `HarnessAdapter`；把 wire 方言归一成 Event 草稿并保 `raw`；adapter 不能自填 `source`、Harness 或 HarnessTarget，宿主在接入边界按绑定关系统一补齐；未知终态按不变量 #2 保守收口。
+- `submit` throw 只表示 Adapter 尚未接受投递责任；resolve 后的任何失败都必须经事件流
+  给出 Harness 终态。Delivery Attempt 是 Controller 的记账，不进入 Adapter 输入契约。
 - 需要外部参与者时向宿主提交 typed `InteractionDraft` 并等待 resolution；不得自签 `interactionId`，也不得自行 emit `interaction.opened/resolved`。
 - 可选能力（`Steerable` / `Reconcilable` / `ModelConfigurable` / …）**声明即必须实现**，由契约测试保证；不声明 = 优雅降级，绝不是核心分支。
 - 经 `harness/registry`（Harness 定义 + adapter 工厂）+ `harness/ids`（无 SDK 身份目录：id + aliases）注册。
@@ -127,7 +153,7 @@ interface HarnessAdapter {
 
 内核在每条轴上都要求一个"一等"的承载对象：隐式或泄漏的概念会让局部修复反复打补丁、扩展被迫改核心。四条轴的一等概念与其绑定规则——
 
-- **输入轴 · Input**——用户输入是一等概念（身份即其 messageId），消费状态可查，统一 draft / queued / admitted / steer / recall。缺了它，"Esc + 第二条待决意图"这类时序本质不可判定（见 `user-input-lifecycle.md` S3）；有了它，recall / steer 从时序特例收敛为对同一实体的状态查询。用户信号共三型（同族不同落点）：**Input**（内容，驱动 turn）/ **Interaction resolution**（回答一个已打开交互，就地解阻）/ **Control**（无内容，命令 turn 生命周期，如 `interrupt`，out-of-band 打断且级联收口 pending Interaction）。
+- **输入轴 · Input family**——Input 域进入 Controller 的信号统一收束为 `Input`；先通过 `source` 区分 user / monitor / external event，再在 user source 内通过 `kind` 区分 **prompt**（模型可见内容，`mode` 再区分 submit / steer）、**interaction resolution**（回答一个已打开交互，就地解阻）与 **control**（无模型可见内容，命令 Turn 生命周期，如 `interrupt`）。其中 prompt Input 是一等持久概念（身份即其 messageId），消费状态可查，统一 draft / queued / admitted / steer / recall；缺了它，"Esc + 第二条待决意图"这类时序本质不可判定（见 `user-input-lifecycle.md` S3）。三类 variant 共享 Input→Controller 的入口契约，但保留各自生命周期，不强行共用 queue 或 Attempt。
 
 - **交互轴 · Interaction**——任何需要外部参与者给出结果后才能继续的阻塞协作，都使用同一个持久对象：`interactionId + requester + kind-specific payload`。`kind` 当前为 permission / question / hook_trust，后续 Plugin 授权或 elicitation 继续增加 kind，而不是再造 Request/Fact 名词。Controller 是 lifecycle owner：先 `interaction.opened`，后且仅后一个 `interaction.resolved`；cancel / timeout / recovery 也是 resolution。`Event.source` 回答谁报告事实，`Interaction.requester` 回答谁在等待，二者正交。自动 reviewer 没有向 Baton 打开 Interaction 时，`ApprovalReview` 保持独立审计 Event。详见 `harness-interaction-design.md` §3.5。
 

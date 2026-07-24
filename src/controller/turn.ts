@@ -21,6 +21,8 @@ export interface TurnRecord<TBinding extends TurnBinding> {
   status: "active" | "finalized";
   startedAt: number;
   stopReason?: StopReason;
+  /** driven Input 对应 user_message Event；后续 Delivery Attempt 以它作为直接上游。 */
+  inputEventId?: string;
   /** driven 专属：admitted 输入；finalize 后释放。 */
   turn?: InputRecord;
   /** driven 专属：本 turn 已接受的 steer；finalize 后释放。 */

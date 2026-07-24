@@ -18,6 +18,7 @@ import {
   type AnyEventDraft,
   type AnyEventEnvelope,
   type AnyNewEvent,
+  type EventEnvelope,
   type EventSource,
   type PromptBlock,
   type StopReason,
@@ -29,6 +30,7 @@ import type {
   InteractionResolution,
 } from "../interaction/types.ts";
 import type { SessionHandle } from "../store/store.ts";
+import { DeliveryAttempts } from "./attempt.ts";
 import {
   InputQueue,
   inputSnapshot,
@@ -120,12 +122,20 @@ export class Controller {
   private readonly bindings = new Map<string, HarnessBinding>();
   private readonly inputQueue = new InputQueue();
   private readonly turns = new TurnLedger<HarnessBinding>();
+  private readonly deliveryAttempts: DeliveryAttempts<HarnessBinding>;
   private readonly interactions: InteractionWaiters<HarnessBinding>;
   private draining = false;
   /** driven 工作从 Harness setup 开始即对 UI 可见；Target 是实例坐标，Harness 仅是协议类型。 */
   private processing?: { target: HarnessTarget; startedAt: number };
 
   constructor(private readonly options: ControllerOptions) {
+    this.deliveryAttempts = new DeliveryAttempts(
+      (binding, event) =>
+        this.appendEvent(binding, event, {
+          type: "baton",
+        }) as EventEnvelope<"_baton_delivery_attempt_update">,
+      options.session.readEvents(),
+    );
     this.interactions = new InteractionWaiters(
       (binding, event, source) => this.appendEvent(binding, event, source),
       () => this.changed(),
@@ -494,7 +504,7 @@ export class Controller {
   ): { record: TurnRecord<HarnessBinding>; released: Promise<void> } {
     const admitted = this.turns.admitDriven(binding, opts.turnId, opts.input);
     if (opts.input) {
-      this.appendEvent(
+      const inputEvent = this.appendEvent(
         binding,
         {
           kind: "user_message",
@@ -504,6 +514,7 @@ export class Controller {
         },
         { type: "user" },
       );
+      admitted.record.inputEventId = inputEvent.eventId;
     }
     this.appendEvent(
       binding,
@@ -606,13 +617,37 @@ export class Controller {
         }
       }
 
-      // submit 只确认 admission；完成以 finalize 收到 idle 终态为准
-      await binding.adapter.submit(binding.ref, {
-        turnId: turn.turnId,
-        messageId: turn.messageId,
-        blocks,
-        ...(syncBlocks ? { syncBlocks } : {}),
+      if (!meta?.launchSnapshot) {
+        throw new Error(
+          `cannot prepare harness delivery for turn ${record.turnId}: missing HarnessLaunchSnapshot`,
+        );
+      }
+      const attempt = this.deliveryAttempts.prepare(binding, {
+        turnId: record.turnId,
+        inputEventId: record.inputEventId,
+        inputId: turn.messageId,
+        launchSnapshot: meta.launchSnapshot,
+        harnessSessionId: meta.harnessSessionId ?? binding.nativeSessionId(),
       });
+      this.deliveryAttempts.markDispatching(binding, attempt);
+
+      // submit 回执只确认 Adapter 接受本次投递责任；Harness 终态仍由 idle Event 收口。
+      // Adapter 契约规定：throw 只发生在接受责任之前；接受后即使原生 transport 失败，
+      // 也必须经事件流报告终态，不能把不确定性藏进一个迟到 rejection。
+      try {
+        await binding.adapter.submit(binding.ref, {
+          turnId: turn.turnId,
+          messageId: turn.messageId,
+          blocks,
+          ...(syncBlocks ? { syncBlocks } : {}),
+        });
+      } catch (error) {
+        this.deliveryAttempts.finalize(binding, attempt, "not_accepted", {
+          detail: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+      this.deliveryAttempts.markAccepted(binding, attempt);
       if (submitCatchUp) {
         // admission 通过 ⇒ 随 submit 送达的 sync 块（syncBlocks 或 prepend）已进入 harness
         // 输入：视为同步到 throughSeq。
@@ -666,7 +701,7 @@ export class Controller {
     binding: HarnessBinding,
     ev: AnyEventDraft,
     source: EventSource,
-  ): void {
+  ): AnyEventEnvelope {
     const envelope = this.options.session.append({
       ...ev,
       source,
@@ -682,11 +717,17 @@ export class Controller {
         // 终态一律按 baton turn id 查表路由（不看 binding）。无 turnId 的终态：
         // 已持久化留痕，但无法归属任何 turn，不驱动生命周期（adapter 契约要求
         // 终态必带 turnId，由契约测试钉住）。
-        if (envelope.turnId) this.finalize(envelope.turnId, p.stopReason);
+        if (envelope.turnId) {
+          // Attempt 对账先于 Turn 幂等收口：cancel grace 后迟到的 Harness idle 虽然不能
+          // 二次 finalize Turn，却仍是把 uncertain Attempt 收敛到终态的权威 Receipt。
+          this.deliveryAttempts.observeTerminal(binding, envelope);
+          this.finalize(envelope);
+        }
       }
     }
     // append 已同步广播给投影；普通流式事件不能再走 controller 通知，否则每个 chunk
     // 都会重建两次完整 view。终态对 controller 私有台账的变更由 finalize 自己通知。
+    return envelope;
   }
 
   /**
@@ -697,7 +738,10 @@ export class Controller {
    * 下一棒 harness 是永久盲区。
    * 按 baton turn id 幂等：迟到/重复/未知终态一律 inert，不会关闭更新的 turn。
    */
-  private finalize(turnId: string, stopReason: StopReason | undefined): void {
+  private finalize(terminal: EventEnvelope<"state_update">): void {
+    const turnId = terminal.turnId;
+    if (!turnId) return;
+    const stopReason = terminal.payload.stopReason;
     const record = this.turns.beginFinalization(turnId, stopReason);
     if (!record) return;
 

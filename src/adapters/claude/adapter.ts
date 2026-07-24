@@ -565,7 +565,10 @@ export class ClaudeAdapter implements HarnessAdapter {
   }
 
   /** submit 只做 admission 并启动后台消费循环；turn 进展与终结全部经事件报告 */
-  async submit(ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  async submit(
+    ref: HarnessSessionRef,
+    input: PromptInput,
+  ): Promise<PromptReceipt> {
     const rt = this.mustSession(ref);
     if (rt.activeTurn && !rt.activeTurn.finalized) {
       throw new Error(`claude turn ${rt.activeTurn.turnId} still active; steer/parallel prompt unsupported`);

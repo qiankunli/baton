@@ -114,7 +114,8 @@ export interface HarnessAdapter {
   /** 建立（或恢复）harness session 并绑定事件出口；此后包括 harness 主动事件在内都经 sink 上报 */
   open(opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef>;
   /**
-   * 提交一轮输入；resolve 仅代表 admission 通过。入参是闭合的 PromptBlock（非开放
+   * 提交一轮输入；throw 只表示 Adapter 尚未接受投递责任；resolve 仅代表 admission
+   * 通过，此后的失败必须经事件流给出终态。入参是闭合的 PromptBlock（非开放
    * ContentBlock）：不支持的 block 类型必须在 admission 前报带类型的明确错误，
    * 禁止静默丢弃（design §4.2）。
    */
