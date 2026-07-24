@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ClaudeAdapter, startsObservedTurn } from "../src/adapters/claude/adapter.ts";
+import { ClaudeAdapter, startsObservedTurn } from "../src/harness/claude/adapter.ts";
 import type {
   AdapterCapabilities,
   HarnessAdapter,
@@ -17,7 +17,7 @@ import type {
   PromptInput,
   PromptReceipt,
   HarnessSessionRef,
-} from "../src/adapters/types.ts";
+} from "../src/harness/adapter.ts";
 import { DEFAULT_CONFIG } from "../src/config/config.ts";
 import type { AnyEventDraft } from "../src/event/types.ts";
 import { Controller } from "../src/controller/index.ts";

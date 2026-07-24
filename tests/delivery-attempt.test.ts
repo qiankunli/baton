@@ -11,7 +11,7 @@ import type {
   OpenOptions,
   PromptInput,
   PromptReceipt,
-} from "../src/adapters/types.ts";
+} from "../src/harness/adapter.ts";
 import {
   reduceDeliveryAttempts,
   type HarnessDeliveryAttemptUpdate,

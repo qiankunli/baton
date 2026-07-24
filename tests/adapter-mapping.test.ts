@@ -12,12 +12,12 @@ import {
   type TaskEntry,
   taskToolOp,
   todoWritePlan,
-} from "../src/adapters/claude/adapter.ts";
-import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
+} from "../src/harness/claude/adapter.ts";
+import { CodexAdapter } from "../src/harness/codex/adapter.ts";
 import type { DiagnosticEntry } from "../src/diagnostics.ts";
 import type { AnyEventDraft } from "../src/event/types.ts";
 import type { InteractionDraft } from "../src/interaction/types.ts";
-import type { InteractionHandler } from "../src/adapters/types.ts";
+import type { InteractionHandler } from "../src/harness/adapter.ts";
 
 const interactionHandler: InteractionHandler = async (req) =>
   req.kind === "permission"

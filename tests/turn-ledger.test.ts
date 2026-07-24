@@ -3,14 +3,14 @@
 // 运行期间，observed turn 的 idle 会进 driven 分支、被 turnId 守卫拒绝后不再 fallthrough——
 // observed turn 永远得不到 summary，跨 harness catch-up 对它永久盲区。
 // 另钉住（bug#4）：codex fast-submit 窗口内（codexTurnId 未就位）的 cancel 不得静默丢弃。
-import type { InteractionHandler } from "../src/adapters/types.ts";
+import type { InteractionHandler } from "../src/harness/adapter.ts";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { ClaudeAdapter } from "../src/adapters/claude/adapter.ts";
-import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
+import { ClaudeAdapter } from "../src/harness/claude/adapter.ts";
+import { CodexAdapter } from "../src/harness/codex/adapter.ts";
 import type {
   AdapterCapabilities,
   HarnessAdapter,
@@ -19,7 +19,7 @@ import type {
   PromptInput,
   PromptReceipt,
   HarnessSessionRef,
-} from "../src/adapters/types.ts";
+} from "../src/harness/adapter.ts";
 import type { AnyEventDraft } from "../src/event/types.ts";
 import { Controller } from "../src/controller/index.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";

@@ -1,6 +1,6 @@
 # baton 内核（kernel）
 
-> 本文定义 baton 的**稳定内核**：少数核心概念 + 少数不变量 + 一条流水线 + 一份扩展契约。判据只有一条——**新增一个 harness 默认只改 `adapters/` + `harness/registry` + `harness/ids`（+ 或许一个新 capability 接口），不触碰 session / store-reduce / projection / chat-tui**。改动若渗进内核，通常说明"有个概念还没一等化"（见 §6）。内核并非冻结：当一个特性被多个 harness 共同印证，它也会演进——但改内核比改 adapter 贵一个量级，门槛见 §5。
+> 本文定义 baton 的**稳定内核**：少数核心概念 + 少数不变量 + 一条流水线 + 一份扩展契约。判据只有一条——**新增一个 harness 默认只改 `harness/<harness>/` + `harness/registry` + `harness/ids`（+ 或许 `harness/adapter.ts` 中的新 capability 接口），不触碰 session / store-reduce / projection / chat-tui**。改动若渗进内核，通常说明"有个概念还没一等化"（见 §6）。内核并非冻结：当一个特性被多个 harness 共同印证，它也会演进——但改内核比改 adapter 贵一个量级，门槛见 §5。
 >
 > 内核之外的设计（产品定位、存储路径、外部会话纳管、@ 引用、里程碑）见 `design.md`；输入 / 输出 / 审批三轴的展开见 `user-input-lifecycle.md`、`harness-output-lifecycle.md`、`approval-lifecycle.md`；Adapter 契约的完整条款见 `harness-interaction-design.md`。
 
@@ -130,7 +130,7 @@ interface HarnessAdapter {
 - 让 harness 字符串越过 adapter 边界（封闭词表在此收口）；
 - 静默持有审批授权（必须产生可见、带 id 的回执）。
 
-**自检**：新增 harness 的 diff 只落在 `adapters/<harness>/` + `registry` + `ids`（+ 或许一个新 capability 接口）。一旦落进 `session/`、`store/reduce`、projection 语义或 chat-tui，先自问："这是这一家的方言，还是 ≥2 家的共性？"——前者归 adapter/`raw`，后者才按 §5 慎重提升内核。
+**自检**：新增 harness 的 diff 只落在 `harness/<harness>/` + `harness/registry.ts` + `harness/ids.ts`（+ 或许 `harness/adapter.ts` 中的新 capability 接口）。一旦落进 `session/`、`store/reduce`、projection 语义或 chat-tui，先自问："这是这一家的方言，还是 ≥2 家的共性？"——前者归 adapter/`raw`，后者才按 §5 慎重提升内核。
 
 ## 5. 内核的演进规则
 

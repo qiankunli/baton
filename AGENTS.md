@@ -39,17 +39,18 @@ baton/
 │   │   └── types.ts         # 持久交互：统一 identity/requester/lifecycle，kind 区分 permission/question 等
 │   ├── config/
 │   │   └── config.ts        # ~/.baton/config.yaml 加载与默认值（env > 文件 > 默认）
-│   ├── adapters/
-│   │   ├── types.ts         # HarnessAdapter 小核心接口 + InteractionHandler 契约
+│   ├── harness/
+│   │   ├── adapter.ts       # HarnessAdapter 小核心接口 + capability / InteractionHandler 契约
+│   │   ├── binding.ts       # HarnessTarget ↔ Adapter ↔ HarnessSession 活绑定；启动、配置恢复与关闭
+│   │   ├── ids.ts           # Harness 定义与 wire/alias 身份目录
+│   │   ├── normalize.ts     # Harness 开放终态 → Baton 封闭词表的保守归一
+│   │   ├── registry.ts      # 内置 harness 注册入口；新增 harness 不进入 session core
+│   │   ├── target.ts        # HarnessTarget 与不可变 HarnessLaunchSnapshot；执行位置不与协议类型混用
 │   │   ├── claude/
 │   │   │   └── adapter.ts   # Agent SDK 进程内接入：流式/审批/resume，可执行文件可换（BATON_CLAUDE_BIN）
 │   │   └── codex/
 │   │       ├── jsonrpc.ts   # 行分隔 JSON-RPC peer（请求/通知/服务端请求三路分发）
 │   │       └── adapter.ts   # codex app-server 接入：事件翻译、审批、usage 差分（fast-submit 语义）
-│   ├── harness/
-│   │   ├── binding.ts       # HarnessTarget ↔ Adapter ↔ HarnessSession 活绑定；启动、配置恢复与关闭
-│   │   ├── registry.ts      # 内置 harness 注册入口；新增 harness 不进入 session core
-│   │   └── target.ts        # HarnessTarget 与不可变 HarnessLaunchSnapshot；执行位置不与协议类型混用
 │   ├── context/
 │   │   └── mention.ts       # @ 引用急切解析：turn-summary → 紧凑摘要 → 注入 prompt（预算截断）
 │   ├── controller/

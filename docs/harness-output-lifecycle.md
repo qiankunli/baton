@@ -34,7 +34,7 @@ Adapter 消费原生 wire（Codex app-server 的 JSON-RPC 通知、Claude Agent 
 
 ### 2.3 终态收口：从可观测退出到感知盲区
 
-终态硬契约本身——每个 turn 在任一退出路径恰好一次逻辑终态、物理终态可重复到达时 controller 按 baton turn id 幂等 finalize——定义在 `harness-interaction-design.md` §4.1 与 `adapters/types.ts`，本节不复述，只看它在感知侧落到哪些具体 harness 事件、以及它覆盖不到哪：
+终态硬契约本身——每个 turn 在任一退出路径恰好一次逻辑终态、物理终态可重复到达时 controller 按 baton turn id 幂等 finalize——定义在 `harness-interaction-design.md` §4.1 与 `harness/adapter.ts`，本节不复述，只看它在感知侧落到哪些具体 harness 事件、以及它覆盖不到哪：
 
 | 退出路径 | harness 事件 | 收口方 |
 |---|---|---|
@@ -123,9 +123,9 @@ completed 但整个 turn 零产出，说明 prompt 在进模型前被丢弃（ho
 ## 6. 代码与测试锚点
 
 - `src/event/types.ts`：Event identity/scope/source、事件 kind 全集、三态 patch、终态词汇（含 declined 一等成员）、`StallNotice`（L1）。
-- `src/adapters/types.ts`：`HarnessAdapter` 终态硬约定、`AdapterCapabilities`、`Reconcilable` / `ReconcileVerdict` / `isReconcilable`（L2）。
-- `src/adapters/codex/adapter.ts`：item/turn 通知归一、`finishTurn`/`failTurn` 终态合成、空回合上报、悲观 failed 映射、`reconcile` + `mapThreadStatus`（L2，`thread/read.status`）。
-- `src/adapters/claude/adapter.ts`：SDK 消息流归一、error 流、cancel 映射 interrupt；未声明 reconcile，回落 L1。
+- `src/harness/adapter.ts`：`HarnessAdapter` 终态硬约定、`AdapterCapabilities`、`Reconcilable` / `ReconcileVerdict` / `isReconcilable`（L2）。
+- `src/harness/codex/adapter.ts`：item/turn 通知归一、`finishTurn`/`failTurn` 终态合成、空回合上报、悲观 failed 映射、`reconcile` + `mapThreadStatus`（L2，`thread/read.status`）。
+- `src/harness/claude/adapter.ts`：SDK 消息流归一、error 流、cancel 映射 interrupt；未声明 reconcile，回落 L1。
 - `src/controller/index.ts` 与 `src/controller/turn.ts`：按 turn id 幂等 `finalize`、cancel 宽限 `synthesizeTerminal`、L1 `checkStalls`/`refreshActivity` 进展时钟、L2 `reconcileStalled`（idle 裁决才自愈收口）。
 - `src/store/reduce.ts`：事件流 reduce 成会话状态，upsert 自愈与 id owner 不变量、`ActiveTurnState.stalled`（L1）。
 - `tests/harness-initiated-turn.test.ts`：observed turn 投影单通道契约。

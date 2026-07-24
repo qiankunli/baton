@@ -35,8 +35,8 @@ import type {
   InteractionHandler,
   SteerReceipt,
   ApprovalRoute,
-} from "../types.ts";
-import { unsupportedPromptBlocks } from "../types.ts";
+} from "../adapter.ts";
+import { unsupportedPromptBlocks } from "../adapter.ts";
 import { JsonRpcPeer } from "./jsonrpc.ts";
 
 /**

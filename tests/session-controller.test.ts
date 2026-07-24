@@ -13,7 +13,7 @@ import type {
   PromptInput,
   PromptReceipt,
   HarnessSessionRef,
-} from "../src/adapters/types.ts";
+} from "../src/harness/adapter.ts";
 import type { AnyEventDraft, AnyEventEnvelope, PromptBlock } from "../src/event/types.ts";
 import { textOf } from "../src/event/types.ts";
 import { Controller, type InteractionHandlers } from "../src/controller/index.ts";

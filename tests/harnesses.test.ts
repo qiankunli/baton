@@ -1,4 +1,4 @@
-import type { InteractionHandler } from "../src/adapters/types.ts";
+import type { InteractionHandler } from "../src/harness/adapter.ts";
 import { describe, expect, test } from "bun:test";
 
 import { DEFAULT_CONFIG } from "../src/config/config.ts";

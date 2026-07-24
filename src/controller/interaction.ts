@@ -1,4 +1,4 @@
-import type { InteractionContext } from "../adapters/types.ts";
+import type { InteractionContext } from "../harness/adapter.ts";
 import { newId } from "../event/ids.ts";
 import type { AnyEventDraft, EventSource } from "../event/types.ts";
 import type {
