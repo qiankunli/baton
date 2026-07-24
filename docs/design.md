@@ -35,7 +35,7 @@ baton 是一个 terminal-native 的统一 coding agent 会话：用户始终在 
 | 2 | 怎么驱动 Codex | 拉起 `codex app-server` 子进程，JSON-RPC over stdio（裸 `codex` 是交互式 TUI 不可用；简单场景可先用 `codex exec` 验证） | 已定 |
 | 3 | 多家差异怎么统一 | Adapter 层：小核心 + 可选能力接口；内部事件模型对齐 ACP v2 词汇表 | 已定 |
 | 4 | 登录凭证 | 零持有：子进程继承 HOME，复用本机 `~/.claude*`、`~/.codex/auth.json` | 已定 |
-| 5 | 会话数据存哪 | `~/.baton/projects/<cwd 转义>/<id>/session.jsonl`（delta + turn-summary）+ `session.log`（旁路诊断）+ `meta.json`，按项目分组（同 Claude Code）；原生会话只用于加速恢复 | 已定 |
+| 5 | 会话数据存哪 | `~/.baton/projects/<project key>/sessions/<id>/`：事件、诊断、元数据与 session-scoped Plugin runtime 共址；原生会话只用于加速恢复 | 已定 |
 | 6 | 外部启动的会话怎么纳管 | 三层：wire（自启会话）→ 宿主 hook 推送（Claude 支持）→ 文件监听 + 水位增量读（兜底） | 已定 |
 | 7 | @ 时注入什么 | MVP 急切注入紧凑摘要（来自 turn-summary）；二期 `mention://` 句柄 + baton CLI 惰性回查 | 已定 |
 | 8 | 能否直接写对方原生 session 文件 | **否决**，只读不写（见 5.4） | 已定 |
@@ -108,10 +108,16 @@ baton 是一个 terminal-native 的统一 coding agent 会话：用户始终在 
 ```
 ~/.baton/
   config.yaml      # 用户配置（首次运行自动生成）；优先级 env > config.yaml > 默认值
-  projects/<cwd 转义>/<batonSessionId>/   # 与 Claude Code 同规则按项目分组；转义不可逆，cwd 真相源在 meta.json
-    session.jsonl    # 事件流（唯一合并真相源·投影）
-    session.log      # harness/transport 内部诊断，不参与重放与投影
-    meta.json        # 标题、cwd、参与 agent、harnessSession 映射、resume cursor
+  packages/<pluginId>/<version>/          # 不可变 PluginPackage（Plugin 分发落地后启用）
+  projects/<project key>/
+    project.json                          # cwd；project key = 可读 basename + cwd 摘要
+    sessions/<batonSessionId>/
+      session.jsonl    # 事件流（唯一合并真相源·投影）
+      session.log      # harness/transport 内部诊断，不参与重放与投影
+      meta.json        # 标题、cwd、参与 agent、harnessSession 映射、resume cursor
+      plugins/<pluginInstanceId>/
+        resources/<kind>/<resourceId>.json
+        proposals/<proposalId>.json
   watermarks/<harness>/   # 外部会话增量读水位
   logs/
 ```

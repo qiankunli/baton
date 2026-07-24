@@ -5,7 +5,7 @@
 resume 和 fork 都是 **BatonSession 自己的语义**，不依赖任何 harness 的原生 resume/fork 能力：
 
 - **resume**：沿用原 `bs_` ID 重新打开会话，恢复统一逻辑历史；harness 原生会话只是恢复加速，缺失时从 BatonSession 历史重建上下文（既有约定，见 `design.md`）。
-- **fork**：从一个 BatonSession 复制事件历史，得到一个独立的新会话。复制的前缀与源是**同一段逻辑历史**（git-branch 语义），谱系由 `meta.forkedFrom = { batonSessionId, throughSeq }` 表达。fork 是后续"草稿会话"（任务进行中拉草稿并行探索、成果由用户决定收录）的数据层基础，当前先以 CLI 子命令形态提供（`baton fork`），会话内运行中 fork（类 Codex `/side`）留待 workspace controller。
+- **fork**：从一个 BatonSession 复制事件历史，得到一个独立的新会话。复制的前缀与源是**同一段逻辑历史**（git-branch 语义），谱系由 `meta.forkedFrom = { batonSessionId, throughSeq }` 表达。fork 是后续"草稿会话"（任务进行中拉草稿并行探索、成果由用户决定收录）的数据层基础，当前先以 CLI 子命令形态提供（`baton fork`），会话内运行中 fork（类 Codex `/side`）留待多 Session Controller。
 
 配套引入两个打开期机制：
 
@@ -45,7 +45,7 @@ toolCall 等领域对象 ID 仍原样保留。
 
 recovery 的核心价值不是修 UI 状态（TUI 的 busy 来自 controller，不来自 reduce），而是：**catch-up 与 `@` 引用只读 `_baton_turn_summary`，没有 summary 的半截 turn 对后续 harness 同步是永久盲区**。归一化动作与 `controller.finalizeTurn` 的收口顺序一致（终态 → notice → summary）。
 
-前提是持锁："最后事件是 running"只有在没有活进程持有会话时才能断定为崩溃残留，否则合成终态会污染另一个进程正在执行的活会话。锁只服务这个判定，不承担并发追加的完整保护（headless REPL 目前不加锁，属已知豁免）。抢锁用 `O_EXCL` 原子创建（不做"先检查再写入"，那是 TOCTOU）；锁不做进程内引用计数——约定同一进程内一个 session 至多一个活 handle，进程内并发归上层（TUI 单前台会话；将来 workspace controller 由 session slot 唯一性保证）。
+前提是持锁："最后事件是 running"只有在没有活进程持有会话时才能断定为崩溃残留，否则合成终态会污染另一个进程正在执行的活会话。锁只服务这个判定，不承担并发追加的完整保护（headless REPL 目前不加锁，属已知豁免）。抢锁用 `O_EXCL` 原子创建（不做"先检查再写入"，那是 TOCTOU）；锁不做进程内引用计数——约定同一进程内一个 session 至多一个活 handle，进程内并发归上层（TUI 单前台会话；将来多 Session Controller 由 session slot 唯一性保证）。
 
 recovery 同时覆盖 fork：源会话若正在运行（或曾崩溃），复制会带进半截 turn；child 首次打开时经同一条归一化路径补上终态与 summary，`forkSession()` 自身不必关心。
 
@@ -66,12 +66,20 @@ session 按 cwd 归入 project 只是**存放与发现的组织方式**，不是
 
 这天然覆盖同 project fork（发起位置 == 源 project 时退化为原行为），所以不需要 `--to` 之类的显式参数。`resume` 则相反：回到会话原本的 project——resume 是"继续那个现场"，fork 是"带走历史开新现场"。
 
-实现上只需在 fork 时把 `meta.cwd` 与落盘目录（`projectDirName(cwd)`）一起换成目标 cwd：controller 执行工具、footer 展示、`listSessions({cwd})` 发现全都以 `meta.cwd` 为真相源，自动跟随；child 本就不 resume 源的原生 HarnessSession（fresh native + 全量补课），换 cwd 不影响上下文重建。注意落盘目录与 `meta.cwd` 必须同源，否则按目录扫描的 `listSessions({cwd})` 会漏掉该会话。
+实现上只需在 fork 时把 `meta.cwd` 与落盘目录
+（`projects/<project-key>/sessions/<sid>`）一起换成目标 cwd：controller 执行工具、footer
+展示、`listSessions({cwd})` 发现全都以 `meta.cwd` 为真相源，自动跟随；child 本就不 resume
+源的原生 HarnessSession（fresh native + 全量补课），换 cwd 不影响上下文重建。注意 project
+目录与 `meta.cwd` 必须同源，否则按目录扫描的 `listSessions({cwd})` 会漏掉该会话。
 
 跨 project fork 只迁移会话上下文，不复制代码或工作区状态；源 project 的文件路径出现在历史里时，child 的 harness 需自行判断在新 cwd 下是否仍有效。
+
+Plugin runtime 同样不被隐式复制。Resource、Proposal 和 PluginInstance 配置以 BatonSession 为
+owner；要继续原 loop 应 resume 原 session。未来若真实场景需要“分叉 loop”，必须由 Plugin
+显式定义 clone 语义，不能把可能关联外部副作用的状态目录直接复制给 child。
 
 ### 面向 /side 的预留
 
 - `forkSession(sourceSessionId, { throughSeq })`：运行中 fork 只需传入"当前 active turn 之前"的水位，无需新入口。
-- 锁按 per-session 设计，一个进程可同时持有多把（多 session workspace controller 的前提）。
-- 未决前提（workspace controller 的入口条件）：主线与草稿共享同一 cwd 的并行写隔离方案（worktree / 只读草稿 / 显式警告）。
+- 锁按 per-session 设计，一个进程可同时持有多把（多 Session Controller 的前提）。
+- 未决前提（多 Session Controller 的入口条件）：主线与草稿共享同一 cwd 的并行写隔离方案（worktree / 只读草稿 / 显式警告）。

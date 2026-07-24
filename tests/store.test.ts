@@ -107,7 +107,11 @@ describe("session lifecycle", () => {
 
   test("sessions are grouped by project directory (claude-style)", () => {
     const h = store.createSession({ cwd: "/tmp/proj" });
-    expect(h.dir).toBe(join(root, "projects", "-tmp-proj", h.id));
+    const projectDir = join(root, "projects", projectDirName("/tmp/proj"));
+    expect(h.dir).toBe(join(projectDir, "sessions", h.id));
+    expect(JSON.parse(readFileSync(join(projectDir, "project.json"), "utf8"))).toEqual({
+      cwd: "/tmp/proj",
+    });
 
     const other = store.createSession({ cwd: "/tmp/other" });
     expect(store.listSessions({ cwd: "/tmp/proj" }).map((m) => m.batonSessionId)).toEqual([h.id]);
@@ -117,10 +121,10 @@ describe("session lifecycle", () => {
     expect(all).toContain(other.id);
   });
 
-  test("munged project names may collide; listSessions still filters by exact cwd", () => {
+  test("project keys remain distinct when their readable names collide", () => {
     const a = store.createSession({ cwd: "/tmp/proj" });
     const b = store.createSession({ cwd: "/tmp-proj" });
-    expect(projectDirName("/tmp/proj")).toBe(projectDirName("/tmp-proj"));
+    expect(projectDirName("/tmp/proj")).not.toBe(projectDirName("/tmp-proj"));
     expect(store.listSessions({ cwd: "/tmp/proj" }).map((m) => m.batonSessionId)).toEqual([a.id]);
     expect(store.listSessions({ cwd: "/tmp-proj" }).map((m) => m.batonSessionId)).toEqual([b.id]);
   });
@@ -138,7 +142,9 @@ describe("session lifecycle", () => {
     writeFileSync(join(legacy, "session.jsonl"), "");
 
     const h = store.openSession("bs_LEGACY1");
-    expect(h.dir).toBe(join(root, "projects", "-tmp-proj", "bs_LEGACY1"));
+    expect(h.dir).toBe(
+      join(root, "projects", projectDirName("/tmp/proj"), "sessions", "bs_LEGACY1"),
+    );
     // 旧目录清空后移除
     expect(existsSync(join(root, "sessions"))).toBe(false);
   });
@@ -150,6 +156,25 @@ describe("session lifecycle", () => {
 
     expect(store.listSessions()).toEqual([]);
     expect(existsSync(join(root, "sessions", "bs_BROKEN"))).toBe(true);
+  });
+
+  test("previous project-grouped layout migrates under the sessions directory", () => {
+    const legacy = join(root, "projects", "-tmp-proj", "bs_GROUPED");
+    mkdirSync(legacy, { recursive: true });
+    const meta: SessionMeta = {
+      batonSessionId: "bs_GROUPED",
+      cwd: "/tmp/proj",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      harnessSessions: {},
+    };
+    writeFileSync(join(legacy, "meta.json"), JSON.stringify(meta));
+    writeFileSync(join(legacy, "session.jsonl"), "");
+
+    const session = store.openSession("bs_GROUPED");
+    expect(session.dir).toBe(
+      join(root, "projects", projectDirName("/tmp/proj"), "sessions", "bs_GROUPED"),
+    );
+    expect(existsSync(join(root, "projects", "-tmp-proj"))).toBe(false);
   });
 
   test("harness session meta persists as a native resume optimization", () => {
@@ -530,7 +555,11 @@ describe("forkSession", () => {
     expect(child.meta.forkedFrom!.batonSessionId).toBe(source.id);
     expect(child.readEvents()).toHaveLength(source.readEvents().length);
     // 落盘目录跟着目标 project 走，listSessions({cwd}) 才能按目录扫到
-    expect(existsSync(join(root, "projects", projectDirName("/tmp/proj-b"), child.id))).toBe(true);
+    expect(
+      existsSync(
+        join(root, "projects", projectDirName("/tmp/proj-b"), "sessions", child.id),
+      ),
+    ).toBe(true);
     expect(store.listSessions({ cwd: "/tmp/proj-b" }).map((m) => m.batonSessionId)).toEqual([child.id]);
     expect(store.listSessions({ cwd: "/tmp/proj-a" }).map((m) => m.batonSessionId)).toEqual([source.id]);
   });

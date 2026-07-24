@@ -3,18 +3,16 @@
 
 import { createHash } from "node:crypto";
 import {
-  closeSync,
   mkdirSync,
-  openSync,
   readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
-  writeSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 
 import type { HookTrustCandidate } from "../interaction/types.ts";
+import { withFileLock } from "../store/file-lock.ts";
 import { batonRoot } from "./config.ts";
 
 interface PersistedHookState extends Record<string, unknown> {
@@ -97,76 +95,6 @@ function trustedHooks(state: PersistedHookState): Record<string, Record<string, 
   return targets;
 }
 
-const LOCK_WAIT_ARRAY = new Int32Array(new SharedArrayBuffer(4));
-const LOCK_TIMEOUT_MS = 1_000;
-
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-function removeStaleLock(lockPath: string): void {
-  let observed: string;
-  try {
-    observed = readFileSync(lockPath, "utf8");
-  } catch {
-    return;
-  }
-  const holder = Number(observed.split(":", 1)[0]);
-  if (Number.isFinite(holder) && holder > 0 && pidAlive(holder)) return;
-  try {
-    // 只删仍是刚才所见内容的 stale lock，避免释放与新持有者创建之间的竞态。
-    if (readFileSync(lockPath, "utf8") === observed) rmSync(lockPath);
-  } catch {
-    // 持有者恰好释放或另一写者已接管，下一轮重试即可。
-  }
-}
-
-function withHookStateLock<T>(path: string, update: () => T): T {
-  const lockPath = `${path}.lock`;
-  const token = `${process.pid}:${Date.now()}:${Math.random()}`;
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
-  mkdirSync(dirname(path), { recursive: true });
-  for (;;) {
-    let created = false;
-    try {
-      const fd = openSync(lockPath, "wx", 0o600);
-      created = true;
-      try {
-        writeSync(fd, token);
-      } finally {
-        closeSync(fd);
-      }
-      break;
-    } catch (error) {
-      if (created) {
-        try {
-          rmSync(lockPath);
-        } catch {
-          // 原始写锁错误更有诊断价值；残锁会按 pid 规则回收。
-        }
-      }
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      removeStaleLock(lockPath);
-      if (Date.now() >= deadline) throw new Error(`timed out waiting to update ${path}`);
-      Atomics.wait(LOCK_WAIT_ARRAY, 0, 0, 10);
-    }
-  }
-  try {
-    return update();
-  } finally {
-    try {
-      if (readFileSync(lockPath, "utf8") === token) rmSync(lockPath);
-    } catch {
-      // 写结果已经原子落盘；锁清理失败由下一位写者按 pid 回收。
-    }
-  }
-}
-
 export class FileHookTrustStore implements HookTrustStore {
   private readonly warnings = new Set<string>();
 
@@ -192,7 +120,7 @@ export class FileHookTrustStore implements HookTrustStore {
 
   trust(hooks: HookTrustCandidate[]): void {
     const path = hookStatePath(this.rootDir);
-    withHookStateLock(path, () => {
+    withFileLock(path, () => {
       const loaded = loadHookState(this.rootDir);
       if (loaded.error) throw new Error(`Cannot update hook trust: ${loaded.error}`);
       const state = loaded.state;
