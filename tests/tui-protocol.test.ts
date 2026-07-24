@@ -329,6 +329,27 @@ describe("BatonChatProtocol view projection", () => {
     }
   });
 
+  test("agent status shows an explicitly selected effort beside the model", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-effort-status-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      session.setHarnessSession("codex", {
+        harnessTargetId: "codex",
+        harness: "codex",
+        model: "gpt-5.6-sol",
+        effort: "xhigh",
+      });
+      const protocol = new BatonChatProtocol(store, DEFAULT_CONFIG, { session, resumed: false }, () => undefined);
+
+      expect(protocol.getView().runStatus?.[0]?.label).toBe("gpt-5.6-sol · xhigh · idle");
+
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("agent status shows context usage for its harness and model", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-context-status-"));
     try {
