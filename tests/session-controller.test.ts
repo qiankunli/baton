@@ -497,6 +497,7 @@ describe("Controller", () => {
       harnessTargetId: "codex",
       harness: "codex",
       harnessSessionId: "thread-old",
+      contextEpochId: "ctxe_existing",
       model: "fast",
       effort: "high",
       syncedSeq: watermark,
@@ -520,6 +521,7 @@ describe("Controller", () => {
     expect(codex.synced[0]).toContain("new claude work");
     expect(codex.synced[0]).not.toContain("old codex work");
     expect(session.meta.harnessSessions.codex?.harnessSessionId).toBe("codex-native");
+    expect(session.meta.harnessSessions.codex?.contextEpochId).toBe("ctxe_existing");
   });
 
   test("uses the remembered Target model for a new BatonSession", async () => {

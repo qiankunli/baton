@@ -3,7 +3,8 @@
 > 状态：讨论草案。本文描述 Baton 的长期演进方向，不改变当前 v1“统一会话与跨
 > Harness 上下文接力”的实施范围。本文统一使用 `Harness` 表示 Codex、Claude Code 等
 > 智能执行环境。支撑这些能力的 v2 内核目标见 [Baton v2](./baton-v2.md)；当前已经用
-> 用户驱动的 Harness submit 落下首个 Intent / Attempt / Receipt 可靠投递切片。
+> 用户驱动的 Harness submit 落下首个 Intent / Attempt / Receipt 可靠投递切片，并用
+> BatonSession `session_history` 落下首个 ContextSource / Snapshot / Receipt / Epoch 切片。
 
 ## 1. 要解决的问题
 
@@ -639,6 +640,8 @@ DevelopmentOutcome
    HarnessWorkIntent 共用的 Intent/Attempt/Receipt 路径，并在需要自动重试时补齐幂等身份。
 4. **上下文可对账**：建立有 owner/key 的 ContextSource、ContextSnapshot、ContextEpoch 和
    ContextDeliveryReceipt；明确 Board 更新、context 交付和 Harness 唤醒是三个独立转换。
+   当前已用 `session_history` 打通 Snapshot → 三种 transport → Receipt → Epoch；Board /
+   Plugin / Resource source 和独立 Context Attempt 仍按真实调度需求增量加入。
 
 这四步的目标模型和恢复流程见 [Baton v2](./baton-v2.md)。它们可以逐项叠加在 v1 之上，不要求
 一次替换 BatonSession ledger 或 Adapter 协议。

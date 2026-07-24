@@ -1,4 +1,5 @@
-// harness 同步水位（syncedSeq）契约：水位只在注入时前进到本批 throughSeq。
+// ContextEpoch 契约：只有 ContextDeliveryReceipt 才把水位推进到本批 throughSeq；
+// meta.syncedSeq 只是同一结果的兼容缓存。
 // 回归背景（bug#5）：finalize 曾把水位无条件推到文件尾——driven turn 运行期间
 // 其它 harness 落盘的 summary（如并发 observed turn）被越过且永不回补，
 // 跨 harness 接力对这段进展永久盲区。
@@ -18,6 +19,7 @@ import type {
 } from "../src/harness/adapter.ts";
 import type { PromptBlock } from "../src/event/types.ts";
 import { textOf } from "../src/event/types.ts";
+import { ContextDeliveryLedger } from "../src/context/delivery.ts";
 import { Controller } from "../src/controller/index.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";
 import { resolveTestTarget } from "./harness-target.ts";
@@ -31,9 +33,13 @@ class ManualAdapter implements HarnessAdapter {
 
   constructor(readonly harness: string) {}
 
-  async open(_opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
+  async open(opts: OpenOptions, sink: EventSink): Promise<HarnessSessionRef> {
     this.sink = sink;
-    return { harness: this.harness, harnessSessionId: `${this.harness}-ref`, resumed: false };
+    return {
+      harness: this.harness,
+      harnessSessionId: `${this.harness}-ref`,
+      resumed: Boolean(opts.resumeSessionId),
+    };
   }
 
   // 新契约：user_message / running 由 controller 出队时落盘，adapter submit 只做 admission
@@ -122,7 +128,7 @@ function lastSummarySeq(handle: SessionHandle): number {
   );
 }
 
-describe("watermark advances only at injection (bug#5 regression)", () => {
+describe("ContextEpoch advances only from delivery receipts (bug#5 regression)", () => {
   test("finalize does not push syncedSeq past concurrent progress; next injection backfills it", async () => {
     const adapter = new SyncableManualAdapter("codex");
     const controller = new Controller({
@@ -153,14 +159,53 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     // 水位推进到注入时点的 summary 尾 seq（含自己的 turn-1 summary：亲历即已同步）
     const throughSeq = lastSummarySeq(session);
     expect(session.meta.harnessSessions["codex"]?.syncedSeq).toBe(throughSeq);
+    const snapshot = session
+      .readEvents()
+      .find((event) => event.kind === "_baton_context_snapshot");
+    const receipt = session
+      .readEvents()
+      .find((event) => event.kind === "_baton_context_delivery_receipt");
+    expect(snapshot?.payload).toMatchObject({
+      source: {
+        kind: "session_history",
+        key: "history",
+        owner: { type: "baton_session", batonSessionId: session.id },
+      },
+      afterSeq: 0,
+      throughSeq,
+    });
+    expect(receipt?.payload).toMatchObject({
+      snapshotId: snapshot?.payload.snapshotId,
+      contextEpochId: session.meta.harnessSessions.codex?.contextEpochId,
+      transport: "sync_context",
+      accepted: true,
+    });
+    expect(receipt?.parentEventId).toBe(snapshot?.eventId);
+    const epochId = session.meta.harnessSessions.codex?.contextEpochId;
+    expect(epochId).toMatch(/^ctxe_/);
+    expect(new ContextDeliveryLedger(session.readEvents()).epoch(epochId!)?.throughSeq).toBe(
+      throughSeq,
+    );
     adapter.finish();
     await second;
 
-    // turn 3：没有新的他方进展（只有自己 turn-2 的 summary）→ 不再注入
-    const third = controller.submit("codex", [{ type: "text", text: "three" }]);
+    // meta 是缓存：即使它落后，Receipt 重放出的 ContextEpoch 仍阻止重复注入。
+    session.setHarnessSession("codex", {
+      ...session.meta.harnessSessions.codex!,
+      syncedSeq: 0,
+    });
+    const recoveredAdapter = new SyncableManualAdapter("codex");
+    const recoveredController = new Controller({
+      session,
+      mentionBudgetChars: 4096,
+      resolveTarget: resolveTestTarget,
+      createAdapter: () => recoveredAdapter,
+    });
+    // 重建 Controller 后 turn 3 没有新的他方进展（只有自己 turn-2 的 summary）→ 不再注入
+    const third = recoveredController.submit("codex", [{ type: "text", text: "three" }]);
     await Bun.sleep(1);
-    expect(adapter.synced).toHaveLength(1); // 同一 summary 不二次注入
-    adapter.finish();
+    expect(recoveredAdapter.synced).toHaveLength(0);
+    recoveredAdapter.finish();
     await third;
   });
 
@@ -183,6 +228,12 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     expect(adapter.prompts[0]).toContain("earlier claude work");
     // admission 通过即推进水位到注入时点（修复前 prepend 分支不更新，靠 finalize 推尾掩盖）
     expect(session.meta.harnessSessions["codex"]?.syncedSeq).toBe(injectionTail);
+    expect(
+      session
+        .readEvents()
+        .find((event) => event.kind === "_baton_context_delivery_receipt")
+        ?.payload.transport,
+    ).toBe("prompt_prepend");
     adapter.finish();
     await first;
 
@@ -212,6 +263,16 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     adapter.failNextSubmit = true;
     await expect(controller.submit("codex", [{ type: "text", text: "hello" }])).rejects.toThrow("admission down");
     expect(session.meta.harnessSessions["codex"]?.syncedSeq ?? 0).toBe(0);
+    expect(
+      session
+        .readEvents()
+        .filter((event) => event.kind === "_baton_context_snapshot"),
+    ).toHaveLength(1);
+    expect(
+      session
+        .readEvents()
+        .filter((event) => event.kind === "_baton_context_delivery_receipt"),
+    ).toHaveLength(0);
 
     // 重试：sync 走 side-channel（不混入 prompt 正文），admission 通过后水位推进到
     // 本次注入时点的 summary 尾（含失败 turn 自己的 summary：亲历即已同步）
@@ -222,6 +283,11 @@ describe("watermark advances only at injection (bug#5 regression)", () => {
     expect(adapter.syncPayloads[0]).toContain("<baton-sync>");
     expect(adapter.syncPayloads[0]).toContain("earlier claude work");
     expect(session.meta.harnessSessions["codex"]?.syncedSeq).toBe(injectionTail);
+    const receipts = session
+      .readEvents()
+      .filter((event) => event.kind === "_baton_context_delivery_receipt");
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]?.payload.transport).toBe("submit_side_channel");
     adapter.finish();
     await second;
 

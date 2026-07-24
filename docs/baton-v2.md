@@ -2,8 +2,10 @@
 
 > 状态：目标设计。本文从绿地视角描述 Baton 为承接长期 Loop Engineering 所需的内核形状。
 > Event v3、Interaction、HarnessTarget / HarnessLaunchSnapshot，以及用户驱动 Harness submit
-> 的首个可靠投递切片已经落地；通用 ActionIntent、HarnessWorkIntent 和主动 reconcile
-> 仍是目标设计，不改变当前 v1 以统一会话和跨 Harness 上下文接力为主的产品范围。
+> 的首个可靠投递切片已经落地；Context 已落下以 BatonSession `session_history` 为首个
+> ContextSource 的 Snapshot / DeliveryReceipt / Epoch 切片。通用 ActionIntent、
+> HarnessWorkIntent、更多 ContextSource 和主动 reconcile 仍是目标设计，不改变当前 v1
+> 以统一会话和跨 Harness 上下文接力为主的产品范围。
 > 当前稳定内核见 [kernel](./kernel.md)，Loop 控制面与分阶段演进见
 > [loop-engineering](./loop-engineering.md)。
 
@@ -199,6 +201,15 @@ ContextSource ──▶ ContextSnapshot ──▶ ContextBundle
 “来源已删除”。compaction 产生新的基线快照，而不是悄悄丢掉此前已经交付的约束。大体积材料仍
 通过 Resource/MCP/CLI 按需读取，不复制进 Board 或 prompt。
 
+当前首个落地切片刻意保持小：`ContextSource` 判别联合只有 `session_history`，其
+`owner + key` 稳定指向一条 BatonSession 正典历史；每次 catch-up 先持久化包含
+`(afterSeq, throughSeq]` 和实际文本的 Snapshot，再经三种既有 transport 之一交付。只有
+`syncContext` resolve 或携带上下文的 submit admission 通过后才落 DeliveryReceipt；
+ContextEpoch 从 Receipt 重放，`meta.syncedSeq` 仅保留为旧会话迁移和读取加速的缓存。
+Snapshot 存在但 Receipt 缺失表示未证明送达，下次仍可重新组装。当前上下文只随用户 Turn
+投递、没有独立自动重试，因此不提前增加 ContextDeliveryAttempt；当 Context 能脱离 Turn
+独立调度时再补 Attempt / 幂等键。
+
 ### 1.7 Lineage 与领域所有权
 
 重试、fork、delegate 和 handoff 必须使用显式 lineage，不能根据时间戳、当前活跃会话或
@@ -319,7 +330,8 @@ v2 的落地顺序应是：
 3. 先让现有用户驱动的 Harness submit 落入 Attempt ledger，验证
    Intent/Attempt/Receipt 和 `uncertain` 恢复，再让 ActionIntent 与未来的
    HarnessWorkIntent 复用，并在真实重试需求出现时补齐幂等身份；
-4. 引入 ContextSource/Snapshot/Epoch/DeliveryReceipt；
+4. 以 `session_history` 落下 ContextSource/Snapshot/Epoch/DeliveryReceipt 首个切片，再按
+   Board / Plugin / Resource 的真实接入需求扩展 source kind；
 5. 用 reqloop 跑通用户确认驱动的 loop；
 6. 真实场景证明需要无人输入主动续跑时，才开放 HarnessWorkIntent；
 7. 只有关闭 TUI 仍要求实时推进时，才引入 daemon。
