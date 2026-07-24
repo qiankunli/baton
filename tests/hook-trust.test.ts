@@ -7,7 +7,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   CodexAdapter,
   codexCommandWithHookTrustBypass,
-} from "../src/adapters/codex/adapter.ts";
+} from "../src/harness/codex/adapter.ts";
 import {
   FileHookTrustStore,
   hookTrustFingerprint,

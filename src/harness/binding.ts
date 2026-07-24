@@ -9,7 +9,7 @@ import {
   type HarnessAdapter,
   type HarnessSessionRef,
   type ModelOption,
-} from "../adapters/types.ts";
+} from "./adapter.ts";
 import type { SessionHandle } from "../store/store.ts";
 import { createHarnessLaunchSnapshot, type HarnessTarget } from "./target.ts";
 

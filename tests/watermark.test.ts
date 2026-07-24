@@ -15,7 +15,7 @@ import type {
   PromptInput,
   PromptReceipt,
   HarnessSessionRef,
-} from "../src/adapters/types.ts";
+} from "../src/harness/adapter.ts";
 import type { PromptBlock } from "../src/event/types.ts";
 import { textOf } from "../src/event/types.ts";
 import { Controller } from "../src/controller/index.ts";

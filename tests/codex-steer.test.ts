@@ -1,11 +1,11 @@
 // codex steer 的 wire 映射（design §4.3）：baton expectedTurnId → codex turn id、
 // 成功发 delivery:"steer" 的 user_message 并绑定原 turn、stale/finalized/wire 失败
 // 一律 rejected 且不发事件（降级由 controller 决定）。
-import type { InteractionHandler } from "../src/adapters/types.ts";
+import type { InteractionHandler } from "../src/harness/adapter.ts";
 import { expect, test } from "bun:test";
 
-import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
-import type { PromptInput, HarnessSessionRef } from "../src/adapters/types.ts";
+import { CodexAdapter } from "../src/harness/codex/adapter.ts";
+import type { PromptInput, HarnessSessionRef } from "../src/harness/adapter.ts";
 import type { AnyEventDraft } from "../src/event/types.ts";
 
 const interactionHandler: InteractionHandler = async (req) =>

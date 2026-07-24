@@ -6,12 +6,12 @@
 // 1. blocked hook → _baton_notice 警示（含来源与原因）；
 // 2. completed 且零产出 → 空回合警示，且能带上已知的 hook block 原因；
 // 3. 有产出的正常 turn 不受影响。
-import type { InteractionHandler } from "../src/adapters/types.ts";
+import type { InteractionHandler } from "../src/harness/adapter.ts";
 import { expect, test } from "bun:test";
 
-import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
-import { JsonRpcPeer } from "../src/adapters/codex/jsonrpc.ts";
-import type { PromptInput, HarnessSessionRef } from "../src/adapters/types.ts";
+import { CodexAdapter } from "../src/harness/codex/adapter.ts";
+import { JsonRpcPeer } from "../src/harness/codex/jsonrpc.ts";
+import type { PromptInput, HarnessSessionRef } from "../src/harness/adapter.ts";
 import type { AnyEventDraft, Notice } from "../src/event/types.ts";
 
 const interactionHandler: InteractionHandler = async (req) =>

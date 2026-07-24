@@ -9,7 +9,7 @@ import {
   type InteractionHandler,
   type ModelOption,
   type SteerReceipt,
-} from "../adapters/types.ts";
+} from "../harness/adapter.ts";
 import { buildTargetCatchUpContext } from "../context/mention.ts";
 import type { DiagnosticSink } from "../diagnostics.ts";
 import { diagnosticError } from "../diagnostics.ts";

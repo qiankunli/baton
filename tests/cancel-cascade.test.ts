@@ -14,7 +14,7 @@ import type {
   PromptInput,
   PromptReceipt,
   HarnessSessionRef,
-} from "../src/adapters/types.ts";
+} from "../src/harness/adapter.ts";
 import type { PromptBlock } from "../src/event/types.ts";
 import { Controller, type InteractionHandlers } from "../src/controller/index.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";

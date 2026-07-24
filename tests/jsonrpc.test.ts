@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { JsonRpcPeer } from "../src/adapters/codex/jsonrpc.ts";
+import { JsonRpcPeer } from "../src/harness/codex/jsonrpc.ts";
 import type { DiagnosticEntry } from "../src/diagnostics.ts";
 
 function pair(): { peer: JsonRpcPeer; sent: string[]; diagnostics: DiagnosticEntry[] } {

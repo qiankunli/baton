@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
+import { CodexAdapter } from "../src/harness/codex/adapter.ts";
 import type {
   AdapterCapabilities,
   HarnessAdapter,
@@ -16,7 +16,7 @@ import type {
   PromptInput,
   PromptReceipt,
   HarnessSessionRef,
-} from "../src/adapters/types.ts";
+} from "../src/harness/adapter.ts";
 import type { AnyEventEnvelope, AnyEventDraft, StopReason } from "../src/event/types.ts";
 import { Controller, INTERRUPTED_NOTICE_TITLE } from "../src/controller/index.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";

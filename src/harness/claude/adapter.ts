@@ -42,8 +42,8 @@ import type {
   PromptReceipt,
   HarnessSessionRef,
   InteractionHandler,
-} from "../types.ts";
-import { unsupportedPromptBlocks } from "../types.ts";
+} from "../adapter.ts";
+import { unsupportedPromptBlocks } from "../adapter.ts";
 
 const APPROVAL_OPTIONS: PermissionOption[] = [
   { optionId: "allow", name: "Allow once", polarity: "allow", lifetime: "once" },

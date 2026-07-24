@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { closedTerminal } from "../src/adapters/normalize.ts";
+import { closedTerminal } from "../src/harness/normalize.ts";
 
 const TABLE = { completed: "completed", failed: "failed", declined: "declined" } as const;
 

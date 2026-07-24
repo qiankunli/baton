@@ -7,8 +7,8 @@
 //    时人工选项必须服从 app-server 的 availableDecisions，未知旁路继续发对账 notice。
 import { describe, expect, test } from "bun:test";
 
-import { ClaudeAdapter } from "../src/adapters/claude/adapter.ts";
-import { CodexAdapter, codexLaunchCommand, codexToolTerminalStatus } from "../src/adapters/codex/adapter.ts";
+import { ClaudeAdapter } from "../src/harness/claude/adapter.ts";
+import { CodexAdapter, codexLaunchCommand, codexToolTerminalStatus } from "../src/harness/codex/adapter.ts";
 import type { AnyEventDraft } from "../src/event/types.ts";
 import type { InteractionDraft } from "../src/interaction/types.ts";
 

@@ -2,9 +2,9 @@
 // wire/持久化 key、展示名、认色和 adapter 工厂在这里组装成 HarnessDefinition。
 // 任何按名字分发、贴标签、着色的代码都必须经本模块归一。
 
-import { ClaudeAdapter } from "../adapters/claude/adapter.ts";
-import { CodexAdapter } from "../adapters/codex/adapter.ts";
-import type { HarnessAdapter, InteractionHandler } from "../adapters/types.ts";
+import type { HarnessAdapter, InteractionHandler } from "./adapter.ts";
+import { ClaudeAdapter } from "./claude/adapter.ts";
+import { CodexAdapter } from "./codex/adapter.ts";
 import type { BatonConfig } from "../config/config.ts";
 import { FileHookTrustStore } from "../config/hook.ts";
 import type { DiagnosticSink } from "../diagnostics.ts";

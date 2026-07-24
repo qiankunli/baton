@@ -15,7 +15,7 @@ import type {
   PromptReceipt,
   HarnessSessionRef,
   SteerReceipt,
-} from "../src/adapters/types.ts";
+} from "../src/harness/adapter.ts";
 import { textOf, type PromptBlock } from "../src/event/types.ts";
 import { Controller } from "../src/controller/index.ts";
 import { SessionStore, type SessionHandle } from "../src/store/store.ts";

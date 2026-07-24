@@ -2,10 +2,10 @@
 // 上一 turn 的 SDK 消息流在 result 消息之后才真正 close（观测约 1s），其"流耗尽兜底"
 // finishTurn 可能落在下一 turn 已 admission 之后。终态必须绑定各自的 turn——
 // 既不能把新 turn 误终结成空回答，也不能把迟到终态盖上新 turn 的 id。
-import type { InteractionHandler } from "../src/adapters/types.ts";
+import type { InteractionHandler } from "../src/harness/adapter.ts";
 import { expect, test } from "bun:test";
 
-import { ClaudeAdapter } from "../src/adapters/claude/adapter.ts";
+import { ClaudeAdapter } from "../src/harness/claude/adapter.ts";
 import type { AnyEventDraft } from "../src/event/types.ts";
 
 const interactionHandler: InteractionHandler = async (req) =>

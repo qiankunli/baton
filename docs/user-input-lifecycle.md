@@ -176,8 +176,8 @@ baton 保证 effective delivery 如实：只有 harness 确认接受才记录 st
 - `src/controller/index.ts` / `turn.ts`：active driven turn、steer 降级、cancel 与 finalize 状态迁移；`Control` + `control(signal)`；finalize 时的 Interaction cancel-cascade。
 - `tests/input-lifecycle.test.ts`：Input id / status 迁移契约（queued/admitted/accepted_steer/recalled/interrupted）。
 - `tests/cancel-cascade.test.ts`：Control:interrupt 打断时 pending Interaction 级联 cancelled、不留悬挂 requires_action。
-- `src/adapters/codex/adapter.ts`：`turn/steer` / `turn/interrupt` 原生映射。
-- `src/adapters/claude/adapter.ts`：当前只声明普通 prompt，cancel 映射 SDK interrupt。
+- `src/harness/codex/adapter.ts`：`turn/steer` / `turn/interrupt` 原生映射。
+- `src/harness/claude/adapter.ts`：当前只声明普通 prompt，cancel 映射 SDK interrupt。
 - `tests/steer.test.ts`、`tests/codex-steer.test.ts`：same-turn steer 与降级契约。
 - `tests/lifecycle.test.ts`、`tests/turn-intake.test.ts`：interrupt 后队列推进与 preparing cancel。
 - `tests/tui-protocol.test.ts`：busy 输入默认 delivery 的 UI 编排；input history 回溯 / 编辑中断 / stash 恢复 / 去重 / resume 种入。

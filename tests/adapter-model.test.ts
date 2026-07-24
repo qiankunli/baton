@@ -1,8 +1,8 @@
-import type { InteractionHandler } from "../src/adapters/types.ts";
+import type { InteractionHandler } from "../src/harness/adapter.ts";
 import { describe, expect, test } from "bun:test";
 
-import { ClaudeAdapter, type ClaudeAdapterOptions } from "../src/adapters/claude/adapter.ts";
-import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
+import { ClaudeAdapter, type ClaudeAdapterOptions } from "../src/harness/claude/adapter.ts";
+import { CodexAdapter } from "../src/harness/codex/adapter.ts";
 
 const interactionHandler: InteractionHandler = async (req) =>
   req.kind === "permission"

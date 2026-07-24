@@ -2,12 +2,12 @@
 // 声明了 marker 就必须实现对应接口；反过来，接口尚未落地的能力不允许提前声明——
 // descriptor 是给 controller/UI 消费的事实，不是路线图。
 
-import type { InteractionHandler } from "../src/adapters/types.ts";
+import type { InteractionHandler } from "../src/harness/adapter.ts";
 import { describe, expect, test } from "bun:test";
 
-import { ClaudeAdapter } from "../src/adapters/claude/adapter.ts";
-import { CodexAdapter } from "../src/adapters/codex/adapter.ts";
-import type { HarnessAdapter } from "../src/adapters/types.ts";
+import { ClaudeAdapter } from "../src/harness/claude/adapter.ts";
+import { CodexAdapter } from "../src/harness/codex/adapter.ts";
+import type { HarnessAdapter } from "../src/harness/adapter.ts";
 
 const interactionHandler: InteractionHandler = async (req) =>
   req.kind === "permission"

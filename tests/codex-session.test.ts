@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { openCodexThread } from "../src/adapters/codex/adapter.ts";
+import { openCodexThread } from "../src/harness/codex/adapter.ts";
 
 describe("openCodexThread", () => {
   test("resumes an existing thread by id", async () => {
