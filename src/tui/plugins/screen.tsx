@@ -160,9 +160,12 @@ function PluginPanel(props: PluginPanelProps): ReactNode {
       return;
     }
     if (detail) return;
-    if (key.name === "tab") {
+    if (
+      key.name === "tab" ||
+      (!query && (key.name === "left" || key.name === "right"))
+    ) {
       key.preventDefault();
-      if (key.shift) tabs.current?.moveLeft();
+      if (key.name === "left" || key.shift) tabs.current?.moveLeft();
       else tabs.current?.moveRight();
       return;
     }
@@ -279,7 +282,7 @@ function PluginPanel(props: PluginPanelProps): ReactNode {
             </text>
           )}
           <text fg={props.theme.dim}>
-            {"type to search · ↑↓ select · enter view · tab switch section · esc back"}
+            {"type to search · ↑↓ select · enter view · ←→/tab switch section · esc back"}
           </text>
         </>
       )}
