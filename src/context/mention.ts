@@ -62,7 +62,9 @@ export function buildSessionContext(
   const session = store.openSession(batonSessionId);
   const summaries = session.loadState().turnSummaries;
   const title = sessionDisplayTitle(session.meta);
-  const harnesses = Object.keys(session.meta.harnessSessions).join(", ") || "unknown";
+  const harnesses = session.meta.harnessSessions
+    ? Object.keys(session.meta.harnessSessions).join(", ")
+    : "unknown";
   const header = `# Session summary: ${title} (id: ${batonSessionId}, agent: ${harnesses})`;
 
   if (summaries.length === 0) {

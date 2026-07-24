@@ -305,7 +305,7 @@ export class SessionStore {
       writeFileSync(join(dir, "session.jsonl"), `${lines.join("\n")}\n`);
     }
     const harnessSessions: Record<string, HarnessSessionMeta> = {};
-    for (const [key, hs] of Object.entries(source.meta.harnessSessions)) {
+    for (const [key, hs] of Object.entries(source.meta.harnessSessions ?? {})) {
       harnessSessions[key] = {
         harnessTargetId: hs.harnessTargetId,
         harness: hs.harness,
