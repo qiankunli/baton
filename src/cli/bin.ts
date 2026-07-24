@@ -6,11 +6,13 @@
 //   baton resume     继续 BatonSession（无参 = cwd 最近一个，同 -c）
 //   baton fork       fork BatonSession 并进入新会话
 //   baton sessions   列出当前项目的 baton 会话
+//   baton plugins    管理 Marketplace 与 Plugin Package
 //   baton version    显示版本
 //   baton help       帮助
 
 import packageJson from "../../package.json" with { type: "json" };
 
+import { MarketplaceRegistry, type MarketplaceSource } from "../plugin/marketplace/index.ts";
 import { sessionTreeRows, treeRowPrefix } from "../store/session-tree.ts";
 import { SessionStore, sessionDisplayTitle } from "../store/store.ts";
 
@@ -35,6 +37,16 @@ Usage:
   baton sessions [--tree] [--cwd <dir>]
                         list current-project sessions (--tree shows fork
                         lineage; reference with @<id> in the input)
+  baton plugins marketplace add <path-or-git-url> [--ref <git-ref>] [--root <dir>]
+                        register a local or Git Marketplace
+  baton plugins marketplace list [--root <dir>]
+                        list registered Marketplaces
+  baton plugins available [--marketplace <name>] [--root <dir>]
+                        list Plugin Packages available from Marketplaces
+  baton plugins install <plugin-id> [--marketplace <name>] [--root <dir>]
+                        install an immutable Plugin Package
+  baton plugins list [--root <dir>]
+                        list installed Plugin Packages
   baton version         show version (also --version / -V)
   baton help            this help
 
@@ -75,16 +87,31 @@ function argValue(flag: string): string | undefined {
 
 /** 子命令后的首个位置参数（跳过 flag 及其值），如 `baton fork bs_xxx --cwd /x` 的 bs_xxx */
 function positionalAfterCommand(): string | undefined {
-  const flagsWithValue = new Set(["--cwd", "--root", "--session", "-s"]);
-  for (let i = 3; i < process.argv.length; i++) {
+  return positionalArguments(3, new Set(["--cwd", "--root", "--session", "-s"]))[0];
+}
+
+function positionalArguments(start: number, flagsWithValue: ReadonlySet<string>): string[] {
+  const positional: string[] = [];
+  for (let i = start; i < process.argv.length; i++) {
     const token = process.argv[i] as string;
     if (token.startsWith("-")) {
       if (flagsWithValue.has(token)) i++;
       continue;
     }
-    return token;
+    positional.push(token);
   }
-  return undefined;
+  return positional;
+}
+
+function sourceLabel(source: MarketplaceSource): string {
+  return source.kind === "local"
+    ? `local ${source.path}`
+    : `git ${source.url}${source.ref ? `#${source.ref}` : ""} (${source.revision.slice(0, 12)})`;
+}
+
+function fail(message: string): never {
+  console.error(message);
+  process.exit(1);
 }
 
 async function run(command: string): Promise<void> {
@@ -156,9 +183,85 @@ async function run(command: string): Promise<void> {
       }
       break;
     }
+    case "plugins":
+      await runPlugins();
+      break;
     default:
       console.error(`Unknown command: ${command}\n`);
       console.log(HELP);
       process.exit(1);
+  }
+}
+
+async function runPlugins(): Promise<void> {
+  const args = positionalArguments(
+    3,
+    new Set(["--root", "--ref", "--marketplace"]),
+  );
+  const registry = new MarketplaceRegistry({ rootDir: argValue("--root") });
+  try {
+    if (args[0] === "marketplace" && args[1] === "add") {
+      const source = args[2];
+      if (!source) fail("Usage: baton plugins marketplace add <path-or-git-url> [--ref <git-ref>]");
+      const marketplace = await registry.add(source, { ref: argValue("--ref") });
+      console.log(`added marketplace ${marketplace.name}  ${sourceLabel(marketplace.source)}`);
+      return;
+    }
+    if (args[0] === "marketplace" && args[1] === "list") {
+      const marketplaces = registry.list();
+      if (marketplaces.length === 0) {
+        console.log("(no marketplaces registered)");
+        return;
+      }
+      for (const marketplace of marketplaces) {
+        console.log(`${marketplace.name}  ${sourceLabel(marketplace.source)}`);
+      }
+      return;
+    }
+    if (args[0] === "available") {
+      const available = registry.available({ marketplace: argValue("--marketplace") });
+      if (available.length === 0) {
+        console.log("(no Plugin Packages available)");
+        return;
+      }
+      for (const plugin of available) {
+        const display = plugin.manifest.displayName
+          ? `  ${plugin.manifest.displayName}`
+          : "";
+        console.log(
+          `${plugin.manifest.pluginId}@${plugin.manifest.version}  ${plugin.marketplace}${display}`,
+        );
+      }
+      return;
+    }
+    if (args[0] === "install") {
+      const pluginId = args[1];
+      if (!pluginId) fail("Usage: baton plugins install <plugin-id> [--marketplace <name>]");
+      const installed = registry.install(pluginId, {
+        marketplace: argValue("--marketplace"),
+      });
+      console.log(
+        `${installed.alreadyInstalled ? "already installed" : "installed"} ${installed.manifest.pluginId}@${installed.manifest.version}  from ${installed.provenance.marketplace}`,
+      );
+      return;
+    }
+    if (args[0] === "list") {
+      const installed = registry.installed();
+      if (installed.length === 0) {
+        console.log("(no Plugin Packages installed)");
+        return;
+      }
+      for (const plugin of installed) {
+        console.log(
+          `${plugin.manifest.pluginId}@${plugin.manifest.version}  from ${plugin.provenance.marketplace}`,
+        );
+      }
+      return;
+    }
+    fail(
+      "Usage: baton plugins marketplace add|list | available | install <plugin-id> | list",
+    );
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
   }
 }

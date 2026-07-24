@@ -43,6 +43,7 @@ See [`docs/kernel.md`](docs/kernel.md) for the stable kernel — core concepts, 
 - Append events to a local `session.jsonl` for state reconstruction and future references
 - Reuse local Claude Code and Codex credentials without storing them in baton
 - Use a headless REPL to debug agent integrations
+- Register local or Git Plugin Marketplaces and install immutable Plugin Packages
 
 ## Installation & configuration
 
@@ -111,6 +112,10 @@ baton -s bs_01...                  # Open a specific BatonSession
 baton repl --agent codex           # Start the headless REPL with Codex (alias: cx)
 baton repl --agent claude          # Start the headless REPL with Claude (alias: cc)
 baton sessions                     # List sessions available for reference
+baton plugins marketplace add ./reqloop
+baton plugins available
+baton plugins install qiankun/requirement-loop
+baton plugins list
 baton help                         # Show full help
 ```
 
@@ -129,7 +134,10 @@ baton stores its data in `~/.baton/` by default:
 ```text
 ~/.baton/
 ├── config.yaml
-├── packages/<plugin-id>/<version>/
+├── plugins/
+│   ├── marketplaces.json
+│   ├── marketplaces/<marketplace-name>/
+│   └── packages/<encoded-plugin-id>/<version>/
 └── projects/<project-key>/
     ├── project.json
     └── sessions/<session-id>/
