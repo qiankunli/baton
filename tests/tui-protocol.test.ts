@@ -149,6 +149,33 @@ describe("BatonChatProtocol status command", () => {
   });
 });
 
+describe("BatonChatProtocol plugins command", () => {
+  test("opens the client Plugin manager without changing session state", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-plugins-"));
+    try {
+      const store = new SessionStore(root);
+      const session = store.createSession({ cwd: "/repo" });
+      let opened = 0;
+      const protocol = new BatonChatProtocol(
+        store,
+        DEFAULT_CONFIG,
+        { session, resumed: false },
+        () => undefined,
+        { openPlugins: () => opened++ },
+      );
+
+      await protocol.command("plugins", "");
+
+      expect(opened).toBe(1);
+      expect(session.readEvents()).toHaveLength(0);
+      await expect(protocol.command("plugins", "extra")).rejects.toThrow("/plugins takes no arguments");
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("BatonChatProtocol streaming projection", () => {
   test("coalesces synchronous stream chunks into one view notification", async () => {
     const root = mkdtempSync(join(tmpdir(), "baton-tui-stream-"));

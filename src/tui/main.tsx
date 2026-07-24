@@ -14,8 +14,10 @@ import { createRoot } from "@opentui/react";
 import { ChatShell } from "chat-tui";
 
 import { ensureConfigFile, loadConfig } from "../config/config.ts";
+import { MarketplaceRegistry } from "../plugin/marketplace/index.ts";
 import { openBatonSession, type OpenBatonSessionResult } from "../session/open.ts";
 import { SessionStore } from "../store/store.ts";
+import { PluginScreen } from "./plugins/screen.tsx";
 import { BatonChatProtocol, CHAT_COMMANDS } from "./protocol.ts";
 import { SessionPickerScreen } from "./session-picker.tsx";
 import { batonTheme } from "./theme.ts";
@@ -85,15 +87,30 @@ const quit = (sessionId?: string) => {
 };
 
 function startChat(opened: OpenBatonSessionResult): void {
-  const protocol = new BatonChatProtocol(store, config, opened, quit);
-  root.render(
-    <ChatShell
-      protocol={protocol}
-      commands={CHAT_COMMANDS}
-      mentions={protocol.mentionCandidates}
-      theme={batonTheme}
-    />,
-  );
+  let protocol: BatonChatProtocol;
+  const marketplace = new MarketplaceRegistry({ rootDir: rootArg, cwd: requestedCwd });
+  const showChat = () => {
+    root.render(
+      <ChatShell
+        protocol={protocol}
+        commands={CHAT_COMMANDS}
+        mentions={protocol.mentionCandidates}
+        theme={batonTheme}
+      />,
+    );
+  };
+  const showPlugins = () => {
+    root.render(
+      <PluginScreen
+        protocol={protocol}
+        registry={marketplace}
+        theme={batonTheme}
+        onBack={showChat}
+      />,
+    );
+  };
+  protocol = new BatonChatProtocol(store, config, opened, quit, { openPlugins: showPlugins });
+  showChat();
 }
 
 function startFresh(): void {

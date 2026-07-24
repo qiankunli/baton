@@ -2,7 +2,8 @@
 
 > 状态：分阶段实现。Instance 持久化、可信进程内 Package 激活、Binding 生命周期，
 > Resource / Reconcile / Proposal / 动态唤醒，以及本地 / Git Marketplace 的发现和不可变
-> Package 安装已经落地；Command、Board、权限审阅和 `/plugins` TUI 仍按真实产品入口增量实现。
+> Package 安装、`/plugins` 首期管理面已经落地；Command、Board、Instance 管理和权限审阅仍按
+> 真实产品入口增量实现。
 > Loop 控制面的整体位置见
 > [Loop Engineering](./loop-engineering.md)，reqloop 的领域设计见
 > [reqloop](./reqloop.md)，当前稳定内核见 [kernel](./kernel.md)。
@@ -147,24 +148,31 @@ Instance 管理，但在信息结构上保持两者分层：
 
 ```text
 /plugins
-├── Discover       Marketplace 中可获得的 PluginPackage（长期）
+├── Discover       Marketplace 中可获得的 PluginPackage
 ├── Installed      bundled / 已安装的 PluginPackage
-└── Instances      当前 BatonSession 中配置的 PluginInstance
+├── Marketplaces   已注册的 Marketplace 与来源
+└── Errors         Marketplace / Package 加载错误
 ```
 
-当前先落 Marketplace 与 Package 的底层闭环：
+首期管理面保留上方当前 BatonSession 历史，在底部打开可搜索的管理面板；Package 与
+Marketplace 详情在面板内逐层展开，不把 Plugin 管理伪装成新的 Session。当前已打通：
 
 - 注册本地目录或 Git 仓库形式的 Marketplace；
 - 从 Marketplace 仓内相对路径发现 PluginPackage；
 - 校验 Marketplace 索引与 Package manifest 的 `pluginId` 一致；
 - 按 `pluginId + version` 安装不可变快照并记录来源；
+- 从 `/plugins` 浏览、搜索、查看详情并安装 Package；
 - 从安装缓存加载可信的进程内 PluginPackage，交给现有 Manager 激活。
 
-在 `/plugins` TUI 落地前，`baton plugins marketplace add|list`、`baton plugins available`、
-`baton plugins install` 和 `baton plugins list` 是开发与验证入口。最终仍由 `/plugins` 打开
-统一管理界面，不要求普通用户记忆这些参数。Plugin 自己的 `/requirement` 等 command 用来使用
-领域能力，`/plugins` 只负责能力的获取、配置和生命周期。这些管理操作由 Baton core 执行，
-不注册成普通 PluginContribution，也不能被 Plugin 自己拦截或替换。
+`baton plugins marketplace add|list`、`baton plugins available`、`baton plugins install` 和
+`baton plugins list` 继续作为添加来源与开发验证入口；普通浏览和安装走 `/plugins`。Plugin
+自己的 `/requirement` 等 command 用来使用领域能力，`/plugins` 只负责能力的获取、配置和
+生命周期。这些管理操作由 Baton core 执行，不注册成普通 PluginContribution，也不能被 Plugin
+自己拦截或替换。
+
+Instance 的启停、配置与 Package 更新 / 卸载尚未进入首期面板：Package 安装不等于创建或启用
+Instance，更新也不能静默改写现有 Instance 引用。等这些运行期动作具备完整校验和回执后，再在
+Installed 详情下展开 Instance 层，不先提供看似可点、实际语义不完整的动作。
 
 Marketplace 是长期的 Package 发现与分发层，负责搜索、版本、来源、信任信息、安装、升级和
 卸载。它交付不可变的 PluginPackage 后便退出运行链路，不拥有 PluginInstance、Binding、
@@ -484,5 +492,6 @@ Project 只负责组织和发现 BatonSession，不拥有 Plugin runtime。Manag
    后再接 Action，不给 Plugin 预造 Monitor 或私有 timer。
 7. 真实 loop 证明必须由 Reconciler 主动启动 Harness 后，再设计受控调用；首期只允许用户把
    `proposedInput` 提交成普通 Input。
-8. `/plugins` 管理面接入 Marketplace、Package 与 Instance；真实分发需求出现后再增加更新、
-   卸载、内容信任和进程隔离，不改变既有 Instance / Binding 运行模型。
+8. `/plugins` 首期管理面已接入 Marketplace 浏览、Package 搜索 / 详情 / 安装和加载错误；
+   Instance 管理具备完整运行期闭环后再接入。真实分发需求出现后再增加更新、卸载、内容信任和
+   进程隔离，不改变既有 Instance / Binding 运行模型。

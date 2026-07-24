@@ -5,7 +5,16 @@ import { harnessPrefixMatches, HARNESSES, parseHarness, type HarnessName } from 
 
 export { HARNESSES, parseHarness, type HarnessName };
 
-export type CommandName = HarnessName | "model" | "effort" | "compact" | "sessions" | "status" | "new" | "exit";
+export type CommandName =
+  | HarnessName
+  | "model"
+  | "effort"
+  | "compact"
+  | "plugins"
+  | "sessions"
+  | "status"
+  | "new"
+  | "exit";
 
 export interface CommandDefinition {
   name: CommandName;
@@ -39,6 +48,12 @@ export const COMMANDS: readonly CommandDefinition[] = [
     description: "Compact the current harness context",
     scope: "harness",
     runPolicy: "idle",
+  },
+  {
+    name: "plugins",
+    description: "Manage Baton plugins",
+    scope: "baton",
+    runPolicy: "always",
   },
   {
     name: "sessions",
