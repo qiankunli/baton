@@ -2,7 +2,7 @@
 
 ## 项目定位与边界
 
-baton 是一个 terminal-native 的统一 coding agent 会话：用户始终在自己拥有的 BatonSession 中工作，在一个 TUI 里切换不同 coding agent，而不需要随 harness 一起切换或搬运会话历史。它要消除“人充当 agent 之间传话筒”的工作——反复复制产出、解释上下文、手写交接文档。Claude Code 和 Codex 是首批内置 harness，不是封闭支持列表；差异化在“上下文打通”，不是“又一个并行会话管理器”，开发时要警惕滑回后者。
+baton 是一个 terminal-native 的统一 coding agent 会话：用户始终在自己拥有的 BatonSession 中工作，在一个 TUI 里切换不同 coding agent，而不需要随 harness 一起切换或搬运会话历史。BatonSession 同时是 session-scoped Plugin runtime 的 owner；Project 只按 cwd 组织和发现 Session。它要消除“人充当 agent 之间传话筒”的工作——反复复制产出、解释上下文、手写交接文档。Claude Code 和 Codex 是首批内置 harness，不是封闭支持列表；差异化在“上下文打通”，不是“又一个并行会话管理器”，开发时要警惕滑回后者。
 
 第一阶段只聚焦两件事：
 
@@ -26,6 +26,7 @@ baton/
 ├── docs/
 │   ├── kernel.md            # 稳定内核：核心概念 + 3 不变量 + 双向流水线 + harness 扩展契约（权威入口）
 │   ├── design.md            # 内核之外的完整设计：问题域总表、架构、关键决策 why、里程碑
+│   ├── plugin.md            # Baton Plugin：Resource/Reconcile、Manager/Controller 与 Proposal
 │   ├── user-input-lifecycle.md # 用户输入：queue/steer/recall/interrupt 生命周期与待决场景
 │   ├── harness-output-lifecycle.md # harness 输出/感知：归一、终态收口、丢事件自愈与对账
 │   ├── approval-lifecycle.md # 审批/用户确认：审批诚实、审批人跟随 harness、人工审批与回执
@@ -60,6 +61,7 @@ baton/
 │   │   ├── attempt.ts       # Controller 内部的 Harness 投递 Attempt 状态机与重放索引
 │   │   ├── turn.ts          # driven / observed Turn ledger 与幂等终态记账
 │   │   └── interaction.ts   # Interaction waiter 的 opened / resolved / cancel 生命周期
+│   ├── plugin/              # Plugin 域：Resource、Controller、Manager 与持久 Proposal
 │   ├── session/
 │   │   └── open.ts          # BatonSession 打开的唯一入口：新建/继续/指定 + 会话锁 + crash recovery
 │   ├── commands/
@@ -120,5 +122,6 @@ baton/
 - `docs/session-paths.md` — 主线/草稿 path 设计稿：会话树（森林表示）、写令牌、context-import 收录原语与两步走实施
 - `docs/baton-v2.md` — 面向 Loop 的 v2 内核目标：作用域、可靠工作投递、上下文交付与恢复
 - `docs/loop-engineering.md` — 长期 Loop Engineering 控制面：Baton Plugin / Harness Plugin、Event、Hook、Schedule、Board 与 Context 边界
+- `docs/plugin.md` — Baton Plugin 的 Package / Instance / Binding 与 Resource / Reconcile 运行模型
 - `docs/reqloop.md` — bundled `reqloop` Plugin：Requirement Loop 领域模型、内部 Connector 与预留的 Harness 驱动能力
 - 参考实现与协议规范的外部链接见 `docs/design.md` 末尾"参考"一节

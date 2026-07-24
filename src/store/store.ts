@@ -1,8 +1,9 @@
-// 会话存储：~/.baton/projects/<cwd 转义>/<id>/session.jsonl + session.log + meta.json。
-// 与 Claude Code 一样按项目目录分组，方便按项目浏览与清理；项目目录名不可逆，
-// 真相源仍是 meta.json 里的 cwd。session.jsonl 承载 BatonSession 的统一逻辑历史；
+// 会话存储：~/.baton/projects/<project key>/sessions/<id>/。
+// Project 只负责按 cwd 组织 BatonSession；session.jsonl 承载统一逻辑历史，
+// session/plugins/ 承载以该 BatonSession 为 owner 的 Plugin runtime 数据。
 // HarnessSession 元数据只用于优先恢复 harness 私有状态，缺失时仍可从 BatonSession 重建上下文。
 
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
   closeSync,
@@ -20,7 +21,7 @@ import {
   writeSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 import type { DiagnosticEntry } from "../diagnostics.ts";
 import { diagnosticError } from "../diagnostics.ts";
@@ -86,9 +87,15 @@ export interface SessionMeta {
   forkedFrom?: SessionForkOrigin;
 }
 
-/** 与 Claude Code 同规则：cwd 中非字母数字字符全部替换为 "-"，作为项目目录名。 */
+/** 可读 basename + cwd 摘要；避免旧版纯字符替换把不同 cwd 放进同一项目目录。 */
 export function projectDirName(cwd: string): string {
-  return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+  const canonical = resolve(cwd);
+  const readable = (basename(canonical).replace(/[^a-zA-Z0-9._-]/g, "-") || "project").slice(
+    0,
+    80,
+  );
+  const digest = createHash("sha256").update(canonical).digest("hex").slice(0, 12);
+  return `${readable}-${digest}`;
 }
 
 const SESSION_PREVIEW_MAX_CHARS = 100;
@@ -181,42 +188,34 @@ export class SessionStore {
   }
 
   /**
-   * 旧布局（~/.baton/sessions/<id>）一次性迁移到按项目分组的新布局。
+   * 旧布局（~/.baton/sessions/<id> 和 projects/<cwd escaped>/<id>）一次性迁移到
+   * projects/<project key>/sessions/<id>。
    * meta 缺失或损坏的目录原地保留，不阻塞正常使用。
    */
   private migrateLegacySessions(): void {
     if (this.legacyMigrated) return;
     this.legacyMigrated = true;
-    const legacyDir = join(this.rootDir, "sessions");
-    if (!existsSync(legacyDir)) return;
-    for (const name of readdirSync(legacyDir)) {
-      const metaPath = join(legacyDir, name, "meta.json");
-      if (!existsSync(metaPath)) continue;
-      try {
-        const meta = JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta;
-        const projectDir = join(this.projectsDir(), projectDirName(meta.cwd));
-        mkdirSync(projectDir, { recursive: true });
-        renameSync(join(legacyDir, name), join(projectDir, name));
-      } catch {
-        // 留在原目录，避免把无法解析的会话搬到错误的项目下
-      }
-    }
-    try {
-      rmdirSync(legacyDir); // 仅当已清空时成功
-    } catch {
-      // 还有残留（损坏会话），保留旧目录
+    const flatLegacy = join(this.rootDir, "sessions");
+    this.migrateSessionsFrom(flatLegacy);
+    this.removeIfEmpty(flatLegacy);
+
+    for (const projectDir of this.listProjectDirs()) {
+      this.migrateSessionsFrom(projectDir);
+      this.removeIfEmpty(projectDir);
     }
   }
 
   createSession(opts: { cwd: string; title?: string }): SessionHandle {
     this.migrateLegacySessions();
     const id = newId("bs");
-    const dir = join(this.projectsDir(), projectDirName(opts.cwd), id);
+    const cwd = resolve(opts.cwd);
+    const dir = this.sessionDir(cwd, id);
+    this.ensureProject(cwd);
     mkdirSync(dir, { recursive: true });
     const meta: SessionMeta = {
       batonSessionId: id,
       title: opts.title,
-      cwd: opts.cwd,
+      cwd,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       harnessSessions: {},
@@ -229,7 +228,7 @@ export class SessionStore {
   openSession(id: string): SessionHandle {
     this.migrateLegacySessions();
     for (const projectDir of this.listProjectDirs()) {
-      const dir = join(projectDir, id);
+      const dir = join(projectDir, "sessions", id);
       const metaPath = join(dir, "meta.json");
       if (!existsSync(metaPath)) continue;
       const meta = withSessionPreview(dir, JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta);
@@ -240,23 +239,25 @@ export class SessionStore {
 
   listSessions(opts: { cwd?: string } = {}): SessionMeta[] {
     this.migrateLegacySessions();
-    // 指定 cwd 时只扫对应项目目录；但目录名转义不可逆（可能撞名），仍以 meta.cwd 精确过滤。
+    const cwd = opts.cwd === undefined ? undefined : resolve(opts.cwd);
     const projectDirs =
-      opts.cwd !== undefined
-        ? [join(this.projectsDir(), projectDirName(opts.cwd))]
+      cwd !== undefined
+        ? [this.projectDir(cwd)]
         : this.listProjectDirs();
     const out: SessionMeta[] = [];
     for (const projectDir of projectDirs) {
-      if (!existsSync(projectDir)) continue;
-      for (const name of readdirSync(projectDir)) {
-        const metaPath = join(projectDir, name, "meta.json");
+      const sessionsDir = join(projectDir, "sessions");
+      if (!existsSync(sessionsDir)) continue;
+      for (const name of readdirSync(sessionsDir)) {
+        const sessionDir = join(sessionsDir, name);
+        const metaPath = join(sessionDir, "meta.json");
         if (!existsSync(metaPath)) continue;
         try {
           const meta = withSessionPreview(
-            join(projectDir, name),
+            sessionDir,
             JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta,
           );
-          if (opts.cwd !== undefined && meta.cwd !== opts.cwd) continue;
+          if (cwd !== undefined && meta.cwd !== cwd) continue;
           out.push(meta);
         } catch {
           // 损坏的 meta 不阻塞列表
@@ -289,8 +290,9 @@ export class SessionStore {
       .filter((ev) => opts.throughSeq === undefined || ev.seq <= opts.throughSeq);
     const id = newId("bs");
     // 落盘目录与 meta.cwd 必须同源：listSessions({cwd}) 按目录扫描，两者不一致会漏掉该会话
-    const cwd = opts.cwd ?? source.meta.cwd;
-    const dir = join(this.projectsDir(), projectDirName(cwd), id);
+    const cwd = resolve(opts.cwd ?? source.meta.cwd);
+    const dir = this.sessionDir(cwd, id);
+    this.ensureProject(cwd);
     mkdirSync(dir, { recursive: true });
     if (events.length > 0) {
       const lines = events.map((ev) =>
@@ -330,7 +332,63 @@ export class SessionStore {
   private listProjectDirs(): string[] {
     const dir = this.projectsDir();
     if (!existsSync(dir)) return [];
-    return readdirSync(dir).map((name) => join(dir, name));
+    return readdirSync(dir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => join(dir, entry.name));
+  }
+
+  private projectDir(cwd: string): string {
+    return join(this.projectsDir(), projectDirName(cwd));
+  }
+
+  private sessionDir(cwd: string, sessionId: string): string {
+    return join(this.projectDir(cwd), "sessions", sessionId);
+  }
+
+  private ensureProject(cwd: string): void {
+    const projectDir = this.projectDir(cwd);
+    const path = join(projectDir, "project.json");
+    mkdirSync(join(projectDir, "sessions"), { recursive: true });
+    if (existsSync(path)) {
+      const project = JSON.parse(readFileSync(path, "utf8")) as { cwd?: unknown };
+      if (project.cwd !== cwd) {
+        throw new Error(`project directory ${projectDir} belongs to another cwd`);
+      }
+      return;
+    }
+    const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      writeFileSync(temporary, `${JSON.stringify({ cwd }, null, 2)}\n`);
+      renameSync(temporary, path);
+    } finally {
+      rmSync(temporary, { force: true });
+    }
+  }
+
+  private migrateSessionsFrom(sourceDir: string): void {
+    if (!existsSync(sourceDir)) return;
+    for (const name of readdirSync(sourceDir)) {
+      const source = join(sourceDir, name);
+      const metaPath = join(source, "meta.json");
+      if (!existsSync(metaPath)) continue;
+      try {
+        const meta = JSON.parse(readFileSync(metaPath, "utf8")) as SessionMeta;
+        const cwd = resolve(meta.cwd);
+        const destination = this.sessionDir(cwd, name);
+        this.ensureProject(cwd);
+        if (source !== destination) renameSync(source, destination);
+      } catch {
+        // 留在原目录，避免把无法解析或发生身份冲突的会话搬到错误项目。
+      }
+    }
+  }
+
+  private removeIfEmpty(dir: string): void {
+    try {
+      rmdirSync(dir);
+    } catch {
+      // 损坏会话或新布局内容仍在时保留。
+    }
   }
 }
 
@@ -398,7 +456,7 @@ export class SessionHandle {
    * "最后事件是 running"只有在没有活进程持有会话时才能断定为崩溃残留，
    * 否则往活会话里合成终态会污染它。不承担并发追加的完整保护。
    * 同进程重入直接通过，且不做引用计数——约定同一进程内一个 session 至多
-   * 一个活 handle（TUI 单前台会话；将来 workspace controller 由 session slot
+   * 一个活 handle（TUI 单前台会话；将来多 Session Controller 由 session slot
    * 唯一性保证），进程内并发归上层，锁只管跨进程。
    */
   acquireLock(): void {

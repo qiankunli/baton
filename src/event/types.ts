@@ -25,10 +25,8 @@ export type EventSource =
   | { type: "plugin"; pluginInstanceId: string }
   | { type: "schedule"; scheduleId: string };
 
-/** Event 只属于一个权威 ledger；scope 是归属与查询键，不是 payload 中资源的授权范围。 */
-export type EventScope =
-  | { type: "session"; batonSessionId: string }
-  | { type: "workspace"; workspaceId: string };
+/** Event 只属于一个 BatonSession ledger；scope 是归属与查询键，不是 payload 的授权范围。 */
+export type EventScope = { type: "session"; batonSessionId: string };
 
 export type SessionRunState = "running" | "idle" | "requires_action";
 

@@ -129,12 +129,18 @@ baton stores its data in `~/.baton/` by default:
 ```text
 ~/.baton/
 ├── config.yaml
-└── projects/<cwd-escaped>/<session-id>/
-    ├── meta.json
-    └── session.jsonl
+├── packages/<plugin-id>/<version>/
+└── projects/<project-key>/
+    ├── project.json
+    └── sessions/<session-id>/
+        ├── meta.json
+        ├── session.jsonl
+        └── plugins/<plugin-instance-id>/
+            ├── resources/
+            └── proposals/
 ```
 
-Sessions are grouped by working directory under `projects/`; the original `cwd` is stored in `meta.json`. `session.jsonl` is the durable logical history used for rendering, recovery, harness handoff, and cross-session references. Claude Code and Codex still manage their private native sessions; baton stores their IDs only to accelerate resume and never modifies their native session files.
+Projects group sessions by working directory using a readable, collision-resistant key; `project.json` retains the original `cwd`. Plugin runtime data belongs to its BatonSession. `session.jsonl` is the durable logical history used for rendering, recovery, harness handoff, and cross-session references. Claude Code and Codex still manage their private native sessions; baton stores their IDs only to accelerate resume and never modifies their native session files.
 
 ## License
 

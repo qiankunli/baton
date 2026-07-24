@@ -24,5 +24,6 @@ describe("ids", () => {
     expect(newId("ix")).toMatch(/^ix_/);
     expect(newId("ctx")).toMatch(/^ctx_/);
     expect(newId("ctxe")).toMatch(/^ctxe_/);
+    expect(newId("pr")).toMatch(/^pr_/);
   });
 });
