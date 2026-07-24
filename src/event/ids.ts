@@ -26,7 +26,7 @@ export function ulid(now: number = Date.now()): string {
   return encodeTime(now, 10) + encodeRandom(16);
 }
 
-/** ev=Event ix=Interaction att=Attempt ctx=ContextSnapshot ctxe=ContextEpoch bs=BatonSession hs=HarnessSession t=Turn m=Message tc=ToolCall pl=Plan arv=ApprovalReview pr=PluginResource */
+/** ev=Event ix=Interaction att=Attempt ctx=ContextSnapshot ctxe=ContextEpoch bs=BatonSession hs=HarnessSession t=Turn m=Message tc=ToolCall pl=Plan arv=ApprovalReview pi=PluginInstance pr=PluginResource */
 export type IdPrefix =
   | "ev"
   | "ix"
@@ -40,6 +40,7 @@ export type IdPrefix =
   | "tc"
   | "pl"
   | "arv"
+  | "pi"
   | "pr";
 
 export function newId(prefix: IdPrefix, now?: number): string {

@@ -211,6 +211,12 @@ export class ReconcileDueQueue {
     if (changed) this.arm();
   }
 
+  close(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    this.entries.clear();
+  }
+
   private arm(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
