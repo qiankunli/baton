@@ -207,9 +207,10 @@ reconcile(spec, status, latest external state)
 ```
 
 `Manager` 按 `batonSessionId + pluginInstanceId + resourceKind` 注册和路由 `Controller`。参考
-controller-runtime 的分工，每个 Controller 拥有独立队列，隔离重复 key、局部并发以及未来的
-重试策略；Manager 再施加 Baton 级总容量，避免 Plugin 数量增长时总并发线性放大。注册关闭后，
-该 Scope 不会误投到其他 Plugin。
+controller-runtime 的分工，每个 Controller 拥有独立 workqueue，隔离重复 key、dirty
+follow-up 和局部并发；Manager 统一持有一个动态唤醒队列、错误退避和 Baton 级总容量，避免
+Plugin 数量增长时 timer 与执行并发随 Resource 数量线性放大。注册关闭后，该 Scope 的 pending
+任务和动态唤醒一并撤销，不会误投到其他 Plugin。
 
 Controller 另外持有同 Resource 的跨进程 reconcile 锁，保证本机多个 Baton 进程不会同时执行
 它。该锁不阻塞用户更新 `spec`：Controller 在写回 status 和 due time 时检查
@@ -244,9 +245,12 @@ Manager 在通知 UI 前先持久化 Proposal，接收方按 `proposalId` 幂等
 启动、恢复或选择 Harness。
 
 `requeueAfter` 是这个 Resource 的一次性动态定时唤醒。Baton 将它换算成持久化的
-`nextReconcileAt`；进程重启后，已到期的 Resource 立即入队，未到期的恢复 timer。空返回表示
-等待 Resource、Input 或 Harness 事实发生变化，不需要独立 Monitor。错误通过抛出表达，由 Baton
-退避重试；不引入语义模糊的 `requeue: boolean`。
+`nextReconcileAt`；Manager 只保留一个进程内 timer，总是唤醒当前最早到期的一批 key。进程
+重启后，已到期的 Resource 立即入队，未到期的恢复到动态唤醒队列。空返回会清除旧的 due time，
+表示等待 Resource、Input 或 Harness 事实发生变化，不需要独立 Monitor。错误通过抛出表达，
+Manager 使用按 key 的指数退避并把下一次 retry 同样写入 `nextReconcileAt`，因此 retry 不因进程
+退出而丢失；一次成功 reconcile 会重置该 key 的失败计数。不引入语义模糊的
+`requeue: boolean`。
 
 Reconciler 可以调用 Plugin 自己的 Connector 修改外部系统，因为副作用本来就是“使实际状态
 靠近 spec”的一部分，而不是返回值的一部分。前提是当前 `spec` 或已记录的用户决定已经授权该

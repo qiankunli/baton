@@ -82,6 +82,14 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   return { promise, resolve };
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs: number = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error("timed out waiting for condition");
+    await Bun.sleep(5);
+  }
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -175,6 +183,57 @@ describe("plugin Manager", () => {
     );
   });
 
+  test("registration close prevents work still waiting for global capacity", async () => {
+    const root = testRoot();
+    const firstStore = store(root, "reqloop_default");
+    const waitingStore = store(root, "deploy_default");
+    createResource(firstStore, "ReqLoopRun", "run_1");
+    createResource(waitingStore, "Deployment", "deployment_1");
+    const gate = deferred();
+    let waitingRuns = 0;
+    const manager = new Manager({
+      maxTotalConcurrency: 1,
+      proposals: proposalStore(root),
+      onProposal() {},
+    });
+    manager.registerController<Spec, Record<string, never>>({
+      store: firstStore,
+      resourceKind: "ReqLoopRun",
+      reconciler: {
+        async reconcile() {
+          await gate.promise;
+        },
+      },
+    });
+    const waitingRegistration = manager.registerController<Spec, Record<string, never>>({
+      store: waitingStore,
+      resourceKind: "Deployment",
+      reconciler: {
+        async reconcile() {
+          waitingRuns += 1;
+        },
+      },
+    });
+
+    const running = manager.enqueue(key("reqloop_default", "run_1"));
+    const waiting = manager.enqueue(
+      key("deploy_default", "deployment_1", "Deployment"),
+    );
+    await Promise.resolve();
+    waitingRegistration.close();
+    const waitingResult = waiting.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    gate.resolve();
+
+    await expect(running).resolves.toBeUndefined();
+    const waitingError = await waitingResult;
+    expect(waitingError).toBeInstanceOf(Error);
+    expect((waitingError as Error).message).toBe("plugin Controller is closed");
+    expect(waitingRuns).toBe(0);
+  });
+
   test("keeps per-Controller concurrency independent under the global limit", async () => {
     const root = testRoot();
     const reqloopStore = store(root, "reqloop_default");
@@ -249,6 +308,22 @@ describe("plugin Manager", () => {
     ).toThrow(
       "maxTotalConcurrency must be a positive integer",
     );
+    expect(
+      () =>
+        new Manager({
+          proposals: proposalStore(root),
+          onProposal() {},
+          retryBackoff: { initialDelayMs: 0 },
+        }),
+    ).toThrow("retryBackoff.initialDelayMs must be a positive integer");
+    expect(
+      () =>
+        new Manager({
+          proposals: proposalStore(root),
+          onProposal() {},
+          retryBackoff: { initialDelayMs: 20, maxDelayMs: 10 },
+        }),
+    ).toThrow("retryBackoff.maxDelayMs must be at least initialDelayMs");
   });
 
   test("does not surface the same Proposal again after the user resolves it", async () => {
@@ -308,5 +383,199 @@ describe("plugin Manager", () => {
     await manager.start();
 
     expect(surfaced).toEqual([pending]);
+  });
+
+  test("restores expired and future reconcile times when the Manager starts", async () => {
+    const root = testRoot();
+    const resources = store(root, "reqloop_default");
+    createResource(resources, "ReqLoopRun", "expired");
+    createResource(resources, "ReqLoopRun", "future");
+    const now = Date.now();
+    resources.setNextReconcileAt("ReqLoopRun", "expired", new Date(now - 1_000));
+    resources.setNextReconcileAt("ReqLoopRun", "future", new Date(now + 100));
+    const runs: string[] = [];
+    const manager = new Manager({
+      proposals: proposalStore(root),
+      onProposal() {},
+    });
+    const registration = manager.registerController<Spec, Record<string, never>>({
+      store: resources,
+      resourceKind: "ReqLoopRun",
+      reconciler: {
+        async reconcile(context) {
+          runs.push(context.resource.metadata.resourceId);
+        },
+      },
+    });
+
+    await manager.start();
+    await waitFor(() => runs.includes("expired"));
+    expect(runs).toEqual(["expired"]);
+    await waitFor(() => runs.includes("future"));
+    expect(runs).toEqual(["expired", "future"]);
+    expect(resources.get("ReqLoopRun", "expired").metadata.nextReconcileAt).toBeUndefined();
+    expect(resources.get("ReqLoopRun", "future").metadata.nextReconcileAt).toBeUndefined();
+    registration.close();
+  });
+
+  test("turns requeueAfter into another reconcile and replaces the persisted due time", async () => {
+    const root = testRoot();
+    const resources = store(root, "reqloop_default");
+    createResource(resources, "ReqLoopRun", "run_1");
+    let runs = 0;
+    const manager = new Manager({
+      proposals: proposalStore(root),
+      onProposal() {},
+    });
+    const registration = manager.registerController<Spec, Record<string, never>>({
+      store: resources,
+      resourceKind: "ReqLoopRun",
+      reconciler: {
+        async reconcile() {
+          runs += 1;
+          if (runs === 1) return { requeueAfterMs: 20 };
+        },
+      },
+    });
+
+    await manager.start();
+    await manager.enqueue(key("reqloop_default", "run_1"));
+    expect(resources.get("ReqLoopRun", "run_1").metadata.nextReconcileAt).toBeDefined();
+    await waitFor(() => runs === 2);
+    expect(resources.get("ReqLoopRun", "run_1").metadata.nextReconcileAt).toBeUndefined();
+    registration.close();
+  });
+
+  test("persists error backoff so another Manager can recover the retry", async () => {
+    const root = testRoot();
+    const resources = store(root, "reqloop_default");
+    createResource(resources, "ReqLoopRun", "run_1");
+    const failures: Array<{ attempt: number; nextRetryAt?: string }> = [];
+    const firstManager = new Manager({
+      proposals: proposalStore(root),
+      onProposal() {},
+      retryBackoff: { initialDelayMs: 30, maxDelayMs: 60 },
+      onReconcileError(failure) {
+        failures.push({
+          attempt: failure.attempt,
+          nextRetryAt: failure.nextRetryAt,
+        });
+      },
+    });
+    const firstRegistration = firstManager.registerController<Spec, Record<string, never>>({
+      store: resources,
+      resourceKind: "ReqLoopRun",
+      reconciler: {
+        async reconcile() {
+          throw new Error("connector unavailable");
+        },
+      },
+    });
+
+    await expect(firstManager.enqueue(key("reqloop_default", "run_1"))).rejects.toThrow(
+      "connector unavailable",
+    );
+    expect(failures).toEqual([{ attempt: 1, nextRetryAt: expect.any(String) }]);
+    expect(resources.get("ReqLoopRun", "run_1").metadata.nextReconcileAt).toBe(
+      failures[0]?.nextRetryAt,
+    );
+    firstRegistration.close();
+
+    let recoveredRuns = 0;
+    const recoveredManager = new Manager({
+      proposals: proposalStore(root),
+      onProposal() {},
+    });
+    const recoveredRegistration = recoveredManager.registerController<
+      Spec,
+      Record<string, never>
+    >({
+      store: resources,
+      resourceKind: "ReqLoopRun",
+      reconciler: {
+        async reconcile() {
+          recoveredRuns += 1;
+        },
+      },
+    });
+    await recoveredManager.start();
+    await waitFor(() => recoveredRuns === 1);
+    expect(resources.get("ReqLoopRun", "run_1").metadata.nextReconcileAt).toBeUndefined();
+    recoveredRegistration.close();
+  });
+
+  test("backs off repeated failures per key and resets the attempt after success", async () => {
+    const root = testRoot();
+    const resources = store(root, "reqloop_default");
+    createResource(resources, "ReqLoopRun", "run_1");
+    let runs = 0;
+    let failNext = false;
+    const attempts: number[] = [];
+    const manager = new Manager({
+      proposals: proposalStore(root),
+      onProposal() {},
+      retryBackoff: { initialDelayMs: 10, maxDelayMs: 20 },
+      onReconcileError(failure) {
+        attempts.push(failure.attempt);
+      },
+    });
+    const registration = manager.registerController<Spec, Record<string, never>>({
+      store: resources,
+      resourceKind: "ReqLoopRun",
+      reconciler: {
+        async reconcile() {
+          runs += 1;
+          if (runs <= 2 || failNext) {
+            failNext = false;
+            throw new Error("transient connector failure");
+          }
+        },
+      },
+    });
+
+    await manager.start();
+    await expect(manager.enqueue(key("reqloop_default", "run_1"))).rejects.toThrow(
+      "transient connector failure",
+    );
+    await waitFor(() => runs === 3);
+    expect(attempts).toEqual([1, 2]);
+
+    failNext = true;
+    await expect(manager.enqueue(key("reqloop_default", "run_1"))).rejects.toThrow(
+      "transient connector failure",
+    );
+    expect(attempts).toEqual([1, 2, 1]);
+    await waitFor(() => runs === 5);
+    registration.close();
+  });
+
+  test("registration close cancels its future reconcile wake-ups", async () => {
+    const root = testRoot();
+    const resources = store(root, "reqloop_default");
+    createResource(resources, "ReqLoopRun", "run_1");
+    resources.setNextReconcileAt(
+      "ReqLoopRun",
+      "run_1",
+      new Date(Date.now() + 50),
+    );
+    let runs = 0;
+    const manager = new Manager({
+      proposals: proposalStore(root),
+      onProposal() {},
+    });
+    const registration = manager.registerController<Spec, Record<string, never>>({
+      store: resources,
+      resourceKind: "ReqLoopRun",
+      reconciler: {
+        async reconcile() {
+          runs += 1;
+        },
+      },
+    });
+
+    await manager.start();
+    registration.close();
+    await Bun.sleep(80);
+    expect(runs).toBe(0);
   });
 });
