@@ -11,6 +11,12 @@ import {
   type SteerReceipt,
 } from "../harness/adapter.ts";
 import { buildTargetCatchUpContext } from "../context/mention.ts";
+import {
+  ContextDeliveries,
+  sessionHistoryContextSource,
+  type ContextDeliveryTransport,
+  type ContextSnapshotEnvelope,
+} from "../context/delivery.ts";
 import type { DiagnosticSink } from "../diagnostics.ts";
 import { diagnosticError } from "../diagnostics.ts";
 import { newId } from "../event/ids.ts";
@@ -123,6 +129,7 @@ export class Controller {
   private readonly inputQueue = new InputQueue();
   private readonly turns = new TurnLedger<HarnessBinding>();
   private readonly deliveryAttempts: DeliveryAttempts<HarnessBinding>;
+  private readonly contextDeliveries: ContextDeliveries<HarnessBinding>;
   private readonly interactions: InteractionWaiters<HarnessBinding>;
   private draining = false;
   /** driven 工作从 Harness setup 开始即对 UI 可见；Target 是实例坐标，Harness 仅是协议类型。 */
@@ -134,6 +141,10 @@ export class Controller {
         this.appendEvent(binding, event, {
           type: "baton",
         }) as EventEnvelope<"_baton_delivery_attempt_update">,
+      options.session.readEvents(),
+    );
+    this.contextDeliveries = new ContextDeliveries(
+      (binding, event) => this.appendEvent(binding, event, { type: "baton" }),
       options.session.readEvents(),
     );
     this.interactions = new InteractionWaiters(
@@ -537,7 +548,6 @@ export class Controller {
     // 可达数秒，期间 Transcript 必须已能看到这条输入）。落盘的是**原始输入** turn.blocks：
     // <baton-sync> 注入只进 harness transport（syncContext / prepend），不进正典历史。
     const binding = this.bindingFor(turn.target.id, turn.turnId);
-    const harnessKey = binding.adapter.harness;
     const targetKey = binding.target.id;
     const { record, released } = this.admitDrivenTurn(binding, {
       turnId: turn.turnId,
@@ -578,9 +588,16 @@ export class Controller {
 
       const session = this.options.session;
       const meta = session.meta.harnessSessions[targetKey];
+      const contextEpochId = binding.contextEpochId;
+      if (!contextEpochId) {
+        throw new Error(`${targetKey} opened without a ContextEpoch`);
+      }
+      // Receipt 是事实来源；syncedSeq 只给尚未产生新事件的旧会话做迁移兜底。
+      const sinceSeq =
+        this.contextDeliveries.epoch(contextEpochId)?.throughSeq ?? meta?.syncedSeq ?? 0;
       const catchUp = buildTargetCatchUpContext(session, {
         target: binding.target,
-        sinceSeq: meta?.syncedSeq ?? 0,
+        sinceSeq,
         includeTargetTurns: binding.freshNative,
         budgetChars: this.options.mentionBudgetChars,
       });
@@ -589,31 +606,38 @@ export class Controller {
       // 水位（syncedSeq）只在注入时前进到本批 throughSeq（并发正确性的关键：
       // throughSeq 固定在注入时点，turn 运行期间其它 harness 落盘的事件 seq 必然
       // 大于它，下一次注入自然回补；finalize 推尾水位则会永久越过它们）。
-      let submitCatchUp: typeof catchUp = null;
+      let submitContext:
+        | {
+            snapshot: ContextSnapshotEnvelope;
+            transport: ContextDeliveryTransport;
+          }
+        | undefined;
       if (catchUp) {
+        const snapshot = this.contextDeliveries.prepare(binding, {
+          turnId: turn.turnId,
+          harnessSessionId: binding.nativeSessionId() ?? binding.ref.harnessSessionId,
+          source: sessionHistoryContextSource(session.id),
+          afterSeq: sinceSeq,
+          throughSeq: catchUp.throughSeq,
+          text: catchUp.text,
+        });
         const syncBlock: PromptBlock = {
           type: "text",
           text: `<baton-sync>\n${catchUp.text}\n</baton-sync>`,
         };
         if (isContextSynchronizable(binding.adapter)) {
           await binding.adapter.syncContext(binding.ref, [syncBlock]);
-          session.setHarnessSession(targetKey, {
-            ...meta,
-            harnessTargetId: targetKey,
-            harness: harnessKey,
-            harnessSessionId: meta?.harnessSessionId ?? binding.nativeSessionId(),
-            syncedSeq: catchUp.throughSeq,
-          });
-          binding.freshNative = false;
+          this.acceptContextDelivery(binding, snapshot, "sync_context");
         } else {
           // 随本 turn 的 submit 送达（原生 side-channel 或 prepend）；两种形态共享
           // 同一水位语义：admission 通过后才推进，失败则下次重注入
           if (binding.adapter.capabilities.sync?.supported) {
             syncBlocks = [syncBlock];
+            submitContext = { snapshot, transport: "submit_side_channel" };
           } else {
             blocks = [syncBlock, { type: "text", text: "\n\n" }, ...blocks];
+            submitContext = { snapshot, transport: "prompt_prepend" };
           }
-          submitCatchUp = catchUp;
         }
       }
 
@@ -648,20 +672,15 @@ export class Controller {
         throw error;
       }
       this.deliveryAttempts.markAccepted(binding, attempt);
-      if (submitCatchUp) {
+      if (submitContext) {
         // admission 通过 ⇒ 随 submit 送达的 sync 块（syncBlocks 或 prepend）已进入 harness
         // 输入：视为同步到 throughSeq。
         // admission 失败走 catch 上抛，水位不动，下次重新注入。
-        session.setHarnessSession(targetKey, {
-          ...session.meta.harnessSessions[targetKey],
-          harnessTargetId: targetKey,
-          harness: harnessKey,
-          harnessSessionId:
-            session.meta.harnessSessions[targetKey]?.harnessSessionId ??
-            binding.nativeSessionId(),
-          syncedSeq: submitCatchUp.throughSeq,
-        });
-        binding.freshNative = false;
+        this.acceptContextDelivery(
+          binding,
+          submitContext.snapshot,
+          submitContext.transport,
+        );
       }
       await released;
     } catch (error) {
@@ -688,6 +707,40 @@ export class Controller {
       this.processing = undefined;
       this.changed();
     }
+  }
+
+  /**
+   * Receipt 必须先进入 session ledger，ContextEpoch 和 meta 缓存随后才前进。
+   * adapter admission 仅证明 transport 接受，不扩大成“model 已读”的承诺。
+   */
+  private acceptContextDelivery(
+    binding: HarnessBinding,
+    snapshot: ContextSnapshotEnvelope,
+    transport: ContextDeliveryTransport,
+  ): void {
+    const contextEpochId = binding.contextEpochId;
+    if (!contextEpochId) {
+      throw new Error(`${binding.target.id} cannot accept context without a ContextEpoch`);
+    }
+    const harnessSessionId =
+      binding.nativeSessionId() ?? binding.ref?.harnessSessionId;
+    this.contextDeliveries.accept(binding, snapshot, {
+      contextEpochId,
+      harnessSessionId,
+      transport,
+    });
+    const session = this.options.session;
+    const targetKey = binding.target.id;
+    session.setHarnessSession(targetKey, {
+      ...session.meta.harnessSessions[targetKey],
+      harnessTargetId: targetKey,
+      harness: binding.adapter.harness,
+      harnessSessionId:
+        session.meta.harnessSessions[targetKey]?.harnessSessionId ?? harnessSessionId,
+      contextEpochId,
+      syncedSeq: snapshot.payload.throughSeq,
+    });
+    binding.freshNative = false;
   }
 
   /**

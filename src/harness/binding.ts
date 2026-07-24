@@ -10,6 +10,7 @@ import {
   type HarnessSessionRef,
   type ModelOption,
 } from "./adapter.ts";
+import { newId } from "../event/ids.ts";
 import type { SessionHandle } from "../store/store.ts";
 import { createHarnessLaunchSnapshot, type HarnessTarget } from "./target.ts";
 
@@ -40,6 +41,8 @@ export class HarnessBinding {
    */
   setupTurnId?: string;
   freshNative = true;
+  /** 当前原生 HarnessSession 的上下文基线身份；resume 保留、fresh 重新签发。 */
+  contextEpochId?: string;
 
   private starting?: Promise<void>;
   private readonly session: SessionHandle;
@@ -200,6 +203,10 @@ export class HarnessBinding {
         this.eventSink,
       );
       this.freshNative = !this.ref.resumed;
+      this.contextEpochId =
+        this.ref.resumed && existing?.contextEpochId
+          ? existing.contextEpochId
+          : newId("ctxe");
       if (model) await modelAdapter?.setModel(this.ref, model);
       if (effort) await effortAdapter?.setEffort(this.ref, effort);
       this.session.setHarnessSession(this.target.id, {
@@ -208,6 +215,7 @@ export class HarnessBinding {
         harness: this.adapter.harness,
         launchSnapshot,
         harnessSessionId: this.nativeSessionId(),
+        contextEpochId: this.contextEpochId,
         syncedSeq: this.ref.resumed ? existing?.syncedSeq : 0,
         ...(model ? { model } : {}),
         ...(effort ? { effort } : {}),

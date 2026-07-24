@@ -53,7 +53,12 @@ export interface HarnessSessionMeta {
   effort?: string;
   /** harness 侧恢复所需的游标（如 Claude SDK resume cursor），语义归 adapter */
   resumeCursor?: string;
-  /** 该原生会话已同步到的 BatonSession 事件序号。 */
+  /**
+   * 当前原生会话的 ContextEpoch identity：resume 保留，fresh session 重新签发。
+   * 已接受的 revision 由 ContextDeliveryReceipt 重放；syncedSeq 只是兼容缓存。
+   */
+  contextEpochId?: string;
+  /** 该 ContextEpoch 已同步到的 BatonSession 事件序号（Receipt 的缓存，不是真相源）。 */
   syncedSeq?: number;
   parentSessionId?: string;
 }
@@ -270,7 +275,7 @@ export class SessionStore {
    * 谱系由 meta.forkedFrom 表达。
    * harnessSessions 只保留 target identity、Harness 与 model / effort 偏好：child 不得
    * 继承原生 session 绑定或 launch snapshot（否则两个 BatonSession 会写进同一份 harness
-   * 历史）；child 首 turn 由 controller 走 fresh native + 全量补课（syncedSeq 缺省=0）重建上下文。
+   * 历史）；child 首 turn 由 controller 走 fresh native + 新 ContextEpoch + 全量补课重建上下文。
    * opts.cwd 支持跨 project fork：历史跟源走，project 归属跟 fork 发起位置走；
    * 缺省沿用源 cwd。
    */

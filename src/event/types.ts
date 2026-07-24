@@ -3,6 +3,10 @@
 // baton 自有扩展事件用 _baton_ 前缀，遵守 ACP 的扩展值约定。见 docs/design.md §5.2。
 
 import type { HarnessDeliveryAttemptUpdate } from "../controller/attempt.ts";
+import type {
+  ContextDeliveryReceipt,
+  ContextSnapshot,
+} from "../context/delivery.ts";
 import type { Interaction, InteractionResolved } from "../interaction/types.ts";
 
 export const ENVELOPE_VERSION = 3 as const;
@@ -356,6 +360,8 @@ export type EventPayloadMap = {
   _baton_error_update: ErrorUpdate;
   _baton_notice: Notice;
   _baton_run_status: RunStatusUpdate;
+  _baton_context_snapshot: ContextSnapshot;
+  _baton_context_delivery_receipt: ContextDeliveryReceipt;
   _baton_delivery_attempt_update: HarnessDeliveryAttemptUpdate;
   _baton_turn_summary: TurnSummary;
 };

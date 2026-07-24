@@ -16,7 +16,7 @@ resume 和 fork 都是 **BatonSession 自己的语义**，不依赖任何 harnes
 
 1. `baton resume [bs_xxx]` / `baton fork [bs_xxx]` 由 `cli/bin.ts` 转译成 TUI 入口已支持的 flags。不带 id 时默认进 **session picker**（`tui/session-picker.tsx` 前置会话选择屏，词汇与形态对齐 codex CLI 的 resume_picker）：不预先打开任何会话，Enter 选中才 resume / 落盘 fork（锁与 crash recovery 只发生在被选中的目标上，选错 / Esc 不产生 fork 副本），Esc 新开会话，Ctrl+C 退出；显式 id / `--last` / 非 TTY 直通。session picker 是 chat 之外的启动画面，不经过 BatonChatProtocol——协议保持"恒绑一个已打开会话"的不变量；会话内切换仍走 `/sessions`（行投影 `sessionPickerOptions` 两处共用）。
 2. 一切打开路径（CLI 启动、TUI `/sessions` 切换、`/new`）收敛到 `session/open.ts` 的 `openBatonSession()`：解析目标 → `acquireLock()` → `recoverInterruptedState()`。
-3. fork 的 child 首次发消息时，`Controller.ensureHarness()` 发现无 `harnessSessionId` → 开 fresh 原生会话 → `syncedSeq=0` 触发全量补课（`buildTargetCatchUpContext`），上下文自然重建——完全复用既有能力，fork 没有为 controller 增加任何分支。
+3. fork 的 child 首次发消息时，`Controller.ensureHarness()` 发现无 `harnessSessionId` → 开 fresh 原生会话并签发新的 ContextEpoch → 从 revision 0 触发全量补课（`buildTargetCatchUpContext`）；transport 接受后以 ContextDeliveryReceipt 推进基线——完全复用既有能力，fork 没有为 controller 增加任何分支。
 
 session picker 的可读名称对齐 Codex resume 的思路：`meta.title` 只表示用户显式命名；未命名会话以第一条有意义的用户文本预览作为名称，最后才回退到 cwd。chat-tui 粘贴图片产生的前导本地路径按附件处理，不占用名称。preview 在首次提交时只写一次；旧会话只在发现阶段有界读取日志回填展示，不改写历史数据。旧版本自动生成的 `chat/codex/claude @ cwd` 标题视为兼容占位，不遮住更有辨识度的 preview。
 
@@ -37,7 +37,7 @@ toolCall 等领域对象 ID 仍原样保留。
 
 ### 为什么 harnessSessions 只保留 target 配置，不保留原生 session 绑定
 
-`harnessSessionId` / `syncedSeq` / `resumeCursor` 描述的是源会话与其原生 HarnessSession 的绑定，child 若继承会 resume 源的原生会话，导致两个 BatonSession 写进同一份 harness 历史，fork 即失效。`model` / `effort` 是用户偏好，丢掉会让 child 静默回落 harness 默认值，故单独保留。
+`harnessSessionId` / `contextEpochId` / `syncedSeq` / `resumeCursor` 描述的是源会话与其原生 HarnessSession 的绑定（`syncedSeq` 只是 Receipt 基线的缓存），child 若继承会 resume 源的原生会话，导致两个 BatonSession 写进同一份 harness 历史，fork 即失效。`model` / `effort` 是用户偏好，丢掉会让 child 静默回落 harness 默认值，故单独保留。
 `harnessTargetId` / `harness` 也要保留，使 child 仍知道后续应使用哪个配置目标和执行协议；
 `HarnessLaunchSnapshot` 与源原生 session 的那次启动绑定，child 会 fresh launch，因此不复制。
 

@@ -22,5 +22,7 @@ describe("ids", () => {
   test("Event and Interaction identities have distinct prefixes", () => {
     expect(newId("ev")).toMatch(/^ev_/);
     expect(newId("ix")).toMatch(/^ix_/);
+    expect(newId("ctx")).toMatch(/^ctx_/);
+    expect(newId("ctxe")).toMatch(/^ctxe_/);
   });
 });
