@@ -43,6 +43,7 @@ baton 是一条双向流水线：chat-tui 只承载 `intent`/`render`，controll
 - 将事件追加写入本地 `session.jsonl`，支持状态重建和后续引用
 - 复用本机 Claude Code / Codex 登录态，不托管凭证
 - 提供 headless REPL，方便调试 agent 接入链路
+- 注册本地或 Git Plugin Marketplace，并安装不可变的 PluginPackage
 
 ## 安装与配置
 
@@ -111,6 +112,10 @@ baton -s bs_01...                  # 打开指定 BatonSession
 baton repl --agent codex           # 使用 Codex 的 headless REPL（别名：cx）
 baton repl --agent claude          # 使用 Claude 的 headless REPL（别名：cc）
 baton sessions                     # 查看可引用的历史会话
+baton plugins marketplace add ./reqloop
+baton plugins available
+baton plugins install qiankun/requirement-loop
+baton plugins list
 baton help                         # 查看完整帮助
 ```
 
@@ -129,7 +134,10 @@ baton 的数据默认保存在 `~/.baton/`：
 ```text
 ~/.baton/
 ├── config.yaml
-├── packages/<plugin-id>/<version>/
+├── plugins/
+│   ├── marketplaces.json
+│   ├── marketplaces/<marketplace-name>/
+│   └── packages/<encoded-plugin-id>/<version>/
 └── projects/<project-key>/
     ├── project.json
     └── sessions/<session-id>/

@@ -108,7 +108,10 @@ baton 是一个 terminal-native 的统一 coding agent 会话：用户始终在 
 ```
 ~/.baton/
   config.yaml      # 用户配置（首次运行自动生成）；优先级 env > config.yaml > 默认值
-  packages/<pluginId>/<version>/          # 不可变 PluginPackage（Plugin 分发落地后启用）
+  plugins/
+    marketplaces.json                     # Marketplace 注册来源
+    marketplaces/<marketplaceName>/       # Git Marketplace checkout
+    packages/<encodedPluginId>/<version>/ # 不可变 PluginPackage
   projects/<project key>/
     project.json                          # cwd；project key = 可读 basename + cwd 摘要
     sessions/<batonSessionId>/

@@ -61,7 +61,7 @@ baton/
 │   │   ├── attempt.ts       # Controller 内部的 Harness 投递 Attempt 状态机与重放索引
 │   │   ├── turn.ts          # driven / observed Turn ledger 与幂等终态记账
 │   │   └── interaction.ts   # Interaction waiter 的 opened / resolved / cancel 生命周期
-│   ├── plugin/              # Plugin 域：Package/Instance/Binding、Resource/Controller 与 Proposal
+│   ├── plugin/              # Plugin 域：Marketplace/Package/Instance/Binding、Resource/Controller 与 Proposal
 │   ├── session/
 │   │   └── open.ts          # BatonSession 打开的唯一入口：新建/继续/指定 + 会话锁 + crash recovery
 │   ├── commands/

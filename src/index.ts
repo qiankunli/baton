@@ -4,6 +4,7 @@ export * from "./interaction/types.ts";
 export * from "./plugin/controller.ts";
 export * from "./plugin/instance.ts";
 export * from "./plugin/manager.ts";
+export * from "./plugin/marketplace/index.ts";
 export * from "./plugin/package.ts";
 export * from "./plugin/proposal.ts";
 export * from "./plugin/resource.ts";
