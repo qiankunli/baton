@@ -21,17 +21,31 @@ describe("BatonChatProtocol exit", () => {
 
       const internals = protocol as unknown as {
         controller: { close: () => Promise<void> };
+        plugins: { close: () => Promise<void> };
+        marketplace: { close: () => void };
         session: { releaseLock: () => void };
       };
       internals.controller.close = async () => {
         calls.push("controller");
+      };
+      internals.plugins.close = async () => {
+        calls.push("plugins");
+      };
+      internals.marketplace.close = () => {
+        calls.push("marketplace");
       };
       internals.session.releaseLock = () => {
         calls.push("lock");
       };
 
       await protocol.exit();
-      expect(calls).toEqual(["controller", "lock", `quit:${session.id}`]);
+      expect(calls).toEqual([
+        "controller",
+        "plugins",
+        "marketplace",
+        "lock",
+        `quit:${session.id}`,
+      ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -169,6 +183,15 @@ describe("BatonChatProtocol plugins command", () => {
       expect(opened).toBe(1);
       expect(session.readEvents()).toHaveLength(0);
       await expect(protocol.command("plugins", "extra")).rejects.toThrow("/plugins takes no arguments");
+      await protocol.command("reload-plugins", "");
+      expect(protocol.getView().status).toEqual({
+        text: "Reloaded 0 plugin instances",
+        tone: "info",
+      });
+      await expect(protocol.command("reload-plugins", "extra")).rejects.toThrow(
+        "/reload-plugins takes no arguments",
+      );
+      expect(session.readEvents()).toHaveLength(0);
       await protocol.exit();
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -778,6 +801,38 @@ describe("BatonChatProtocol sessions picker", () => {
       expect(values).toContain(current.id);
       expect(values).toContain(sibling.id);
       expect(values).not.toContain(other.id);
+      await protocol.exit();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("replaces the session-scoped Plugin Manager when switching sessions", async () => {
+    const root = mkdtempSync(join(tmpdir(), "baton-tui-plugin-session-"));
+    try {
+      const store = new SessionStore(root);
+      const current = store.createSession({ cwd: "/repo" });
+      const sibling = store.createSession({ cwd: "/repo" });
+      const protocol = new BatonChatProtocol(
+        store,
+        DEFAULT_CONFIG,
+        { session: current, resumed: false },
+        () => undefined,
+      );
+      const previous = protocol.pluginManager;
+      const internals = protocol as unknown as {
+        switchSession(
+          open: () => { session: typeof sibling },
+        ): Promise<void>;
+      };
+
+      await internals.switchSession(() => {
+        sibling.acquireLock();
+        return { session: sibling };
+      });
+
+      expect(protocol.pluginManager).not.toBe(previous);
+      await expect(previous.start()).rejects.toThrow("plugin Manager is closed");
       await protocol.exit();
     } finally {
       rmSync(root, { recursive: true, force: true });

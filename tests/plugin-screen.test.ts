@@ -6,6 +6,7 @@ import type {
   RegisteredMarketplace,
 } from "../src/plugin/marketplace/index.ts";
 import {
+  packageInstances,
   pluginBrowserItems,
   pluginPanelHeight,
   type PluginBrowserData,
@@ -50,6 +51,8 @@ function data(overrides: Partial<PluginBrowserData> = {}): PluginBrowserData {
   return {
     available: [available],
     installed: [],
+    instances: [],
+    activeInstanceIds: [],
     marketplaces: [marketplace],
     errors: [],
     ...overrides,
@@ -86,6 +89,35 @@ describe("Plugin manager projection", () => {
     expect(rows[0]).toMatchObject({ installed: true, name: "Requirement Loop  ✓ installed" });
     expect(pluginBrowserItems("discover", data(), "QIANKUN/REQUIREMENT")).toHaveLength(1);
     expect(pluginBrowserItems("discover", data(), "missing")).toHaveLength(0);
+  });
+
+  test("projects Package Instances without adding another top-level browser item", () => {
+    const instance = {
+      pluginInstanceId: "pi_reqloop",
+      batonSessionId: "bs_test",
+      pluginId: available.manifest.pluginId,
+      packageVersion: available.manifest.version,
+      enabled: true,
+      config: {},
+      createdAt: "2026-07-24T10:00:00.000Z",
+      updatedAt: "2026-07-24T10:00:00.000Z",
+    };
+    const withInstance = data({
+      installed: [installed],
+      instances: [instance],
+      activeInstanceIds: [instance.pluginInstanceId],
+    });
+
+    expect(
+      pluginBrowserItems("installed", withInstance)[0]?.description,
+    ).toContain("1 active in this session");
+    expect(
+      packageInstances(
+        available.manifest.pluginId,
+        available.manifest.version,
+        withInstance,
+      ),
+    ).toEqual([instance]);
   });
 
   test("keeps a usable bottom panel while leaving transcript rows visible", () => {

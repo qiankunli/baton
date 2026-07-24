@@ -45,6 +45,9 @@ import type {
   Interaction,
   PermissionOption,
 } from "../interaction/types.ts";
+import { Manager } from "../plugin/manager.ts";
+import { MarketplaceRegistry } from "../plugin/marketplace/index.ts";
+import { ProposalStore } from "../plugin/proposal.ts";
 import { openBatonSession } from "../session/open.ts";
 import { Controller } from "../controller/index.ts";
 import { applyEvent, isTurnRunning, type SessionState, type ToolCallState } from "../store/reduce.ts";
@@ -209,9 +212,11 @@ interface PendingPicker {
 }
 
 export class BatonChatProtocol implements ChatProtocol {
+  readonly marketplace: MarketplaceRegistry;
   private session: SessionHandle;
   private state: SessionState;
   private controller: Controller;
+  private plugins: Manager;
   /** 当前输入与控制命令的具体配置目标；默认 Target ID 与 Harness ID 相同。 */
   private harnessTargetId: string;
   private status: StatusMessage | null = null;
@@ -243,6 +248,10 @@ export class BatonChatProtocol implements ChatProtocol {
     this.harnessTargetId = config.defaultAgent;
     this.modelPreferences = loadModelPreferences(store.rootDir);
     this.effortPreferences = loadEffortPreferences(store.rootDir);
+    this.marketplace = new MarketplaceRegistry({
+      rootDir: store.rootDir,
+      cwd: this.session.meta.cwd,
+    });
     if (opened.recovered) {
       this.status = { text: "Recovered an interrupted turn from a previous baton run", tone: "info" };
     }
@@ -253,6 +262,8 @@ export class BatonChatProtocol implements ChatProtocol {
     this.seedHistoryFromState();
     this.unsubscribeSession = this.subscribeSession(this.session);
     this.view = this.buildView();
+    this.plugins = this.createPluginManager();
+    this.startPluginManager();
   }
 
   /** 接入事件流增量投影；调用前 state 必须已 loadState 到当前水位 */
@@ -268,6 +279,10 @@ export class BatonChatProtocol implements ChatProtocol {
 
   getView(): ChatViewState {
     return this.view;
+  }
+
+  get pluginManager(): Manager {
+    return this.plugins;
   }
 
   subscribe(onChange: () => void): () => void {
@@ -397,6 +412,30 @@ export class BatonChatProtocol implements ChatProtocol {
         this.navigation.openPlugins();
         return;
       }
+      case "reload-plugins": {
+        if (argument) throw new Error("/reload-plugins takes no arguments");
+        this.status = { text: "Reloading plugins…", tone: "info" };
+        this.changed();
+        const result = await this.plugins.reload();
+        if (result.failures.length === 0) {
+          this.status = {
+            text: `Reloaded ${result.activated.length} plugin instance${result.activated.length === 1 ? "" : "s"}`,
+            tone: "info",
+          };
+        } else {
+          const failures = result.failures
+            .map(({ pluginInstanceId, error }) =>
+              `${pluginInstanceId}: ${error instanceof Error ? error.message : String(error)}`,
+            )
+            .join("; ");
+          this.status = {
+            text: `Reloaded ${result.activated.length}; ${result.failures.length} failed — ${failures}`,
+            tone: "error",
+          };
+        }
+        this.changed();
+        return;
+      }
       case "model": {
         const target = this.harnessTargetId;
         const models = await this.controller.listModels(target);
@@ -457,6 +496,8 @@ export class BatonChatProtocol implements ChatProtocol {
     this.status = { text: "Exiting…", tone: "info" };
     this.changed();
     await this.controller.close();
+    await this.plugins.close();
+    this.marketplace.close();
     this.unsubscribeSession();
     this.session.releaseLock();
     this.quit(this.session.id);
@@ -604,6 +645,49 @@ export class BatonChatProtocol implements ChatProtocol {
     });
   }
 
+  private createPluginManager(): Manager {
+    return new Manager({
+      proposals: new ProposalStore({ session: this.session }),
+      loadPackage: (pluginId, version, options) =>
+        this.marketplace.load(pluginId, version, options),
+      onProposal: (proposal) => {
+        this.status = {
+          text: `Plugin proposal pending from ${proposal.key.pluginInstanceId}`,
+          tone: "info",
+        };
+        this.changed();
+      },
+      onActivationError: ({ pluginInstanceId, error }) => {
+        this.status = {
+          text: `Plugin ${pluginInstanceId} activation failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          tone: "error",
+        };
+        this.changed();
+      },
+      onReconcileError: ({ key, error }) => {
+        this.status = {
+          text: `Plugin reconcile failed for ${key.resourceKind}/${key.resourceId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          tone: "error",
+        };
+        this.changed();
+      },
+    });
+  }
+
+  private startPluginManager(): void {
+    void this.plugins.start().catch((error) => {
+      this.status = {
+        text: `Could not start plugins: ${error instanceof Error ? error.message : String(error)}`,
+        tone: "error",
+      };
+      this.changed();
+    });
+  }
+
   private syncTerminalTitle(): void {
     setTerminalTabTitle(sessionDisplayTitle(this.session.meta));
   }
@@ -620,6 +704,7 @@ export class BatonChatProtocol implements ChatProtocol {
     }
     const next = open();
     await this.controller.close();
+    await this.plugins.close();
     this.unsubscribeSession();
     this.session.releaseLock();
     this.session = next.session;
@@ -632,6 +717,8 @@ export class BatonChatProtocol implements ChatProtocol {
     this.status = next.recovered
       ? { text: `Opened session ${next.session.id} (recovered an interrupted turn)`, tone: "info" }
       : { text: `Opened session ${next.session.id}`, tone: "info" };
+    this.plugins = this.createPluginManager();
+    this.startPluginManager();
     this.changed();
   }
 

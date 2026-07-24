@@ -14,7 +14,6 @@ import { createRoot } from "@opentui/react";
 import { ChatShell } from "chat-tui";
 
 import { ensureConfigFile, loadConfig } from "../config/config.ts";
-import { MarketplaceRegistry } from "../plugin/marketplace/index.ts";
 import { openBatonSession, type OpenBatonSessionResult } from "../session/open.ts";
 import { SessionStore } from "../store/store.ts";
 import { PluginScreen } from "./plugins/screen.tsx";
@@ -88,7 +87,6 @@ const quit = (sessionId?: string) => {
 
 function startChat(opened: OpenBatonSessionResult): void {
   let protocol: BatonChatProtocol;
-  const marketplace = new MarketplaceRegistry({ rootDir: rootArg, cwd: requestedCwd });
   const showChat = () => {
     root.render(
       <ChatShell
@@ -103,7 +101,8 @@ function startChat(opened: OpenBatonSessionResult): void {
     root.render(
       <PluginScreen
         protocol={protocol}
-        registry={marketplace}
+        registry={protocol.marketplace}
+        manager={protocol.pluginManager}
         theme={batonTheme}
         onBack={showChat}
       />,
