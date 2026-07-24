@@ -178,6 +178,10 @@ export interface ThoughtDisplayBlock {
   content?: string;
 }
 
+export interface BatonNavigation {
+  openPlugins(): void;
+}
+
 /** 将 reasoning summary 投影成独立时间线块，并隐藏 Codex 的空正文占位符。 */
 export function thoughtDisplayBlocks(text: string): ThoughtDisplayBlock[] {
   return text
@@ -232,6 +236,7 @@ export class BatonChatProtocol implements ChatProtocol {
     private readonly config: BatonConfig,
     opened: { session: SessionHandle; resumed: boolean; recovered?: boolean },
     private readonly quit: (sessionId?: string) => void,
+    private readonly navigation?: BatonNavigation,
   ) {
     this.session = opened.session;
     this.syncTerminalTitle();
@@ -384,6 +389,12 @@ export class BatonChatProtocol implements ChatProtocol {
         await this.controller.compactContext(target);
         this.status = { text: `${target} context compacted`, tone: "info" };
         this.changed();
+        return;
+      }
+      case "plugins": {
+        if (argument) throw new Error("/plugins takes no arguments");
+        if (!this.navigation) throw new Error("Plugin manager is not available in this client");
+        this.navigation.openPlugins();
         return;
       }
       case "model": {
