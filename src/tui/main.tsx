@@ -11,13 +11,13 @@
 
 import { createCliRenderer } from "@opentui/core";
 import { createRoot } from "@opentui/react";
-import { ChatShell } from "chat-tui";
+import { createRef } from "react";
 
 import { ensureConfigFile, loadConfig } from "../config/config.ts";
 import { openBatonSession, type OpenBatonSessionResult } from "../session/open.ts";
 import { SessionStore } from "../store/store.ts";
-import { PluginScreen } from "./plugins/screen.tsx";
-import { BatonChatProtocol, CHAT_COMMANDS } from "./protocol.ts";
+import { BatonTui, type BatonTuiHandle } from "./app.tsx";
+import { BatonChatProtocol } from "./protocol.ts";
 import { SessionPickerScreen } from "./session-picker.tsx";
 import { batonTheme } from "./theme.ts";
 
@@ -86,30 +86,11 @@ const quit = (sessionId?: string) => {
 };
 
 function startChat(opened: OpenBatonSessionResult): void {
-  let protocol: BatonChatProtocol;
-  const showChat = () => {
-    root.render(
-      <ChatShell
-        protocol={protocol}
-        commands={CHAT_COMMANDS}
-        mentions={protocol.mentionCandidates}
-        theme={batonTheme}
-      />,
-    );
-  };
-  const showPlugins = () => {
-    root.render(
-      <PluginScreen
-        protocol={protocol}
-        registry={protocol.marketplace}
-        manager={protocol.pluginManager}
-        theme={batonTheme}
-        onBack={showChat}
-      />,
-    );
-  };
-  protocol = new BatonChatProtocol(store, config, opened, quit, { openPlugins: showPlugins });
-  showChat();
+  const tui = createRef<BatonTuiHandle>();
+  const protocol = new BatonChatProtocol(store, config, opened, quit, {
+    openPlugins: () => tui.current?.openPlugins(),
+  });
+  root.render(<BatonTui ref={tui} protocol={protocol} theme={batonTheme} />);
 }
 
 function startFresh(): void {
