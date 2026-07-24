@@ -163,14 +163,22 @@ describe("Codex model capability", () => {
     await adapter.setModel(ref, "gpt-5");
     expect((await adapter.listEfforts(ref)).map((effort) => effort.id)).toEqual(["default", "low", "high"]);
     await adapter.setEffort(ref, "high");
-    await adapter.submit(ref, { turnId: "t_1", messageId: "m_1", blocks: [{ type: "text", text: "hello" }] });
+    await adapter.submit(ref, {
+      turnId: "t_1",
+      messageId: "m_1",
+      blocks: [{ type: "text", text: "hello" }],
+    });
     await Bun.sleep(0); // turn/start 在 submit 回执后异步发出，等微任务刷新
 
     expect(turnRequests[0]?.model).toBe("gpt-5");
     expect(turnRequests[0]?.effort).toBe("high");
     await adapter.setEffort(ref, "default");
     expect(adapter.currentEffort(ref)).toBeNull();
-    await adapter.submit(ref, { turnId: "t_2", messageId: "m_2", blocks: [{ type: "text", text: "again" }] });
+    await adapter.submit(ref, {
+      turnId: "t_2",
+      messageId: "m_2",
+      blocks: [{ type: "text", text: "again" }],
+    });
     await Bun.sleep(0);
     expect(turnRequests[1]?.effort).toBe("medium");
   });
@@ -266,7 +274,11 @@ describe("Codex model capability", () => {
 
     await adapter.submit(
       { harness: "codex", harnessSessionId: "thread-1" },
-      { turnId: "t_1", messageId: "m_1", blocks: [{ type: "text", text: "hello" }] },
+      {
+        turnId: "t_1",
+        messageId: "m_1",
+        blocks: [{ type: "text", text: "hello" }],
+      },
     );
     await Bun.sleep(0);
 

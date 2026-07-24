@@ -6,21 +6,16 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 
-import {
-  isNativeSessionIdentifiable,
-  type InteractionHandler,
-} from "../adapters/types.ts";
 import { ensureConfigFile, loadConfig } from "../config/config.ts";
 import { expandMentions } from "../context/mention.ts";
-import { newId } from "../event/ids.ts";
+import { Controller } from "../controller/index.ts";
 import {
   createHarnessAdapter,
   parseHarness,
   resolveDefaultHarnessTarget,
 } from "../harness/registry.ts";
-import { createHarnessLaunchSnapshot } from "../harness/target.ts";
 import type {
-  InteractionDraft,
+  Interaction,
   InteractionResolution,
 } from "../interaction/types.ts";
 import { SessionStore, sessionDisplayTitle } from "../store/store.ts";
@@ -33,7 +28,7 @@ function argValue(flag: string): string | undefined {
 const rl = createInterface({ input: stdin, output: stdout });
 
 // headless REPL 的 Interaction resolution：按 kind 渲染并返回严格配对的结果。
-async function resolveInteraction(interaction: InteractionDraft): Promise<InteractionResolution> {
+async function resolveInteraction(interaction: Interaction): Promise<InteractionResolution> {
   if (interaction.kind === "permission") {
     stdout.write(`\n⚠ ${interaction.title}\n`);
     interaction.options.forEach((o, i) => stdout.write(`  ${i + 1}. ${o.name} [${o.optionId}]\n`));
@@ -98,82 +93,48 @@ async function main(): Promise<void> {
 
   const target = resolveDefaultHarnessTarget(agentName);
   if (!target) throw new Error(`No default HarnessTarget registered for Harness: ${agentName}`);
-  let adapterHarness = target.harness;
-  const interactionHandler: InteractionHandler = async (draft, context) => {
-    const interaction = {
-      ...draft,
-      interactionId: newId("ix"),
-      requester: { type: "harness" as const, harnessTargetId: target.id },
-    };
-    session.append({
-      kind: "interaction.opened",
-      source: { type: "harness", harnessTargetId: target.id },
-      harness: adapterHarness,
-      harnessTargetId: target.id,
-      ...(context?.turnId ? { turnId: context.turnId } : {}),
-      ...(context?.raw !== undefined ? { raw: context.raw } : {}),
-      payload: interaction,
-    });
-    const resolution = await resolveInteraction(draft);
-    session.append({
-      kind: "interaction.resolved",
-      source: { type: "user" },
-      harness: adapterHarness,
-      harnessTargetId: target.id,
-      ...(context?.turnId ? { turnId: context.turnId } : {}),
-      payload: { interactionId: interaction.interactionId, resolution },
-    });
-    return resolution;
-  };
-  const adapter = createHarnessAdapter(target, {
-    interactionHandler,
-    diagnostic: (entry) => session.diagnostic(entry),
-    config,
-    rootDir: store.rootDir,
-  });
-  adapterHarness = adapter.harness;
-  const launchSnapshot = createHarnessLaunchSnapshot({
-    target,
-    harnessSessionKey: adapter.harness,
-    cwd,
-  });
-  session.setHarnessSession(target.id, {
-    harnessTargetId: target.id,
-    harness: adapter.harness,
-    launchSnapshot,
+  const controller = new Controller({
+    session,
+    mentionBudgetChars: config.mentionBudgetChars,
+    createAdapter: (resolvedTarget, handlers) =>
+      createHarnessAdapter(resolvedTarget, {
+        ...handlers,
+        config,
+        rootDir: store.rootDir,
+      }),
+    resolveTarget: resolveDefaultHarnessTarget,
   });
 
-  // open 时绑定 session 级 sink；turn 完成以 idle 终态事件为准（design §4.1）
   let sawOutput = false;
-  let turnDone: (() => void) | undefined;
-  const ref = await adapter.open({ cwd }, (ev) => {
-    session.append({
-      ...ev,
-      source: { type: "harness", harnessTargetId: target.id },
-      harness: adapter.harness,
-      harnessTargetId: target.id,
-    });
-    if (ev.kind === "agent_message_chunk" && ev.payload.content.type === "text") {
+  let interactionChain = Promise.resolve();
+  const unsubscribe = session.subscribe((event) => {
+    if (event.kind === "agent_message_chunk" && event.payload.content.type === "text") {
       if (!sawOutput) {
-        stdout.write(`${adapter.harness}> `);
+        stdout.write(`${event.harness ?? target.harness}> `);
         sawOutput = true;
       }
-      stdout.write((ev.payload.content as { text: string }).text);
-    } else if (ev.kind === "tool_call_update" && ev.payload.title) {
-      stdout.write(`\n[tool:${ev.payload.status ?? ""}] ${ev.payload.title}\n`);
-    } else if (ev.kind === "_baton_error_update") {
-      stdout.write(`\nerror: ${ev.payload.message}\n`);
+      stdout.write((event.payload.content as { text: string }).text);
+    } else if (event.kind === "tool_call_update" && event.payload.title) {
+      stdout.write(`\n[tool:${event.payload.status ?? ""}] ${event.payload.title}\n`);
+    } else if (event.kind === "_baton_error_update") {
+      stdout.write(`\nerror: ${event.payload.message}\n`);
     }
-    if (ev.kind === "state_update" && ev.payload.state === "idle") turnDone?.();
+    if (event.kind === "interaction.opened") {
+      interactionChain = interactionChain
+        .then(async () => {
+          const resolution = await resolveInteraction(event.payload);
+          if (!controller.resolveInteraction(event.payload.interactionId, resolution)) {
+            stdout.write(`\ninteraction ${event.payload.interactionId} is no longer pending\n`);
+          }
+        })
+        .catch((error) => {
+          stdout.write(
+            `\ninteraction failed: ${error instanceof Error ? error.message : String(error)}\n`,
+          );
+        });
+    }
   });
-  session.setHarnessSession(target.id, {
-    ...session.meta.harnessSessions[target.id],
-    harnessTargetId: target.id,
-    harness: adapter.harness,
-    launchSnapshot,
-    harnessSessionId: ref.harnessSessionId,
-  });
-  stdout.write(`${adapter.harness} session: ${ref.harnessSessionId}\nType to chat, /exit to quit\n\n`);
+  stdout.write(`${target.harness} target: ${target.id}\nType to chat, /exit to quit\n\n`);
 
   for (;;) {
     const line = (await rl.question("you> ")).trim();
@@ -191,76 +152,25 @@ async function main(): Promise<void> {
     const { prompt, mentions } = expandMentions(store, line, config.mentionBudgetChars);
     if (mentions.length) stdout.write(`(injected context summaries from ${mentions.length} session(s))\n`);
 
-    const turnId = newId("t");
-    const messageId = newId("m");
     sawOutput = false;
-    const done = new Promise<void>((resolve) => {
-      turnDone = resolve;
-    });
-    // 用户输入的 owner 是驱动方（与 Controller 同责，design §4.1）：
-    // user_message/running 由 REPL 落盘，adapter 只报告执行过程与终态
-    session.append({
-      kind: "user_message",
-      source: { type: "user" },
-      harness: adapter.harness,
-      harnessTargetId: target.id,
-      turnId,
-      payload: { messageId, content: [{ type: "text", text: prompt }] },
-    });
-    session.append({
-      kind: "state_update",
-      source: { type: "baton" },
-      harness: adapter.harness,
-      harnessTargetId: target.id,
-      turnId,
-      payload: { state: "running" },
-    });
     try {
-      // submit 只确认接收；进展与终结经 open 时绑定的 sink 上报
-      await adapter.submit(ref, { turnId, messageId, blocks: [{ type: "text", text: prompt }] });
+      await controller.submit(target.id, [{ type: "text", text: prompt }]);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       stdout.write(`\nerror: ${message}\n`);
-      // user_message 已落盘：admission 失败也要有结局，不留无终态的半状态
-      session.append({
-        kind: "_baton_error_update",
-        source: { type: "baton" },
-        harness: adapter.harness,
-        harnessTargetId: target.id,
-        turnId,
-        payload: { message, retryable: false },
-      });
-      session.append({
-        kind: "state_update",
-        source: { type: "baton" },
-        harness: adapter.harness,
-        harnessTargetId: target.id,
-        turnId,
-        payload: { state: "idle", stopReason: "error" },
-      });
       continue;
     }
-    await done;
-    turnDone = undefined;
-    const summary = session.summarizeTurn(turnId);
-    // 原生 session id 可能首轮结束才拿得到（claude），回填 meta 以支持将来 resume；
-    // 按能力接口判定而不是 instanceof——registry 接管后 CLI 不再 import 具体 adapter
-    if (isNativeSessionIdentifiable(adapter)) {
-      const nativeId = adapter.nativeSessionId(ref);
-      if (nativeId) {
-        session.setHarnessSession(target.id, {
-          ...session.meta.harnessSessions[target.id],
-          harnessTargetId: target.id,
-          harness: adapter.harness,
-          launchSnapshot,
-          harnessSessionId: nativeId,
-        });
-      }
-    }
-    stdout.write(`\n— turn done (${summary.stopReason ?? "?"}, in:${summary.usage?.inputTokens ?? 0} out:${summary.usage?.outputTokens ?? 0})\n\n`);
+    const summary = session
+      .readEvents()
+      .findLast((event) => event.kind === "_baton_turn_summary")?.payload;
+    stdout.write(
+      `\n— turn done (${summary?.stopReason ?? "?"}, in:${summary?.usage?.inputTokens ?? 0} out:${summary?.usage?.outputTokens ?? 0})\n\n`,
+    );
   }
 
-  await adapter.close(ref);
+  await interactionChain;
+  unsubscribe();
+  await controller.close();
   rl.close();
 }
 

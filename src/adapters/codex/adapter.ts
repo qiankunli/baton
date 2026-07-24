@@ -826,7 +826,10 @@ export class CodexAdapter implements HarnessAdapter {
   }
 
   /** submit 只做 admission 并发出 turn/start；进展与终结全部经通知/终态合成路径报告 */
-  async submit(ref: HarnessSessionRef, input: PromptInput): Promise<PromptReceipt> {
+  async submit(
+    ref: HarnessSessionRef,
+    input: PromptInput,
+  ): Promise<PromptReceipt> {
     const rt = this.mustThread(ref);
     if (rt.activeTurn && !rt.activeTurn.finalized) {
       throw new Error(`codex turn ${rt.activeTurn.turnId} still active; steer/parallel prompt unsupported`);

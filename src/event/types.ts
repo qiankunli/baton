@@ -2,6 +2,7 @@
 // tool_call_update upsert），wire 协议不必是 ACP——adapter 负责把各家原生协议归一到这里。
 // baton 自有扩展事件用 _baton_ 前缀，遵守 ACP 的扩展值约定。见 docs/design.md §5.2。
 
+import type { HarnessDeliveryAttemptUpdate } from "../controller/attempt.ts";
 import type { Interaction, InteractionResolved } from "../interaction/types.ts";
 
 export const ENVELOPE_VERSION = 3 as const;
@@ -355,6 +356,7 @@ export type EventPayloadMap = {
   _baton_error_update: ErrorUpdate;
   _baton_notice: Notice;
   _baton_run_status: RunStatusUpdate;
+  _baton_delivery_attempt_update: HarnessDeliveryAttemptUpdate;
   _baton_turn_summary: TurnSummary;
 };
 

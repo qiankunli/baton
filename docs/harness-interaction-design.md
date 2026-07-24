@@ -357,7 +357,10 @@ interface HarnessAdapter {
 type PromptReceipt = { accepted: true };
 ```
 
-`submit()` resolve 不代表 turn 完成。用户输入的 owner 是 Controller，harness 执行过程的 owner 是 Adapter：
+`submit()` throw 只表示 Adapter 尚未接受投递责任；resolve 不代表 turn 完成，此后的失败必须
+经事件流给出 Harness 终态。Delivery Attempt 是 Controller 的持久记账，不进入
+`PromptInput`，Adapter 也不参与其生命周期。用户输入的 owner 是 Controller，harness 执行
+过程的 owner 是 Adapter：
 
 ```text
 controller 出队（driven turn）
@@ -395,8 +398,10 @@ type PromptBlock =
   | ResourceLinkBlock;
 
 interface PromptInput {
-  batonMessageId: string;
+  turnId: string;
+  messageId: string;
   blocks: PromptBlock[];
+  syncBlocks?: PromptBlock[];
 }
 ```
 

@@ -55,6 +55,7 @@ baton/
 │   ├── controller/
 │   │   ├── index.ts         # Controller 公共入口：Harness 编排、事件入口与跨生命周期主流程
 │   │   ├── input.ts         # Input 队列、身份、recall 与只读快照
+│   │   ├── attempt.ts       # Controller 内部的 Harness 投递 Attempt 状态机与重放索引
 │   │   ├── turn.ts          # driven / observed Turn ledger 与幂等终态记账
 │   │   └── interaction.ts   # Interaction waiter 的 opened / resolved / cancel 生命周期
 │   ├── session/
@@ -89,6 +90,7 @@ baton/
 - **BatonSession、HarnessTarget 与 HarnessSession 分属三层**：BatonSession 是用户拥有、跨 harness、可持久恢复的逻辑历史；HarnessTarget 是具体执行与状态实例坐标；HarnessSession 只是该 Target 启动出的私有执行状态。`HarnessBinding`、原生 session、同步水位、偏好 / 授权与 Target-scoped 投影状态一律按 `harnessTargetId` 隔离；Target ID 必须经显式 resolver 找到完整 Target，未知值 fail closed，不能从 Harness 名称、alias 或 wire key 猜实例；Adapter 工厂再按 `target.harness` 选择协议实现。driven turn 在 BatonSession 内全局串行；harness 自发的 observed turn 与队列正交，见 `docs/kernel.md` §3。
 - **事件流是统一历史的合并真相源，UI 是投影**：每条 Event 必须有稳定 `eventId`、单一 `scope` 和显式事实 `source`；归属、来源与 `harness*` / `turnId` 等执行坐标正交。Adapter 只提交事实内容，`source`、Harness 与 HarnessTarget 由绑定它的宿主入口统一补齐，不能由 Adapter 自报。`session.jsonl` 记录可重放事件，TUI 状态由 reduce 重建——live 投影经 `SessionHandle.subscribe` 订阅事件流，与 resume 同一条 reduce 路径，不允许旁路投影通道（曾因 per-turn 回调这条第二通道静默丢掉 observed turn 的回复）；`meta.json` 保存定位与恢复元数据，不替代事件历史。HarnessSession 原生 resume 是加速路径，不是正确性的前提。
 - **用户输入的 owner 是 Controller，harness 执行的 owner 是 Adapter**：driven turn 出队即由 controller 落 `user_message`/`running`（原始输入进正典历史，harness 冷启动不阻塞 Transcript，preparing 可取消）；Adapter 只报告执行过程与终态，steer 成功时补 `delivery:"steer"` 的用户消息。用户输入专项语义及其 Adapter 行为契约见 `docs/user-input-lifecycle.md`；完整交互面的总体结构见 `docs/harness-interaction-design.md`。
+- **Harness 投递先记账再执行**：当前用户驱动 turn 以已持久化 Input 作为上游，Controller 在 submit 前持久化带不可变 launch snapshot 的 Delivery Attempt；Adapter resolve 只确认接受投递责任，Harness idle 才给出最终 outcome。Baton 无法证明 Harness 是否接收或结束时必须保留 `uncertain`，不能猜成失败后重投；幂等重试仍是长期模型，见 `docs/baton-v2.md` §1.5。
 - **待决交互的 owner 是 Controller**：Harness / Plugin 只提交 typed Interaction draft；Controller 统一签发 `ix_`、补 requester、持久化 `interaction.opened/resolved` 并持有 live waiter。permission / question / hook trust 是 `kind`，不各自复制事件和 pending 状态机。
 - 各家 agent 的原生 session 文件（`~/.claude/projects/**`、`~/.codex/sessions/**`）**只读不写**，原因见 `docs/design.md`。
 - 内部事件模型对齐 ACP v2 词汇表；wire 协议用各家原生协议，不强求 ACP。
@@ -98,7 +100,7 @@ baton/
 - **审批诚实性是产品不变量**：baton 不替 harness 定审批人默认（缺省跟随 codex 自己的解析），用户可显式覆盖；生效值只认 harness 回吐，问不出来就不声称。无论授权方是谁，状态必须全局可见、逐条决策必须有权威回执。工具终态展示必须诚实（declined 是一等终态）；adapter 翻译终态只走白名单，未知值悲观处理，未知策略旁路审批时必须发对账 notice。
 - **用户安装与开发运行时分离**：普通用户统一通过 npm 安装，包内 launcher 自带所需 runtime，不暴露 Bun 前置条件；仓库开发仍使用 Bun，避免为分发方式改写开发工具链。
 - 同一 BatonSession 内的 harness 接力由 baton 自动完成；`@` 只承担跨 BatonSession / turn / 产物的显式引用。
-- event / interaction / session / turn / message 的 ID 必须稳定可外部引用；fork 复制的 interaction / turn / message 等领域对象与源共享 ID（同一段逻辑历史），但 Event 因换 session scope 重新签发 `eventId`，保证一个 Event 只属于一个 ledger。跨会话引用领域对象时以 `bs_ + 对象 ID` 限定消歧，why 见 `docs/resume-fork.md`。
+- event / interaction / session / turn / message / delivery attempt 的 ID 必须稳定可外部引用；fork 复制的 interaction / turn / message 等领域对象与源共享 ID（同一段逻辑历史），但 Event 因换 session scope 重新签发 `eventId`，保证一个 Event 只属于一个 ledger。跨会话引用领域对象时以 `bs_ + 对象 ID` 限定消歧，why 见 `docs/resume-fork.md`。
 - `/codex`、`/claude` 是 baton 自有的直接 agent 切换入口；其余命令与引用在能力允许时保持 harness 原生语义，由 baton/Adapter 显式映射，不做不可控的文本透传。
 
 - 界面按信息的**时态与寿命**分层：越是“现在时”的信息越靠下、越固定，不随历史滚动；条件层（pinned plan、队列）无内容即整层消失。这是 baton projection 与页面装配的产品语义；chat-tui 只负责按展示结构渲染。分层图与合成规则见 `docs/design.md` 5.9。
