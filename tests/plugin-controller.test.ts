@@ -278,6 +278,38 @@ describe("plugin Controller", () => {
     expect(seen).toEqual(["run_1", "run_2"]);
   });
 
+  test("close lets running work settle but rejects pending and future enqueue", async () => {
+    const resources = store(testRoot());
+    for (const resourceId of ["run_1", "run_2"]) {
+      resources.create<Spec>({
+        kind: "ReqLoopRun",
+        resourceId,
+        spec: { requirement: resourceId },
+      });
+    }
+    const gate = deferred();
+    const controller = new Controller<Spec, Status>({
+      store: resources,
+      resourceKind: "ReqLoopRun",
+      reconciler: {
+        async reconcile() {
+          await gate.promise;
+        },
+      },
+      onProposal() {},
+    });
+
+    const running = controller.enqueue(key("run_1"));
+    const pending = controller.enqueue(key("run_2"));
+    controller.close();
+    await expect(pending).rejects.toThrow("plugin Controller is closed");
+    await expect(controller.enqueue(key("run_2"))).rejects.toThrow(
+      "plugin Controller is closed",
+    );
+    gate.resolve();
+    await expect(running).resolves.toBeUndefined();
+  });
+
   test("runs different resources up to its configured capacity", async () => {
     const resources = store(testRoot());
     for (const resourceId of ["run_1", "run_2", "run_3"]) {

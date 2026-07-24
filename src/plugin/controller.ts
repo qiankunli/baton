@@ -1,5 +1,6 @@
 import type { PluginResource } from "./resource.ts";
 import { PluginResourceStore } from "./resource.ts";
+import { ReconcileQueue } from "./queue.ts";
 
 export interface ReconcileScope {
   readonly batonSessionId: string;
@@ -35,6 +36,11 @@ export interface ReconcileProposal {
   readonly text: string;
 }
 
+export interface ScheduledReconcile {
+  readonly key: ReconcileKey;
+  readonly nextReconcileAt: Date;
+}
+
 export interface ControllerOptions<TSpec, TStatus> {
   store: PluginResourceStore;
   resourceKind: string;
@@ -44,22 +50,10 @@ export interface ControllerOptions<TSpec, TStatus> {
   /** Manager 注入的进程总容量；缺省表示不额外限流。 */
   executeWithCapacity?: <T>(execute: () => Promise<T>) => Promise<T>;
   onProposal(proposal: ReconcileProposal): Promise<void> | void;
-}
-
-interface QueuedReconcile {
-  key: ReconcileKey;
-  completion: Promise<void>;
-  resolve: () => void;
-  reject: (error: unknown) => void;
-}
-
-function keyId(key: ReconcileKey): string {
-  return JSON.stringify([
-    key.batonSessionId,
-    key.pluginInstanceId,
-    key.resourceKind,
-    key.resourceId,
-  ]);
+  /** 仅供 Manager 收口成功后的动态唤醒；持久化由 Controller 先完成。 */
+  onReconcileSuccess?(key: ReconcileKey, nextReconcileAt: Date | null): void;
+  /** 仅报告实际执行失败，不包含 enqueue 参数校验错误。 */
+  onReconcileError?(key: ReconcileKey, error: unknown): void;
 }
 
 function ownedKey(key: ReconcileKey): ReconcileKey {
@@ -98,14 +92,9 @@ function validatedResult(result: ReconcileResult | void): ReconcileResult {
   return result;
 }
 
-function queuedReconcile(key: ReconcileKey): QueuedReconcile {
-  let resolve!: () => void;
-  let reject!: (error: unknown) => void;
-  const completion = new Promise<void>((onResolve, onReject) => {
-    resolve = onResolve;
-    reject = onReject;
-  });
-  return { key, completion, resolve, reject };
+interface ReconcileExecution {
+  proposal?: ReconcileProposal;
+  nextReconcileAt: Date | null;
 }
 
 /**
@@ -123,6 +112,7 @@ export class Controller<TSpec, TStatus> {
   >;
   private readonly onProposal: ControllerOptions<TSpec, TStatus>["onProposal"];
   private readonly queue: ReconcileQueue;
+  private closed = false;
 
   constructor(options: ControllerOptions<TSpec, TStatus>) {
     if (!options.resourceKind.trim()) throw new Error("resourceKind must not be empty");
@@ -138,14 +128,17 @@ export class Controller<TSpec, TStatus> {
       pluginInstanceId: options.store.pluginInstanceId,
       resourceKind: options.resourceKind,
     });
-    this.queue = new ReconcileQueue(
-      (key) =>
+    this.queue = new ReconcileQueue({
+      execute: (key) =>
         this.executeWithCapacity(async () => {
-          const proposal = await this.reconcile(key);
-          if (proposal) await this.onProposal(proposal);
+          if (this.closed) throw new Error("plugin Controller is closed");
+          const execution = await this.reconcile(key);
+          if (execution.proposal) await this.onProposal(execution.proposal);
+          options.onReconcileSuccess?.(key, execution.nextReconcileAt);
         }),
-      options.maxConcurrency,
-    );
+      maxConcurrency: options.maxConcurrency,
+      onError: options.onReconcileError,
+    });
   }
 
   enqueue(key: ReconcileKey): Promise<void> {
@@ -159,7 +152,38 @@ export class Controller<TSpec, TStatus> {
     return this.queue.enqueue(reconcileKey);
   }
 
-  private async reconcile(key: ReconcileKey): Promise<ReconcileProposal | undefined> {
+  close(): void {
+    this.closed = true;
+    this.queue.close();
+  }
+
+  scheduledReconciles(): ScheduledReconcile[] {
+    return this.store.list(this.resourceKind).flatMap((resource) => {
+      const value = resource.metadata.nextReconcileAt;
+      if (value === undefined) return [];
+      return [
+        Object.freeze({
+          key: ownedKey({
+            ...this.scope,
+            resourceId: resource.metadata.resourceId,
+          }),
+          nextReconcileAt: new Date(value),
+        }),
+      ];
+    });
+  }
+
+  setNextReconcileAt(key: ReconcileKey, next: Date): void {
+    const reconcileKey = ownedKey(key);
+    this.assertOwns(reconcileKey);
+    this.store.setNextReconcileAt(
+      this.resourceKind,
+      reconcileKey.resourceId,
+      next,
+    );
+  }
+
+  private async reconcile(key: ReconcileKey): Promise<ReconcileExecution> {
     return await this.store.withReconcileLock(
       this.resourceKind,
       key.resourceId,
@@ -197,13 +221,18 @@ export class Controller<TSpec, TStatus> {
           { expectedResourceVersion: latestResourceVersion },
         );
 
-        return result.proposedInput
-          ? Object.freeze({
-              key,
-              basedOnGeneration: resource.metadata.generation,
-              text: result.proposedInput.text,
-            })
-          : undefined;
+        return {
+          nextReconcileAt,
+          ...(result.proposedInput
+            ? {
+                proposal: Object.freeze({
+                  key,
+                  basedOnGeneration: resource.metadata.generation,
+                  text: result.proposedInput.text,
+                }),
+              }
+            : {}),
+        };
       },
     );
   }
@@ -217,63 +246,6 @@ export class Controller<TSpec, TStatus> {
       throw new Error(
         `reconcile key is outside controller scope: ${key.batonSessionId}/${key.pluginInstanceId}/${key.resourceKind}/${key.resourceId}`,
       );
-    }
-  }
-}
-
-/**
- * Controller 的进程内队列。pending 中同 key 的触发共享一次执行；
- * 执行期间的新触发合并为一次 follow-up，避免漏掉本轮 snapshot 之后到达的事实。
- */
-class ReconcileQueue {
-  private readonly pending = new Map<string, QueuedReconcile>();
-  private readonly running = new Set<string>();
-  private readonly maxConcurrency: number;
-  private activeCount = 0;
-
-  constructor(
-    private readonly execute: (key: ReconcileKey) => Promise<void>,
-    maxConcurrency: number = 1,
-  ) {
-    if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
-      throw new Error("maxConcurrency must be a positive integer");
-    }
-    this.maxConcurrency = maxConcurrency;
-  }
-
-  enqueue(key: ReconcileKey): Promise<void> {
-    const id = keyId(key);
-    const existing = this.pending.get(id);
-    if (existing) return existing.completion;
-
-    const item = queuedReconcile(key);
-    this.pending.set(id, item);
-    this.drain();
-    return item.completion;
-  }
-
-  private drain(): void {
-    while (this.activeCount < this.maxConcurrency) {
-      const next = [...this.pending].find(([id]) => !this.running.has(id));
-      if (!next) return;
-      const [id, item] = next;
-      this.pending.delete(id);
-      this.running.add(id);
-      this.activeCount += 1;
-      void this.executeOne(id, item);
-    }
-  }
-
-  private async executeOne(id: string, item: QueuedReconcile): Promise<void> {
-    try {
-      await this.execute(item.key);
-      item.resolve();
-    } catch (error) {
-      item.reject(error);
-    } finally {
-      this.running.delete(id);
-      this.activeCount -= 1;
-      this.drain();
     }
   }
 }
