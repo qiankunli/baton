@@ -26,7 +26,7 @@ baton/
 ├── docs/
 │   ├── kernel.md            # 稳定内核：核心概念 + 3 不变量 + 双向流水线 + harness 扩展契约（权威入口）
 │   ├── design.md            # 内核之外的完整设计：问题域总表、架构、关键决策 why、里程碑
-│   ├── plugin.md            # Baton Plugin：Resource/Reconcile、Manager/Controller 与 Proposal
+│   ├── plugin.md            # Baton Plugin：Package/Instance/Binding 与 Resource/Reconcile
 │   ├── user-input-lifecycle.md # 用户输入：queue/steer/recall/interrupt 生命周期与待决场景
 │   ├── harness-output-lifecycle.md # harness 输出/感知：归一、终态收口、丢事件自愈与对账
 │   ├── approval-lifecycle.md # 审批/用户确认：审批诚实、审批人跟随 harness、人工审批与回执
@@ -61,7 +61,7 @@ baton/
 │   │   ├── attempt.ts       # Controller 内部的 Harness 投递 Attempt 状态机与重放索引
 │   │   ├── turn.ts          # driven / observed Turn ledger 与幂等终态记账
 │   │   └── interaction.ts   # Interaction waiter 的 opened / resolved / cancel 生命周期
-│   ├── plugin/              # Plugin 域：Resource、Controller、Manager 与持久 Proposal
+│   ├── plugin/              # Plugin 域：Package/Instance/Binding、Resource/Controller 与 Proposal
 │   ├── session/
 │   │   └── open.ts          # BatonSession 打开的唯一入口：新建/继续/指定 + 会话锁 + crash recovery
 │   ├── commands/

@@ -96,12 +96,17 @@ function sameKey(left: ReconcileKey, right: ReconcileKey): boolean {
 
 export class ProposalStore {
   readonly batonSessionId: string;
+  readonly session: Readonly<Pick<SessionHandle, "id" | "dir">>;
   private readonly sessionDir: string;
   private readonly now: () => Date;
 
   constructor(options: ProposalStoreOptions) {
     assertPathSegment("batonSessionId", options.session.id);
-    this.sessionDir = options.session.dir;
+    this.session = Object.freeze({
+      id: options.session.id,
+      dir: options.session.dir,
+    });
+    this.sessionDir = this.session.dir;
     this.batonSessionId = options.session.id;
     this.now = options.now ?? (() => new Date());
   }
