@@ -314,7 +314,7 @@ export class Controller {
     if (binding) return binding.currentModel();
     this.targetFor(harnessTargetId);
     return (
-      this.options.session.meta.harnessSessions[harnessTargetId]?.model ??
+      this.options.session.meta.harnessSessions?.[harnessTargetId]?.model ??
       this.options.modelPreferences?.[harnessTargetId] ??
       null
     );
@@ -334,7 +334,7 @@ export class Controller {
     if (binding) return binding.currentEffort();
     this.targetFor(harnessTargetId);
     return (
-      this.options.session.meta.harnessSessions[harnessTargetId]?.effort ??
+      this.options.session.meta.harnessSessions?.[harnessTargetId]?.effort ??
       this.options.effortPreferences?.[harnessTargetId] ??
       null
     );
@@ -552,7 +552,7 @@ export class Controller {
     const { record, released } = this.admitDrivenTurn(binding, {
       turnId: turn.turnId,
       input: turn,
-      harnessSessionId: this.options.session.meta.harnessSessions[targetKey]?.harnessSessionId,
+      harnessSessionId: this.options.session.meta.harnessSessions?.[targetKey]?.harnessSessionId,
     });
     const coldStart = !binding.ref;
     if (coldStart) {
@@ -587,7 +587,7 @@ export class Controller {
       }
 
       const session = this.options.session;
-      const meta = session.meta.harnessSessions[targetKey];
+      const meta = session.meta.harnessSessions?.[targetKey];
       const contextEpochId = binding.contextEpochId;
       if (!contextEpochId) {
         throw new Error(`${targetKey} opened without a ContextEpoch`);
@@ -732,11 +732,11 @@ export class Controller {
     const session = this.options.session;
     const targetKey = binding.target.id;
     session.setHarnessSession(targetKey, {
-      ...session.meta.harnessSessions[targetKey],
+      ...session.meta.harnessSessions?.[targetKey],
       harnessTargetId: targetKey,
       harness: binding.adapter.harness,
       harnessSessionId:
-        session.meta.harnessSessions[targetKey]?.harnessSessionId ?? harnessSessionId,
+        session.meta.harnessSessions?.[targetKey]?.harnessSessionId ?? harnessSessionId,
       contextEpochId,
       syncedSeq: snapshot.payload.throughSeq,
     });

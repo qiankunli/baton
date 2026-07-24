@@ -763,7 +763,9 @@ export class BatonChatProtocol implements ChatProtocol {
     const selectedEffort = this.controller.currentEffort(this.harnessTargetId) ?? "default";
     const context = this.state.perTarget.get(this.harnessTargetId)?.contextUsage;
     const contextText = contextUsageText(context, selectedModel);
-    const targets = Object.keys(meta.harnessSessions).join(", ") || "-";
+    const targets = meta.harnessSessions
+      ? Object.keys(meta.harnessSessions).join(", ")
+      : "-";
     const text = [
       `Session: ${meta.batonSessionId}`,
       `Name: ${sessionDisplayTitle(meta)}`,
