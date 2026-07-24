@@ -124,4 +124,34 @@ describe("ProposalStore", () => {
     ).toThrow("pluginInstanceId");
     expect(() => proposals.get("not-a-proposal")).toThrow("invalid plugin proposal id");
   });
+
+  test("persists Builtin Resource proposals against ledger revision", () => {
+    const root = testRoot();
+    const firstStore = new ProposalStore({
+      session: testSession(root),
+      now: () => new Date("2026-07-25T00:00:00.000Z"),
+    });
+    const draft: ReconcileProposal = {
+      key: {
+        batonSessionId: "bs_test",
+        pluginInstanceId: "router_default",
+        resourceOwner: "baton",
+        resourceKind: "baton.turn",
+        resourceId: "t_1",
+      },
+      basedOnRevision: 42,
+      text: "Use Codex for this turn.",
+    };
+    const first = firstStore.record(draft);
+    const reopened = new ProposalStore({
+      session: testSession(root),
+      now: () => new Date("2026-07-26T00:00:00.000Z"),
+    });
+
+    expect(first.basedOnRevision).toBe(42);
+    expect(reopened.record(draft)).toEqual(first);
+    expect(
+      reopened.record({ ...draft, basedOnRevision: 43 }).proposalId,
+    ).not.toBe(first.proposalId);
+  });
 });

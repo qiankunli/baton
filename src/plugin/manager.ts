@@ -7,6 +7,13 @@ import {
   type ScheduledReconcile,
 } from "./controller.ts";
 import {
+  BuiltinController,
+  type BuiltinReconciler,
+  type BuiltinResource,
+  type BuiltinResourceKind,
+  BuiltinResourceProjection,
+} from "./builtin.ts";
+import {
   type Proposal,
   type ProposalOutcome,
   ProposalStore,
@@ -18,6 +25,7 @@ import {
 } from "./instance.ts";
 import {
   PluginBinding,
+  type BuiltinResourceContribution,
   type PluginPackage,
   pluginPackageKey,
   type ResourceContribution,
@@ -29,6 +37,13 @@ import {
   ReconcileDueQueue,
 } from "./queue.ts";
 import { PluginResourceStore } from "./resource.ts";
+import type { SessionHandle } from "../store/store.ts";
+import {
+  reconcileResourceOwner,
+  reconcileScopeId,
+  reconcileScopeLabel,
+  sameReconcileScope,
+} from "./reconcile-scope.ts";
 
 export interface ControllerRegistration {
   close(): void;
@@ -43,10 +58,24 @@ export interface ControllerDefinition<TSpec, TStatus> {
   now?: () => Date;
 }
 
+export interface BuiltinControllerDefinition<K extends BuiltinResourceKind> {
+  pluginInstanceId: string;
+  resourceKind: K;
+  reconciler: BuiltinReconciler<K>;
+  /** 当前 Controller 内不同 Builtin Resource 的并发数；默认 1。 */
+  maxConcurrency?: number;
+  now?: () => Date;
+}
+
 export interface ManagerOptions {
   /** 所有 Controller 合计可占用的执行容量；默认 1。 */
   maxTotalConcurrency?: number;
   proposals: ProposalStore;
+  /**
+   * 开启 Builtin Resource 投影时传完整 SessionHandle。只持有 ProposalStore 的调用方
+   * 仍可使用 PluginResource Controller，但不能注册 Builtin watch。
+   */
+  session?: Pick<SessionHandle, "id" | "dir" | "readEvents" | "subscribe">;
   /** 缺省与 ProposalStore 使用同一个 BatonSession。 */
   instances?: PluginInstanceStore;
   /** 当前进程可激活的可信、不可变 Package 版本。 */
@@ -93,28 +122,14 @@ interface ManagedController {
   enqueue(key: ReconcileKey): Promise<void>;
   close(): void;
   scheduledReconciles(): ScheduledReconcile[];
-  setNextReconcileAt(key: ReconcileKey, next: Date): void;
+  initialReconciles?(): ReconcileKey[];
+  /** PluginResource 持久化 due time；Builtin Resource 靠 ledger replay 在重启后重新唤醒。 */
+  setNextReconcileAt?(key: ReconcileKey, next: Date): void;
 }
 
 interface RetryState {
   key: ReconcileKey;
   attempt: number;
-}
-
-function scopeId(scope: ReconcileScope): string {
-  return JSON.stringify([scope.batonSessionId, scope.pluginInstanceId, scope.resourceKind]);
-}
-
-function scopeLabel(scope: ReconcileScope): string {
-  return `${scope.batonSessionId}/${scope.pluginInstanceId}/${scope.resourceKind}`;
-}
-
-function sameScope(left: ReconcileScope, right: ReconcileScope): boolean {
-  return (
-    left.batonSessionId === right.batonSessionId &&
-    left.pluginInstanceId === right.pluginInstanceId &&
-    left.resourceKind === right.resourceKind
-  );
 }
 
 function positiveDelay(name: string, value: number): void {
@@ -136,12 +151,16 @@ export class Manager {
   private readonly activations = new Map<string, Promise<void>>();
   private readonly capacity: ReconcileCapacity;
   private readonly proposals: ProposalStore;
+  private readonly builtinProjection?: BuiltinResourceProjection;
+  private readonly unsubscribeBuiltinProjection?: () => void;
   private readonly onProposal: ManagerOptions["onProposal"];
   private readonly onActivationError: ManagerOptions["onActivationError"];
   private readonly onReconcileError: ManagerOptions["onReconcileError"];
   private readonly retryInitialDelayMs: number;
   private readonly retryMaxDelayMs: number;
   private readonly retries = new Map<string, RetryState>();
+  /** Binding 激活完成前注册项可回滚，但不能提前消费 Event 或产生 Output。 */
+  private readonly suspendedControllers = new Set<string>();
   private readonly now: () => Date;
   private readonly dueQueue: ReconcileDueQueue;
   private started = false;
@@ -164,6 +183,13 @@ export class Manager {
       this.instances.session.dir !== options.proposals.session.dir
     ) {
       throw new Error("plugin InstanceStore and ProposalStore must own the same BatonSession");
+    }
+    if (
+      options.session &&
+      (options.session.id !== options.proposals.session.id ||
+        options.session.dir !== options.proposals.session.dir)
+    ) {
+      throw new Error("plugin Manager session and ProposalStore must own the same BatonSession");
     }
     for (const plugin of options.packages ?? []) {
       validatePluginPackage(plugin);
@@ -192,10 +218,25 @@ export class Manager {
         });
       },
     });
+    if (options.session) {
+      this.builtinProjection = new BuiltinResourceProjection({
+        session: options.session,
+      });
+      this.unsubscribeBuiltinProjection = this.builtinProjection.subscribe((resource) => {
+        this.enqueueBuiltinResource(resource);
+      });
+    }
   }
 
   registerController<TSpec, TStatus>(
     definition: ControllerDefinition<TSpec, TStatus>,
+  ): ControllerRegistration {
+    return this.registerControllerInternal(definition, false);
+  }
+
+  private registerControllerInternal<TSpec, TStatus>(
+    definition: ControllerDefinition<TSpec, TStatus>,
+    suspended: boolean,
   ): ControllerRegistration {
     if (this.closed) throw new Error("plugin Manager is closed");
     if (definition.store.batonSessionId !== this.proposals.batonSessionId) {
@@ -208,7 +249,7 @@ export class Manager {
       executeWithCapacity: (execute) => this.capacity.run(execute),
       onProposal: (proposal) => this.publishProposal(proposal),
       onReconcileSuccess: (key, next) => {
-        if (this.controllers.get(scopeId(key)) !== controller) return;
+        if (this.controllers.get(reconcileScopeId(key)) !== controller) return;
         this.retries.delete(reconcileKeyId(key));
         if (this.started) this.dueQueue.schedule(key, next);
       },
@@ -216,42 +257,52 @@ export class Manager {
         this.retry(controller, key, error);
       },
     });
-    const id = scopeId(controller.scope);
-    if (this.controllers.has(id)) {
-      throw new Error(`plugin Controller already registered for ${scopeLabel(controller.scope)}`);
+    return this.installController(controller, suspended);
+  }
+
+  registerBuiltinController<K extends BuiltinResourceKind>(
+    definition: BuiltinControllerDefinition<K>,
+  ): ControllerRegistration {
+    return this.registerBuiltinControllerInternal(definition, false);
+  }
+
+  private registerBuiltinControllerInternal<K extends BuiltinResourceKind>(
+    definition: BuiltinControllerDefinition<K>,
+    suspended: boolean,
+  ): ControllerRegistration {
+    if (this.closed) throw new Error("plugin Manager is closed");
+    if (!this.builtinProjection) {
+      throw new Error(
+        "plugin Manager requires a SessionHandle to watch Builtin Resources",
+      );
     }
-    this.controllers.set(id, controller);
-    try {
-      if (this.started) this.restoreSchedules(controller);
-    } catch (error) {
-      this.controllers.delete(id);
-      controller.close();
-      this.dueQueue.removeScope(controller.scope);
-      throw error;
-    }
-    let active = true;
-    return Object.freeze({
-      close: () => {
-        if (!active) return;
-        active = false;
-        if (this.controllers.get(id) !== controller) return;
-        this.controllers.delete(id);
-        controller.close();
-        this.dueQueue.removeScope(controller.scope);
-        for (const [keyId, retry] of this.retries) {
-          if (sameScope(retry.key, controller.scope)) this.retries.delete(keyId);
-        }
+    const controller = new BuiltinController({
+      ...definition,
+      projection: this.builtinProjection,
+      executeWithCapacity: (execute) => this.capacity.run(execute),
+      onProposal: (proposal) => this.publishProposal(proposal),
+      onReconcileSuccess: (key, next) => {
+        if (this.controllers.get(reconcileScopeId(key)) !== controller) return;
+        this.retries.delete(reconcileKeyId(key));
+        if (this.started) this.dueQueue.schedule(key, next);
+      },
+      onReconcileError: (key, error) => {
+        this.retry(controller, key, error);
       },
     });
+    return this.installController(controller, suspended);
   }
 
   enqueue(key: ReconcileKey): Promise<void> {
     if (this.closed) return Promise.reject(new Error("plugin Manager is closed"));
-    const controller = this.controllers.get(scopeId(key));
+    const controller = this.controllers.get(reconcileScopeId(key));
     if (!controller) {
       return Promise.reject(
-        new Error(`no plugin Controller registered for ${scopeLabel(key)}`),
+        new Error(`no plugin Controller registered for ${reconcileScopeLabel(key)}`),
       );
+    }
+    if (this.suspendedControllers.has(reconcileScopeId(key))) {
+      return Promise.reject(new Error("plugin Controller is not active"));
     }
     return controller.enqueue(key);
   }
@@ -292,9 +343,12 @@ export class Manager {
     }
     const plugin = await this.resolvePackage(instance.pluginId, instance.packageVersion);
 
-    const binding = new PluginBinding(instance, (contribution) =>
-      this.bindResource(instance.pluginInstanceId, contribution),
-    );
+    const binding = new PluginBinding(instance, {
+      registerResource: (contribution) =>
+        this.bindResource(instance.pluginInstanceId, contribution),
+      watchBuiltinResource: (contribution) =>
+        this.bindBuiltinResource(instance.pluginInstanceId, contribution),
+    });
     let activation!: Promise<void>;
     activation = Promise.resolve()
       .then(async () => {
@@ -303,6 +357,7 @@ export class Manager {
           binding.completeActivation();
           if (this.closed) throw new Error("plugin Manager is closed");
           this.bindings.set(pluginInstanceId, binding);
+          this.resumeControllers(pluginInstanceId);
         } catch (error) {
           try {
             await binding.close();
@@ -482,18 +537,23 @@ export class Manager {
       if (failure) this.reportActivationFailure(failure);
     }
     await this.restoreProposals();
-    const scheduled = [...this.controllers.values()].map((controller) => ({
+    const controllers = [...this.controllers.values()];
+    const scheduled = controllers.map((controller) => ({
       controller,
       entries: controller.scheduledReconciles(),
     }));
     for (const { controller, entries } of scheduled) {
-      if (this.controllers.get(scopeId(controller.scope)) !== controller) continue;
+      if (this.controllers.get(reconcileScopeId(controller.scope)) !== controller) continue;
       for (const entry of entries) {
         this.dueQueue.schedule(entry.key, entry.nextReconcileAt);
       }
     }
     if (this.closed) throw new Error("plugin Manager is closed");
     this.started = true;
+    for (const controller of controllers) {
+      if (this.controllers.get(reconcileScopeId(controller.scope)) !== controller) continue;
+      this.enqueueInitial(controller);
+    }
   }
 
   private async resolvePackage(
@@ -536,14 +596,32 @@ export class Manager {
     pluginInstanceId: string,
     contribution: ResourceContribution<TSpec, TStatus>,
   ): () => void {
-    const registration = this.registerController({
-      ...contribution,
-      store: new PluginResourceStore({
-        session: this.instances.session,
+    const registration = this.registerControllerInternal(
+      {
+        ...contribution,
+        store: new PluginResourceStore({
+          session: this.instances.session,
+          pluginInstanceId,
+        }),
+        now: this.now,
+      },
+      true,
+    );
+    return () => registration.close();
+  }
+
+  private bindBuiltinResource<K extends BuiltinResourceKind>(
+    pluginInstanceId: string,
+    contribution: BuiltinResourceContribution<K>,
+  ): () => void {
+    const registration = this.registerBuiltinControllerInternal(
+      {
+        ...contribution,
         pluginInstanceId,
-      }),
-      now: this.now,
-    });
+        now: this.now,
+      },
+      true,
+    );
     return () => registration.close();
   }
 
@@ -561,7 +639,10 @@ export class Manager {
     for (const controller of this.controllers.values()) controller.close();
     this.controllers.clear();
     this.retries.clear();
+    this.suspendedControllers.clear();
     this.dueQueue.close();
+    this.unsubscribeBuiltinProjection?.();
+    this.builtinProjection?.close();
     if (errors.length === 1) throw errors[0];
     if (errors.length > 1) throw new AggregateError(errors, "could not close plugin Manager");
   }
@@ -580,8 +661,89 @@ export class Manager {
     }
   }
 
+  private installController(
+    controller: ManagedController,
+    suspended = false,
+  ): ControllerRegistration {
+    const id = reconcileScopeId(controller.scope);
+    if (this.controllers.has(id)) {
+      controller.close();
+      throw new Error(
+        `plugin Controller already registered for ${reconcileScopeLabel(controller.scope)}`,
+      );
+    }
+    this.controllers.set(id, controller);
+    if (suspended) this.suspendedControllers.add(id);
+    try {
+      if (this.started && !suspended) {
+        this.restoreSchedules(controller);
+        this.enqueueInitial(controller);
+      }
+    } catch (error) {
+      this.controllers.delete(id);
+      this.suspendedControllers.delete(id);
+      controller.close();
+      this.dueQueue.removeScope(controller.scope);
+      throw error;
+    }
+    let active = true;
+    return Object.freeze({
+      close: () => {
+        if (!active) return;
+        active = false;
+        if (this.controllers.get(id) !== controller) return;
+        this.controllers.delete(id);
+        this.suspendedControllers.delete(id);
+        controller.close();
+        this.dueQueue.removeScope(controller.scope);
+        for (const [keyId, retry] of this.retries) {
+          if (sameReconcileScope(retry.key, controller.scope)) this.retries.delete(keyId);
+        }
+      },
+    });
+  }
+
+  private enqueueInitial(controller: ManagedController): void {
+    for (const key of controller.initialReconciles?.() ?? []) {
+      void controller.enqueue(key).catch(() => {
+        // Queue callback has already scheduled retry and reported diagnostics.
+      });
+    }
+  }
+
+  private enqueueBuiltinResource(resource: BuiltinResource): void {
+    if (!this.started || this.closed) return;
+    for (const controller of this.controllers.values()) {
+      if (this.suspendedControllers.has(reconcileScopeId(controller.scope))) continue;
+      if (
+        reconcileResourceOwner(controller.scope) !== "baton" ||
+        controller.scope.resourceKind !== resource.kind
+      ) {
+        continue;
+      }
+      void controller.enqueue({
+        ...controller.scope,
+        resourceId: resource.metadata.resourceId,
+      }).catch(() => {
+        // Queue callback has already scheduled retry and reported diagnostics.
+      });
+    }
+  }
+
+  private resumeControllers(pluginInstanceId: string): void {
+    for (const controller of this.controllers.values()) {
+      if (controller.scope.pluginInstanceId !== pluginInstanceId) continue;
+      const id = reconcileScopeId(controller.scope);
+      if (!this.suspendedControllers.delete(id)) continue;
+      if (this.started) {
+        this.restoreSchedules(controller);
+        this.enqueueInitial(controller);
+      }
+    }
+  }
+
   private retry(controller: ManagedController, key: ReconcileKey, error: unknown): void {
-    if (this.controllers.get(scopeId(key)) !== controller) return;
+    if (this.controllers.get(reconcileScopeId(key)) !== controller) return;
     const id = reconcileKeyId(key);
     const attempt = (this.retries.get(id)?.attempt ?? 0) + 1;
     this.retries.set(id, { key, attempt });
@@ -600,7 +762,7 @@ export class Manager {
     );
     const nextRetryAt = new Date(now.getTime() + delay);
     try {
-      controller.setNextReconcileAt(key, nextRetryAt);
+      controller.setNextReconcileAt?.(key, nextRetryAt);
       if (this.started) this.dueQueue.schedule(key, nextRetryAt);
       this.reportFailure({
         key,
@@ -613,7 +775,7 @@ export class Manager {
         key,
         error: new AggregateError(
           [error, retryError],
-          `could not persist retry for ${scopeLabel(key)}/${key.resourceId}`,
+          `could not persist retry for ${reconcileScopeLabel(key)}/${key.resourceId}`,
         ),
         attempt,
       });

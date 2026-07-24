@@ -1,4 +1,8 @@
 import type { Reconciler } from "./controller.ts";
+import type {
+  BuiltinReconciler,
+  BuiltinResourceKind,
+} from "./builtin.ts";
 import type { PluginInstance } from "./instance.ts";
 
 export interface ResourceContribution<TSpec, TStatus> {
@@ -8,10 +12,21 @@ export interface ResourceContribution<TSpec, TStatus> {
   maxConcurrency?: number;
 }
 
+export interface BuiltinResourceContribution<K extends BuiltinResourceKind> {
+  resourceKind: K;
+  reconciler: BuiltinReconciler<K>;
+  /** 同一种 Builtin Resource 内允许同时执行的不同对象数；默认 1。 */
+  maxConcurrency?: number;
+}
+
 export interface PluginActivationContext {
   readonly instance: PluginInstance;
   registerResource<TSpec, TStatus>(
     contribution: ResourceContribution<TSpec, TStatus>,
+  ): void;
+  /** 订阅 Baton 从 Event Ledger 投影出的只读 Builtin Resource。 */
+  watchBuiltinResource<K extends BuiltinResourceKind>(
+    contribution: BuiltinResourceContribution<K>,
   ): void;
   /** Connector、订阅等非 Resource 资源也归当前 Binding 统一关闭。 */
   onClose(cleanup: () => Promise<void> | void): void;
@@ -29,6 +44,15 @@ export interface PluginPackage {
 type ResourceRegistrar = <TSpec, TStatus>(
   contribution: ResourceContribution<TSpec, TStatus>,
 ) => () => void;
+
+type BuiltinResourceRegistrar = <K extends BuiltinResourceKind>(
+  contribution: BuiltinResourceContribution<K>,
+) => () => void;
+
+interface PluginRegistrars {
+  registerResource: ResourceRegistrar;
+  watchBuiltinResource: BuiltinResourceRegistrar;
+}
 
 function nonEmpty(name: string, value: string): void {
   if (!value.trim()) throw new Error(`${name} must not be empty`);
@@ -51,15 +75,15 @@ export function validatePluginPackage(plugin: PluginPackage): void {
  */
 export class PluginBinding implements PluginActivationContext {
   readonly instance: PluginInstance;
-  private readonly register: ResourceRegistrar;
+  private readonly registrars: PluginRegistrars;
   private readonly cleanups: Array<() => Promise<void> | void> = [];
   private sealed = false;
   private closed = false;
   private closing?: Promise<void>;
 
-  constructor(instance: PluginInstance, register: ResourceRegistrar) {
+  constructor(instance: PluginInstance, registrars: PluginRegistrars) {
     this.instance = instance;
-    this.register = register;
+    this.registrars = registrars;
   }
 
   registerResource<TSpec, TStatus>(
@@ -69,7 +93,18 @@ export class PluginBinding implements PluginActivationContext {
     if (!contribution.resourceKind.trim()) {
       throw new Error("resourceKind must not be empty");
     }
-    const close = this.register(contribution);
+    const close = this.registrars.registerResource(contribution);
+    this.cleanups.push(close);
+  }
+
+  watchBuiltinResource<K extends BuiltinResourceKind>(
+    contribution: BuiltinResourceContribution<K>,
+  ): void {
+    this.assertRegistering();
+    if (!contribution.resourceKind.trim()) {
+      throw new Error("resourceKind must not be empty");
+    }
+    const close = this.registrars.watchBuiltinResource(contribution);
     this.cleanups.push(close);
   }
 

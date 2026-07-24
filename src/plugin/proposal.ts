@@ -12,7 +12,11 @@ import { dirname, join } from "node:path";
 
 import { withFileLock } from "../store/file-lock.ts";
 import type { SessionHandle } from "../store/store.ts";
-import type { ReconcileKey, ReconcileProposal } from "./controller.ts";
+import {
+  type ReconcileKey,
+  type ReconcileProposal,
+} from "./controller.ts";
+import { reconcileResourceOwner } from "./reconcile-scope.ts";
 
 export type ProposalOutcome = "submitted" | "dismissed";
 
@@ -24,11 +28,11 @@ export interface ProposalResolution {
 /**
  * Reconciler 建议给用户的持久文本草稿。resolution 缺省即待处理，不另造 pending 状态字段。
  */
-export interface Proposal extends ReconcileProposal {
+export type Proposal = ReconcileProposal & {
   readonly proposalId: string;
   readonly createdAt: string;
   readonly resolution?: ProposalResolution;
-}
+};
 
 export interface ProposalStoreOptions {
   session: Pick<SessionHandle, "id" | "dir">;
@@ -62,13 +66,27 @@ function sha256(value: string): string {
 
 function proposalId(proposal: ReconcileProposal): string {
   const textDigest = sha256(proposal.text);
+  if (proposal.basedOnGeneration !== undefined) {
+    // 保留首版 PluginResource Proposal 的稳定身份，升级后已有文件仍可校验。
+    return `pp_${sha256(
+      JSON.stringify([
+        proposal.key.batonSessionId,
+        proposal.key.pluginInstanceId,
+        proposal.key.resourceKind,
+        proposal.key.resourceId,
+        proposal.basedOnGeneration,
+        textDigest,
+      ]),
+    )}`;
+  }
   return `pp_${sha256(
     JSON.stringify([
       proposal.key.batonSessionId,
       proposal.key.pluginInstanceId,
+      "baton",
       proposal.key.resourceKind,
       proposal.key.resourceId,
-      proposal.basedOnGeneration,
+      proposal.basedOnRevision,
       textDigest,
     ]),
   )}`;
@@ -90,8 +108,29 @@ function sameKey(left: ReconcileKey, right: ReconcileKey): boolean {
     left.batonSessionId === right.batonSessionId &&
     left.pluginInstanceId === right.pluginInstanceId &&
     left.resourceKind === right.resourceKind &&
-    left.resourceId === right.resourceId
+    left.resourceId === right.resourceId &&
+    reconcileResourceOwner(left) === reconcileResourceOwner(right)
   );
+}
+
+function sameBasis(left: ReconcileProposal, right: ReconcileProposal): boolean {
+  return (
+    left.basedOnGeneration === right.basedOnGeneration &&
+    left.basedOnRevision === right.basedOnRevision
+  );
+}
+
+interface SerializedProposal {
+  proposalId?: unknown;
+  key?: unknown;
+  basedOnGeneration?: unknown;
+  basedOnRevision?: unknown;
+  text?: unknown;
+  createdAt?: unknown;
+  resolution?: {
+    outcome?: unknown;
+    resolvedAt?: unknown;
+  };
 }
 
 export class ProposalStore {
@@ -123,20 +162,18 @@ export class ProposalStore {
         const current = this.readProposal(path, id);
         if (
           !sameKey(current.key, owned.key) ||
-          current.basedOnGeneration !== owned.basedOnGeneration ||
+          !sameBasis(current, owned) ||
           current.text !== owned.text
         ) {
           throw new Error(`plugin proposal identity collision: ${id}`);
         }
         return current;
       }
-      const proposal: Proposal = {
+      const proposal = {
         proposalId: id,
-        key: owned.key,
-        basedOnGeneration: owned.basedOnGeneration,
-        text: owned.text,
+        ...owned,
         createdAt: this.timestamp(),
-      };
+      } as Proposal;
       writeJsonAtomic(path, proposal);
       return proposal;
     });
@@ -200,22 +237,46 @@ export class ProposalStore {
       pluginInstanceId: draft.key.pluginInstanceId,
       resourceKind: draft.key.resourceKind,
       resourceId: draft.key.resourceId,
+      ...(draft.key.resourceOwner === undefined
+        ? {}
+        : { resourceOwner: draft.key.resourceOwner }),
     };
-    for (const [name, value] of Object.entries(key)) assertPathSegment(name, value);
+    for (const [name, value] of Object.entries({
+      batonSessionId: key.batonSessionId,
+      pluginInstanceId: key.pluginInstanceId,
+      resourceKind: key.resourceKind,
+      resourceId: key.resourceId,
+    })) {
+      assertPathSegment(name, value);
+    }
     if (key.batonSessionId !== this.batonSessionId) {
       throw new Error(
         `plugin proposal batonSessionId must be ${this.batonSessionId}, got ${key.batonSessionId}`,
       );
     }
-    positiveInteger("basedOnGeneration", draft.basedOnGeneration);
+    const owner = reconcileResourceOwner(key);
+    if (owner === "plugin") {
+      positiveInteger("basedOnGeneration", draft.basedOnGeneration);
+      if (draft.basedOnRevision !== undefined) {
+        throw new Error("PluginResource proposal must not set basedOnRevision");
+      }
+    } else {
+      positiveInteger("basedOnRevision", draft.basedOnRevision);
+      if (draft.basedOnGeneration !== undefined) {
+        throw new Error("Builtin Resource proposal must not set basedOnGeneration");
+      }
+    }
     if (typeof draft.text !== "string" || !draft.text.trim()) {
       throw new Error("plugin proposal text must not be empty");
     }
-    return Object.freeze({
+    const owned = {
       key: Object.freeze(key),
-      basedOnGeneration: draft.basedOnGeneration,
       text: draft.text,
-    });
+      ...(owner === "plugin"
+        ? { basedOnGeneration: draft.basedOnGeneration }
+        : { basedOnRevision: draft.basedOnRevision }),
+    } as ReconcileProposal;
+    return Object.freeze(owned);
   }
 
   private readProposal(path: string, expectedId: string): Proposal {
@@ -233,15 +294,21 @@ export class ProposalStore {
       if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new Error("root must be a JSON object");
       }
-      const proposal = value as Partial<Proposal>;
+      const proposal = value as SerializedProposal;
       if (proposal.proposalId !== expectedId) {
         throw new Error(`proposalId must be ${expectedId}`);
       }
-      const draft = this.validateDraft({
+      const rawDraft = {
         key: proposal.key as ReconcileKey,
-        basedOnGeneration: proposal.basedOnGeneration as number,
         text: proposal.text as string,
-      });
+        ...(proposal.basedOnGeneration === undefined
+          ? {}
+          : { basedOnGeneration: proposal.basedOnGeneration as number }),
+        ...(proposal.basedOnRevision === undefined
+          ? {}
+          : { basedOnRevision: proposal.basedOnRevision as number }),
+      } as ReconcileProposal;
+      const draft = this.validateDraft(rawDraft);
       if (proposal.proposalId !== proposalId(draft)) {
         throw new Error("proposalId does not match proposal content");
       }
@@ -262,11 +329,11 @@ export class ProposalStore {
         };
       }
       return {
-        proposalId: proposal.proposalId,
+        proposalId: proposal.proposalId as string,
         ...draft,
-        createdAt: proposal.createdAt,
+        createdAt: proposal.createdAt as string,
         ...(resolution ? { resolution } : {}),
-      };
+      } as Proposal;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       throw new Error(`invalid plugin proposal ${path}: ${detail}`);
