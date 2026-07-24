@@ -37,7 +37,12 @@ import {
   ReconcileDueQueue,
 } from "./queue.ts";
 import { PluginResourceStore } from "./resource.ts";
+import { createPluginResourceClient } from "./resource-client.ts";
 import type { SessionHandle } from "../store/store.ts";
+import {
+  emptyBatonSnapshot,
+  type BatonSnapshot,
+} from "./baton-snapshot.ts";
 import {
   reconcileResourceOwner,
   reconcileScopeId,
@@ -80,6 +85,8 @@ export interface ManagerOptions {
   instances?: PluginInstanceStore;
   /** 当前进程可激活的可信、不可变 Package 版本。 */
   packages?: readonly PluginPackage[];
+  /** reconcile 调用前读取并冻结的当前 BatonSession 视图。 */
+  snapshot?: () => BatonSnapshot;
   /** 按需加载已安装 Package；fresh 用于开发期 `/reload-plugins` 绕过模块缓存。 */
   loadPackage?(
     pluginId: string,
@@ -147,6 +154,7 @@ export class Manager {
   private readonly packages = new Map<string, PluginPackage>();
   private readonly packageLoads = new Map<string, Promise<PluginPackage>>();
   private readonly loadPackage: ManagerOptions["loadPackage"];
+  private readonly snapshot: () => BatonSnapshot;
   private readonly bindings = new Map<string, PluginBinding>();
   private readonly activations = new Map<string, Promise<void>>();
   private readonly capacity: ReconcileCapacity;
@@ -200,6 +208,9 @@ export class Manager {
       this.packages.set(key, plugin);
     }
     this.loadPackage = options.loadPackage;
+    this.snapshot =
+      options.snapshot ??
+      (() => emptyBatonSnapshot(options.proposals.batonSessionId));
     this.onProposal = options.onProposal;
     this.onActivationError = options.onActivationError;
     this.onReconcileError = options.onReconcileError;
@@ -246,6 +257,7 @@ export class Manager {
     }
     const controller = new Controller({
       ...definition,
+      snapshot: this.snapshot,
       executeWithCapacity: (execute) => this.capacity.run(execute),
       onProposal: (proposal) => this.publishProposal(proposal),
       onReconcileSuccess: (key, next) => {
@@ -279,6 +291,7 @@ export class Manager {
     const controller = new BuiltinController({
       ...definition,
       projection: this.builtinProjection,
+      snapshot: this.snapshot,
       executeWithCapacity: (execute) => this.capacity.run(execute),
       onProposal: (proposal) => this.publishProposal(proposal),
       onReconcileSuccess: (key, next) => {
@@ -343,12 +356,21 @@ export class Manager {
     }
     const plugin = await this.resolvePackage(instance.pluginId, instance.packageVersion);
 
-    const binding = new PluginBinding(instance, {
-      registerResource: (contribution) =>
-        this.bindResource(instance.pluginInstanceId, contribution),
-      watchBuiltinResource: (contribution) =>
-        this.bindBuiltinResource(instance.pluginInstanceId, contribution),
-    });
+    const binding = new PluginBinding(
+      instance,
+      {
+        registerResource: (contribution) =>
+          this.bindResource(instance.pluginInstanceId, contribution),
+        watchBuiltinResource: (contribution) =>
+          this.bindBuiltinResource(instance.pluginInstanceId, contribution),
+      },
+      createPluginResourceClient(
+        new PluginResourceStore({
+          session: this.instances.session,
+          pluginInstanceId: instance.pluginInstanceId,
+        }),
+      ),
+    );
     let activation!: Promise<void>;
     activation = Promise.resolve()
       .then(async () => {

@@ -124,10 +124,13 @@ describe("Baton Builtin Resources", () => {
         context.watchBuiltinResource({
           resourceKind: BATON_TURN_RESOURCE_KIND,
           reconciler: {
-            async reconcile({ resource }) {
+            async reconcile(baton, resource) {
+              expect(Object.isFrozen(baton)).toBe(true);
+              expect(baton.session.batonSessionId).toBe(session.id);
               reconciled.push(resource.metadata.resourceId);
               return {
-                proposedInput: {
+                output: {
+                  kind: "proposed-input",
                   text: `Route: ${resource.data.userText}`,
                 },
               };

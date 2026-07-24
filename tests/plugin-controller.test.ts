@@ -5,7 +5,6 @@ import { join } from "node:path";
 
 import {
   Controller,
-  type ReconcileContext,
   type ReconcileKey,
   type ReconcileProposal,
   type Reconciler,
@@ -73,15 +72,24 @@ describe("plugin Controller", () => {
       spec: { requirement: "ship it" },
     });
     const reconciler: Reconciler<Spec, Status> = {
-      async reconcile(context) {
-        expect(Object.isFrozen(context.resource)).toBe(true);
-        expect(Object.isFrozen(context.resource.spec)).toBe(true);
-        await context.patchStatus({
-          phase: "waiting_for_review",
-          observedGeneration: context.resource.metadata.generation,
-        });
+      async reconcile(baton, resource) {
+        expect(Object.isFrozen(baton)).toBe(true);
+        expect(Object.isFrozen(resource)).toBe(true);
+        expect(Object.isFrozen(resource.spec)).toBe(true);
+        resources.patchStatus<Spec, Status>(
+          resource.kind,
+          resource.metadata.resourceId,
+          {
+            phase: "waiting_for_review",
+            observedGeneration: resource.metadata.generation,
+          },
+          { expectedResourceVersion: resource.metadata.resourceVersion },
+        );
         return {
-          proposedInput: { text: "Please review the implementation." },
+          output: {
+            kind: "proposed-input",
+            text: "Please review the implementation.",
+          },
           requeueAfterMs: 5_000,
         };
       },
@@ -154,7 +162,12 @@ describe("plugin Controller", () => {
         async reconcile() {
           entered.resolve();
           await release.promise;
-          return { proposedInput: { text: "Implement the old requirement." } };
+          return {
+            output: {
+              kind: "proposed-input",
+              text: "Implement the old requirement.",
+            },
+          };
         },
       },
       onProposal() {},
@@ -165,7 +178,9 @@ describe("plugin Controller", () => {
     resources.replaceSpec("ReqLoopRun", "run_1", { requirement: "approved revision" });
     release.resolve();
 
-    await expect(running).rejects.toThrow("plugin resource version conflict");
+    await expect(running).rejects.toThrow(
+      "plugin resource generation changed during reconcile",
+    );
   });
 
   test("serializes the same resource across separate Controller instances", async () => {
@@ -260,9 +275,9 @@ describe("plugin Controller", () => {
       store: resources,
       resourceKind: "ReqLoopRun",
       reconciler: {
-        async reconcile(context) {
-          seen.push(context.resource.metadata.resourceId);
-          if (context.resource.metadata.resourceId === "run_1") await gate.promise;
+        async reconcile(_baton, resource) {
+          seen.push(resource.metadata.resourceId);
+          if (resource.metadata.resourceId === "run_1") await gate.promise;
         },
       },
       onProposal() {},
@@ -326,8 +341,8 @@ describe("plugin Controller", () => {
       resourceKind: "ReqLoopRun",
       maxConcurrency: 2,
       reconciler: {
-        async reconcile(context) {
-          started.push(context.resource.metadata.resourceId);
+        async reconcile(_baton, resource) {
+          started.push(resource.metadata.resourceId);
           await gate.promise;
         },
       },
@@ -358,8 +373,8 @@ describe("plugin Controller", () => {
       store: resources,
       resourceKind: "ReqLoopRun",
       reconciler: {
-        async reconcile(context) {
-          if (context.resource.metadata.resourceId === "run_1") {
+        async reconcile(_baton, resource) {
+          if (resource.metadata.resourceId === "run_1") {
             throw new Error("connector unavailable");
           }
         },
@@ -386,9 +401,9 @@ describe("plugin Controller", () => {
       store: resources,
       resourceKind: "ReqLoopRun",
       reconciler: {
-        async reconcile(context) {
+        async reconcile(_baton, resource) {
           await gate.promise;
-          seen.push(context.resource.metadata.resourceId);
+          seen.push(resource.metadata.resourceId);
         },
       },
       onProposal() {},
@@ -411,7 +426,7 @@ describe("plugin Controller", () => {
       spec: { requirement: "ship it" },
     });
     const invalid: Reconciler<Spec, Status> = {
-      async reconcile(_context: ReconcileContext<Spec, Status>) {
+      async reconcile() {
         return { requeueAfterMs: 0 };
       },
     };

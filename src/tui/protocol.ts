@@ -36,6 +36,7 @@ import {
 } from "../event/types.ts";
 import {
   createHarnessAdapter,
+  HARNESS_REGISTRY,
   harnessDefinitionFor,
   harnessShortName,
   resolveDefaultHarnessTarget,
@@ -45,6 +46,7 @@ import type {
   Interaction,
   PermissionOption,
 } from "../interaction/types.ts";
+import { createBatonSnapshot } from "../plugin/baton-snapshot.ts";
 import { Manager } from "../plugin/manager.ts";
 import { MarketplaceRegistry } from "../plugin/marketplace/index.ts";
 import { ProposalStore } from "../plugin/proposal.ts";
@@ -649,6 +651,18 @@ export class BatonChatProtocol implements ChatProtocol {
     return new Manager({
       session: this.session,
       proposals: new ProposalStore({ session: this.session }),
+      snapshot: () =>
+        createBatonSnapshot({
+          batonSessionId: this.session.id,
+          cwd: this.session.meta.cwd,
+          state: this.state,
+          inputs: this.controller.inputs,
+          harnessTargets: HARNESS_REGISTRY.map((definition) => ({
+            id: definition.id,
+            harness: definition.id,
+            label: definition.label,
+          })),
+        }),
       loadPackage: (pluginId, version, options) =>
         this.marketplace.load(pluginId, version, options),
       onProposal: (proposal) => {

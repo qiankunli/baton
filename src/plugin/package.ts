@@ -4,6 +4,7 @@ import type {
   BuiltinResourceKind,
 } from "./builtin.ts";
 import type { PluginInstance } from "./instance.ts";
+import type { PluginResourceClient } from "./resource-client.ts";
 
 export interface ResourceContribution<TSpec, TStatus> {
   resourceKind: string;
@@ -21,6 +22,8 @@ export interface BuiltinResourceContribution<K extends BuiltinResourceKind> {
 
 export interface PluginActivationContext {
   readonly instance: PluginInstance;
+  /** 当前 PluginInstance 自有 Resource 的读写入口；Builtin Resource 始终只读。 */
+  readonly resources: PluginResourceClient;
   registerResource<TSpec, TStatus>(
     contribution: ResourceContribution<TSpec, TStatus>,
   ): void;
@@ -75,15 +78,21 @@ export function validatePluginPackage(plugin: PluginPackage): void {
  */
 export class PluginBinding implements PluginActivationContext {
   readonly instance: PluginInstance;
+  readonly resources: PluginResourceClient;
   private readonly registrars: PluginRegistrars;
   private readonly cleanups: Array<() => Promise<void> | void> = [];
   private sealed = false;
   private closed = false;
   private closing?: Promise<void>;
 
-  constructor(instance: PluginInstance, registrars: PluginRegistrars) {
+  constructor(
+    instance: PluginInstance,
+    registrars: PluginRegistrars,
+    resources: PluginResourceClient,
+  ) {
     this.instance = instance;
     this.registrars = registrars;
+    this.resources = resources;
   }
 
   registerResource<TSpec, TStatus>(
