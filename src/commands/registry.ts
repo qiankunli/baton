@@ -11,6 +11,7 @@ export type CommandName =
   | "effort"
   | "compact"
   | "plugins"
+  | "reload-plugins"
   | "sessions"
   | "status"
   | "new"
@@ -52,6 +53,12 @@ export const COMMANDS: readonly CommandDefinition[] = [
   {
     name: "plugins",
     description: "Manage Baton plugins",
+    scope: "baton",
+    runPolicy: "always",
+  },
+  {
+    name: "reload-plugins",
+    description: "Reload enabled plugins in the current BatonSession",
     scope: "baton",
     runPolicy: "always",
   },

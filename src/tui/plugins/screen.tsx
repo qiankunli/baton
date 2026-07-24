@@ -20,8 +20,11 @@ import {
   type InstalledPluginPackage,
   type RegisteredMarketplace,
 } from "../../plugin/marketplace/index.ts";
+import type { PluginInstance } from "../../plugin/instance.ts";
+import { Manager } from "../../plugin/manager.ts";
 import {
   isPackageInstalled,
+  packageInstances,
   pluginBrowserItems,
   pluginPanelHeight,
   type PluginBrowserData,
@@ -40,6 +43,7 @@ const TABS: ReadonlyArray<{ name: string; description: string; value: PluginTab 
 interface PluginScreenProps {
   protocol: ChatProtocol;
   registry: MarketplaceRegistry;
+  manager: Manager;
   theme: Theme;
   onBack: () => void;
 }
@@ -48,11 +52,18 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function loadBrowserData(registry: MarketplaceRegistry): PluginBrowserData {
+function loadBrowserData(
+  registry: MarketplaceRegistry,
+  manager: Manager,
+): PluginBrowserData {
   const errors: PluginBrowserError[] = [];
   let available: readonly AvailablePluginPackage[] = [];
   let installed: readonly InstalledPluginPackage[] = [];
   let marketplaces: readonly RegisteredMarketplace[] = [];
+  const instances = manager.listInstances();
+  const activeInstanceIds = instances
+    .filter((instance) => manager.isInstanceActive(instance.pluginInstanceId))
+    .map((instance) => instance.pluginInstanceId);
   try {
     available = registry.available();
   } catch (error) {
@@ -68,7 +79,14 @@ function loadBrowserData(registry: MarketplaceRegistry): PluginBrowserData {
   } catch (error) {
     errors.push({ source: "marketplaces", message: errorMessage(error) });
   }
-  return { available, installed, marketplaces, errors };
+  return {
+    available,
+    installed,
+    instances,
+    activeInstanceIds,
+    marketplaces,
+    errors,
+  };
 }
 
 function useProtocolView(protocol: ChatProtocol): ChatViewState {
@@ -91,6 +109,7 @@ export function PluginScreen(props: PluginScreenProps): ReactNode {
       />
       <PluginPanel
         registry={props.registry}
+        manager={props.manager}
         theme={props.theme}
         height={pluginPanelHeight(terminal.height)}
         onBack={props.onBack}
@@ -101,6 +120,7 @@ export function PluginScreen(props: PluginScreenProps): ReactNode {
 
 interface PluginPanelProps {
   registry: MarketplaceRegistry;
+  manager: Manager;
   theme: Theme;
   height: number;
   onBack: () => void;
@@ -114,7 +134,9 @@ interface PluginNotice {
 function PluginPanel(props: PluginPanelProps): ReactNode {
   const [tab, setTab] = useState<PluginTab>("discover");
   const [query, setQuery] = useState("");
-  const [data, setData] = useState<PluginBrowserData>(() => loadBrowserData(props.registry));
+  const [data, setData] = useState<PluginBrowserData>(() =>
+    loadBrowserData(props.registry, props.manager),
+  );
   const [detail, setDetail] = useState<PluginBrowserItem | null>(null);
   const [notice, setNotice] = useState<PluginNotice>();
   const tabs = useRef<TabSelectRenderable | null>(null);
@@ -204,10 +226,11 @@ function PluginPanel(props: PluginPanelProps): ReactNode {
           item={detail}
           data={data}
           registry={props.registry}
+          manager={props.manager}
           theme={props.theme}
           notice={notice}
-          onInstalled={(nextNotice) => {
-            setData(loadBrowserData(props.registry));
+          onChanged={(nextNotice) => {
+            setData(loadBrowserData(props.registry, props.manager));
             setNotice(nextNotice);
           }}
           onBack={() => {
@@ -268,33 +291,133 @@ interface PluginDetailProps {
   item: PluginBrowserItem;
   data: PluginBrowserData;
   registry: MarketplaceRegistry;
+  manager: Manager;
   theme: Theme;
   notice?: PluginNotice;
-  onInstalled: (notice: PluginNotice) => void;
+  onChanged: (notice: PluginNotice) => void;
   onBack: () => void;
 }
 
 function PluginDetail(props: PluginDetailProps): ReactNode {
+  const [acting, setActing] = useState(false);
+  const manifest =
+    props.item.kind === "available-package" || props.item.kind === "installed-package"
+      ? props.item.package.manifest
+      : undefined;
+  const instances = manifest
+    ? packageInstances(manifest.pluginId, manifest.version, props.data)
+    : [];
+  const installed =
+    props.item.kind === "installed-package" ||
+    (props.item.kind === "available-package" &&
+      isPackageInstalled(props.item.package, props.data.installed));
   const canInstall =
     props.item.kind === "available-package" &&
-    !isPackageInstalled(props.item.package, props.data.installed);
+    !installed;
+  const instanceAction =
+    installed && instances.length === 0
+      ? {
+          name: "Enable in this session",
+          description: "Create and activate one Plugin Instance",
+          value: "enable",
+        }
+      : instances.length === 1
+        ? instances[0]!.enabled
+          ? {
+              name: "Disable in this session",
+              description: "Deactivate this Plugin Instance",
+              value: "disable",
+            }
+          : {
+              name: "Enable in this session",
+              description: "Activate this Plugin Instance",
+              value: "enable",
+            }
+        : undefined;
   const actions = [
     ...(canInstall
       ? [{ name: "Install package", description: "Copy this immutable Package into Baton", value: "install" }]
       : []),
+    ...(instanceAction ? [instanceAction] : []),
     { name: "Back to plugin list", description: "Return to the current section", value: "back" },
   ];
+
+  const runAction = async (value: string): Promise<void> => {
+    if (acting) return;
+    if (value === "back") {
+      props.onBack();
+      return;
+    }
+    if (!manifest) return;
+    setActing(true);
+    try {
+      if (value === "install" && props.item.kind === "available-package") {
+        const result = props.registry.install(props.item.package.manifest.pluginId, {
+          marketplace: props.item.package.marketplace,
+        });
+        props.onChanged({
+          text: result.alreadyInstalled
+            ? `${result.manifest.pluginId}@${result.manifest.version} was already installed`
+            : `Installed ${result.manifest.pluginId}@${result.manifest.version}`,
+          tone: "success",
+        });
+        return;
+      }
+      if (value === "enable") {
+        const instance =
+          instances.length === 0
+            ? await props.manager.createInstance({
+                pluginId: manifest.pluginId,
+                packageVersion: manifest.version,
+              })
+            : await props.manager.setInstanceEnabled(
+                instances[0]!.pluginInstanceId,
+                true,
+              );
+        props.onChanged({
+          text: `Enabled ${manifest.pluginId}@${manifest.version} as ${instance.pluginInstanceId}`,
+          tone: "success",
+        });
+        return;
+      }
+      if (value === "disable" && instances.length === 1) {
+        await props.manager.setInstanceEnabled(
+          instances[0]!.pluginInstanceId,
+          false,
+        );
+        props.onChanged({
+          text: `Disabled ${manifest.pluginId}@${manifest.version}`,
+          tone: "success",
+        });
+      }
+    } catch (error) {
+      props.onChanged({
+        text: `${value === "install" ? "Install" : "Plugin action"} failed: ${errorMessage(error)}`,
+        tone: "error",
+      });
+    } finally {
+      setActing(false);
+    }
+  };
 
   return (
     <box style={{ flexGrow: 1, flexDirection: "column", marginTop: 1 }}>
       <scrollbox style={{ flexGrow: 1 }} focused={false}>
-        {detailContent(props.item, props.theme)}
-        {props.notice ? (
-          <text fg={props.notice.tone === "success" ? props.theme.success : props.theme.error}>
-            {`\n${props.notice.text}`}
-          </text>
-        ) : null}
+        {detailContent(
+          props.item,
+          instances,
+          props.data.activeInstanceIds,
+          props.theme,
+        )}
       </scrollbox>
+      {props.notice ? (
+        <text
+          fg={props.notice.tone === "success" ? props.theme.success : props.theme.error}
+          style={{ flexShrink: 0 }}
+        >
+          {props.notice.text}
+        </text>
+      ) : null}
       <select
         focused
         showDescription={false}
@@ -303,33 +426,34 @@ function PluginDetail(props: PluginDetailProps): ReactNode {
         selectedTextColor={props.theme.accent}
         selectedBackgroundColor={props.theme.border}
         onSelect={(_index, option) => {
-          if (!option) return;
-          if (option.value === "back") {
-            props.onBack();
-            return;
-          }
-          if (props.item.kind !== "available-package") return;
-          try {
-            const result = props.registry.install(props.item.package.manifest.pluginId, {
-              marketplace: props.item.package.marketplace,
-            });
-            props.onInstalled({
-              text: result.alreadyInstalled
-                ? `${result.manifest.pluginId}@${result.manifest.version} was already installed`
-                : `Installed ${result.manifest.pluginId}@${result.manifest.version}`,
-              tone: "success",
-            });
-          } catch (error) {
-            props.onInstalled({ text: `Install failed: ${errorMessage(error)}`, tone: "error" });
-          }
+          if (option) void runAction(String(option.value));
         }}
       />
-      <text fg={props.theme.dim}>{"↑↓ select · enter action · esc back"}</text>
+      <text fg={props.theme.dim}>
+        {acting ? "working…" : "↑↓ select · enter action · esc back"}
+      </text>
     </box>
   );
 }
 
-function detailContent(item: PluginBrowserItem, theme: Theme): ReactNode {
+function instanceDetail(
+  instance: PluginInstance,
+  activeInstanceIds: readonly string[],
+): string {
+  const status = !instance.enabled
+    ? "disabled"
+    : activeInstanceIds.includes(instance.pluginInstanceId)
+      ? "enabled · active"
+      : "enabled · inactive";
+  return `${instance.pluginInstanceId} (${status})`;
+}
+
+function detailContent(
+  item: PluginBrowserItem,
+  instances: readonly PluginInstance[],
+  activeInstanceIds: readonly string[],
+  theme: Theme,
+): ReactNode {
   if (item.kind === "available-package" || item.kind === "installed-package") {
     const manifest = item.package.manifest;
     const origin =
@@ -343,6 +467,11 @@ function detailContent(item: PluginBrowserItem, theme: Theme): ReactNode {
         {`\nVersion: ${manifest.version}`}
         {`\nMarketplace: ${origin}`}
         {manifest.description ? `\n\n${manifest.description}` : ""}
+        {instances.length === 0
+          ? "\n\nSession: not enabled"
+          : `\n\nInstance${instances.length === 1 ? "" : "s"}:\n${instances
+              .map((instance) => instanceDetail(instance, activeInstanceIds))
+              .join("\n")}`}
         <span fg={theme.dim}>{`\n\nPackage: ${item.package.packageDir}`}</span>
       </text>
     );

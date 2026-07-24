@@ -10,7 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -257,6 +257,8 @@ export class MarketplaceRegistry {
   private readonly cwd: string;
   private readonly now: () => Date;
   private readonly gitTimeoutMs: number;
+  private runtimeRoot?: string;
+  private loadRevision = 0;
 
   constructor(options: MarketplaceRegistryOptions = {}) {
     this.rootDir = options.rootDir ?? join(homedir(), ".baton");
@@ -361,10 +363,28 @@ export class MarketplaceRegistry {
     );
   }
 
-  async load(pluginId: string, version: string): Promise<PluginPackage> {
+  async load(
+    pluginId: string,
+    version: string,
+    options: { fresh?: boolean } = {},
+  ): Promise<PluginPackage> {
     const installed = this.readInstalled(this.packageDir(pluginId, version));
+    let packageDir = installed.packageDir;
+    if (options.fresh) {
+      const runtimeRoot =
+        this.runtimeRoot ??
+        (this.runtimeRoot = mkdtempSync(join(tmpdir(), "baton-plugin-runtime-")));
+      packageDir = join(runtimeRoot, `package-${++this.loadRevision}`);
+      // Bun's ESM registry ignores query-string cache busting. A unique physical Package tree
+      // gives both the entry and its relative imports fresh module identities, while retaining
+      // the tree for plugins that resolve assets from import.meta.dir after activation.
+      cpSync(installed.packageDir, packageDir, {
+        recursive: true,
+        dereference: true,
+      });
+    }
     const entry = resolveExistingWithin(
-      installed.packageDir,
+      packageDir,
       installed.manifest.entry,
       `Plugin entry ${pluginId}`,
     );
@@ -383,6 +403,12 @@ export class MarketplaceRegistry {
       );
     }
     return plugin;
+  }
+
+  close(): void {
+    if (!this.runtimeRoot) return;
+    rmSync(this.runtimeRoot, { recursive: true, force: true });
+    this.runtimeRoot = undefined;
   }
 
   private addLocal(rootDir: string): RegisteredMarketplace {

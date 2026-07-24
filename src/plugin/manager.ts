@@ -11,7 +11,11 @@ import {
   type ProposalOutcome,
   ProposalStore,
 } from "./proposal.ts";
-import { PluginInstanceStore } from "./instance.ts";
+import {
+  type CreatePluginInstance,
+  type PluginInstance,
+  PluginInstanceStore,
+} from "./instance.ts";
 import {
   PluginBinding,
   type PluginPackage,
@@ -47,6 +51,12 @@ export interface ManagerOptions {
   instances?: PluginInstanceStore;
   /** 当前进程可激活的可信、不可变 Package 版本。 */
   packages?: readonly PluginPackage[];
+  /** 按需加载已安装 Package；fresh 用于开发期 `/reload-plugins` 绕过模块缓存。 */
+  loadPackage?(
+    pluginId: string,
+    version: string,
+    options?: { fresh?: boolean },
+  ): Promise<PluginPackage>;
   /** Proposal 已落盘；接收方按 proposalId 幂等投影即可。 */
   onProposal(proposal: Proposal): Promise<void> | void;
   /** Reconciler 失败后的指数退避；默认从 1 秒增长到最多 1 分钟。 */
@@ -71,6 +81,11 @@ export interface ReconcileFailure {
   readonly error: unknown;
   readonly attempt: number;
   readonly nextRetryAt?: string;
+}
+
+export interface PluginReloadResult {
+  readonly activated: readonly string[];
+  readonly failures: readonly PluginActivationFailure[];
 }
 
 interface ManagedController {
@@ -115,6 +130,8 @@ export class Manager {
   private readonly controllers = new Map<string, ManagedController>();
   private readonly instances: PluginInstanceStore;
   private readonly packages = new Map<string, PluginPackage>();
+  private readonly packageLoads = new Map<string, Promise<PluginPackage>>();
+  private readonly loadPackage: ManagerOptions["loadPackage"];
   private readonly bindings = new Map<string, PluginBinding>();
   private readonly activations = new Map<string, Promise<void>>();
   private readonly capacity: ReconcileCapacity;
@@ -156,6 +173,7 @@ export class Manager {
       }
       this.packages.set(key, plugin);
     }
+    this.loadPackage = options.loadPackage;
     this.onProposal = options.onProposal;
     this.onActivationError = options.onActivationError;
     this.onReconcileError = options.onReconcileError;
@@ -272,14 +290,7 @@ export class Manager {
     if (!instance.enabled) {
       throw new Error(`plugin Instance is disabled: ${pluginInstanceId}`);
     }
-    const plugin = this.packages.get(
-      pluginPackageKey(instance.pluginId, instance.packageVersion),
-    );
-    if (!plugin) {
-      throw new Error(
-        `plugin Package is unavailable: ${instance.pluginId}@${instance.packageVersion}`,
-      );
-    }
+    const plugin = await this.resolvePackage(instance.pluginId, instance.packageVersion);
 
     const binding = new PluginBinding(instance, (contribution) =>
       this.bindResource(instance.pluginInstanceId, contribution),
@@ -324,6 +335,108 @@ export class Manager {
 
   isInstanceActive(pluginInstanceId: string): boolean {
     return this.bindings.has(pluginInstanceId);
+  }
+
+  listInstances(): PluginInstance[] {
+    return this.instances.list();
+  }
+
+  /**
+   * Instance 先以 disabled 落盘，再显式启用；激活失败时仍保留一份可诊断、可重试的配置。
+   */
+  async createInstance(input: CreatePluginInstance): Promise<PluginInstance> {
+    if (this.closed) throw new Error("plugin Manager is closed");
+    await this.start();
+    const shouldEnable = input.enabled ?? true;
+    const instance = this.instances.create({ ...input, enabled: false });
+    if (!shouldEnable) return instance;
+    return await this.setInstanceEnabled(instance.pluginInstanceId, true);
+  }
+
+  async setInstanceEnabled(
+    pluginInstanceId: string,
+    enabled: boolean,
+  ): Promise<PluginInstance> {
+    if (this.closed) throw new Error("plugin Manager is closed");
+    await this.start();
+    const current = this.instances.get(pluginInstanceId);
+    if (!enabled) {
+      const disabled = this.instances.setEnabled(pluginInstanceId, false);
+      await this.deactivateInstance(pluginInstanceId);
+      return disabled;
+    }
+    if (current.enabled && this.isInstanceActive(pluginInstanceId)) return current;
+    const next = current.enabled
+      ? current
+      : this.instances.setEnabled(pluginInstanceId, true);
+    try {
+      await this.activateInstance(pluginInstanceId);
+      return next;
+    } catch (error) {
+      if (!current.enabled) this.instances.setEnabled(pluginInstanceId, false);
+      throw error;
+    }
+  }
+
+  /**
+   * 重载当前 BatonSession 的全部 enabled Instance。Package 每个版本只 fresh load 一次；
+   * 单个 Package 或 Instance 失败不阻断其它插件，也不改变用户的 enabled 配置。
+   */
+  async reload(): Promise<PluginReloadResult> {
+    if (this.closed) throw new Error("plugin Manager is closed");
+    await this.start();
+    const failures = new Map<string, PluginActivationFailure>();
+    for (const pluginInstanceId of [...this.bindings.keys()].reverse()) {
+      try {
+        await this.deactivateInstance(pluginInstanceId);
+      } catch (error) {
+        failures.set(pluginInstanceId, { pluginInstanceId, error });
+      }
+    }
+
+    const enabled = this.instances.list().filter((instance) => instance.enabled);
+    const packageFailures = new Map<string, unknown>();
+    const loadedPackages = new Set<string>();
+    for (const instance of enabled) {
+      const key = pluginPackageKey(instance.pluginId, instance.packageVersion);
+      if (loadedPackages.has(key)) continue;
+      loadedPackages.add(key);
+      try {
+        await this.resolvePackage(instance.pluginId, instance.packageVersion, true);
+      } catch (error) {
+        packageFailures.set(key, error);
+      }
+    }
+
+    const activated: string[] = [];
+    for (const instance of enabled) {
+      if (failures.has(instance.pluginInstanceId)) continue;
+      const error = packageFailures.get(
+        pluginPackageKey(instance.pluginId, instance.packageVersion),
+      );
+      if (error) {
+        failures.set(instance.pluginInstanceId, {
+          pluginInstanceId: instance.pluginInstanceId,
+          error,
+        });
+        continue;
+      }
+      try {
+        await this.activateInstance(instance.pluginInstanceId);
+        activated.push(instance.pluginInstanceId);
+      } catch (activationError) {
+        failures.set(instance.pluginInstanceId, {
+          pluginInstanceId: instance.pluginInstanceId,
+          error: activationError,
+        });
+      }
+    }
+    const failureList = [...failures.values()];
+    for (const failure of failureList) this.reportActivationFailure(failure);
+    return Object.freeze({
+      activated: Object.freeze(activated),
+      failures: Object.freeze(failureList.map((failure) => Object.freeze(failure))),
+    });
   }
 
   close(): Promise<void> {
@@ -381,6 +494,42 @@ export class Manager {
     }
     if (this.closed) throw new Error("plugin Manager is closed");
     this.started = true;
+  }
+
+  private async resolvePackage(
+    pluginId: string,
+    version: string,
+    fresh = false,
+  ): Promise<PluginPackage> {
+    const key = pluginPackageKey(pluginId, version);
+    if (!fresh) {
+      const cached = this.packages.get(key);
+      if (cached) return cached;
+      const loading = this.packageLoads.get(key);
+      if (loading) return await loading;
+    }
+    if (!this.loadPackage) {
+      const cached = this.packages.get(key);
+      if (cached) return cached;
+      throw new Error(`plugin Package is unavailable: ${pluginId}@${version}`);
+    }
+    const loading = Promise.resolve()
+      .then(() => this.loadPackage!(pluginId, version, fresh ? { fresh: true } : undefined))
+      .then((plugin) => {
+        validatePluginPackage(plugin);
+        if (plugin.pluginId !== pluginId || plugin.version !== version) {
+          throw new Error(
+            `loaded Package identity ${plugin.pluginId}@${plugin.version} does not match ${pluginId}@${version}`,
+          );
+        }
+        this.packages.set(key, plugin);
+        return plugin;
+      })
+      .finally(() => {
+        if (this.packageLoads.get(key) === loading) this.packageLoads.delete(key);
+      });
+    this.packageLoads.set(key, loading);
+    return await loading;
   }
 
   private bindResource<TSpec, TStatus>(

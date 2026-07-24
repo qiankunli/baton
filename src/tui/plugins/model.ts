@@ -3,6 +3,7 @@ import type {
   InstalledPluginPackage,
   RegisteredMarketplace,
 } from "../../plugin/marketplace/index.ts";
+import type { PluginInstance } from "../../plugin/instance.ts";
 
 export type PluginTab = "discover" | "installed" | "marketplaces" | "errors";
 
@@ -14,6 +15,8 @@ export interface PluginBrowserError {
 export interface PluginBrowserData {
   readonly available: readonly AvailablePluginPackage[];
   readonly installed: readonly InstalledPluginPackage[];
+  readonly instances: readonly PluginInstance[];
+  readonly activeInstanceIds: readonly string[];
   readonly marketplaces: readonly RegisteredMarketplace[];
   readonly errors: readonly PluginBrowserError[];
 }
@@ -54,6 +57,35 @@ export function isPackageInstalled(
   );
 }
 
+export function packageInstances(
+  pluginId: string,
+  version: string,
+  data: Pick<PluginBrowserData, "instances">,
+): PluginInstance[] {
+  return data.instances.filter(
+    (instance) =>
+      instance.pluginId === pluginId && instance.packageVersion === version,
+  );
+}
+
+function instanceDescription(
+  pluginId: string,
+  version: string,
+  data: PluginBrowserData,
+): string | undefined {
+  const instances = packageInstances(pluginId, version, data);
+  if (instances.length === 0) return undefined;
+  const enabled = instances.filter((instance) => instance.enabled);
+  const active = enabled.filter((instance) =>
+    data.activeInstanceIds.includes(instance.pluginInstanceId),
+  );
+  if (enabled.length === 0) return "disabled in this session";
+  if (active.length === enabled.length) {
+    return `${active.length} active in this session`;
+  }
+  return `${active.length}/${enabled.length} active in this session`;
+}
+
 export function pluginBrowserItems(
   tab: PluginTab,
   data: PluginBrowserData,
@@ -70,6 +102,11 @@ export function pluginBrowserItems(
             description: [
               `${available.manifest.pluginId}@${available.manifest.version}`,
               available.marketplace,
+              instanceDescription(
+                available.manifest.pluginId,
+                available.manifest.version,
+                data,
+              ),
               available.manifest.description,
             ]
               .filter(Boolean)
@@ -86,6 +123,11 @@ export function pluginBrowserItems(
             description: [
               `${installed.manifest.pluginId}@${installed.manifest.version}`,
               `from ${installed.provenance.marketplace}`,
+              instanceDescription(
+                installed.manifest.pluginId,
+                installed.manifest.version,
+                data,
+              ),
               installed.manifest.description,
             ]
               .filter(Boolean)

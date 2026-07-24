@@ -135,6 +135,47 @@ describe("Plugin Marketplace", () => {
     );
   });
 
+  test("fresh load bypasses the entry module cache for development reloads", async () => {
+    const marketplaceRoot = testRoot("baton-marketplace-source-");
+    const batonRoot = testRoot("baton-marketplace-data-");
+    createMarketplace(marketplaceRoot);
+    const registry = new MarketplaceRegistry({ rootDir: batonRoot });
+    await registry.add(marketplaceRoot);
+    const installed = registry.install("qiankun/requirement-loop");
+    const installedEntry = join(installed.packageDir, "src", "index.ts");
+    const markerEntry = join(installed.packageDir, "src", "marker.ts");
+    const writeEntry = (marker: string) => {
+      writeFileSync(markerEntry, `export const marker = ${JSON.stringify(marker)};\n`);
+      writeFileSync(
+        installedEntry,
+        `import { marker } from "./marker.ts";
+
+export default {
+  pluginId: "qiankun/requirement-loop",
+  version: "0.1.0",
+  marker,
+  activate() {},
+};
+`,
+      );
+    };
+
+    writeEntry("first");
+    const first = await registry.load("qiankun/requirement-loop", "0.1.0");
+    writeEntry("second");
+    const cached = await registry.load("qiankun/requirement-loop", "0.1.0");
+    const fresh = await registry.load(
+      "qiankun/requirement-loop",
+      "0.1.0",
+      { fresh: true },
+    );
+
+    expect((first as typeof first & { marker: string }).marker).toBe("first");
+    expect((cached as typeof cached & { marker: string }).marker).toBe("first");
+    expect((fresh as typeof fresh & { marker: string }).marker).toBe("second");
+    registry.close();
+  });
+
   test("rejects Package path escape and catalog/manifest identity drift", async () => {
     const escapedRoot = testRoot("baton-marketplace-escape-");
     const escapedData = testRoot("baton-marketplace-data-");

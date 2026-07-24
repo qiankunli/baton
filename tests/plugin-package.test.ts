@@ -370,4 +370,150 @@ describe("Plugin Package lifecycle", () => {
     expect((failures[0]?.error as Error).message).toBe("connector config is invalid");
     await manager.close();
   });
+
+  test("loads persisted Package versions lazily and restores enabled Instances", async () => {
+    const root = testRoot();
+    const { instances, proposals } = stores(root);
+    instances.create({
+      pluginInstanceId: "reqloop_default",
+      pluginId: "qiankun/reqloop",
+      packageVersion: "1.2.0",
+    });
+    let loads = 0;
+    const manager = new Manager({
+      instances,
+      proposals,
+      async loadPackage(pluginId, version) {
+        loads += 1;
+        expect([pluginId, version]).toEqual(["qiankun/reqloop", "1.2.0"]);
+        return reqloopPackage(() => {});
+      },
+      onProposal() {},
+    });
+
+    await manager.start();
+
+    expect(loads).toBe(1);
+    expect(manager.isInstanceActive("reqloop_default")).toBe(true);
+    await manager.close();
+  });
+
+  test("creates, disables, and restores a session-scoped Instance through Manager", async () => {
+    const root = testRoot();
+    const { instances, proposals } = stores(root);
+    let activations = 0;
+    let cleanups = 0;
+    const loadPackage = async () =>
+      reqloopPackage((context) => {
+        activations += 1;
+        context.onClose(() => {
+          cleanups += 1;
+        });
+      });
+    const manager = new Manager({
+      instances,
+      proposals,
+      loadPackage,
+      onProposal() {},
+    });
+
+    const created = await manager.createInstance({
+      pluginInstanceId: "reqloop_default",
+      pluginId: "qiankun/reqloop",
+      packageVersion: "1.2.0",
+    });
+    expect(created.enabled).toBe(true);
+    expect(manager.isInstanceActive(created.pluginInstanceId)).toBe(true);
+
+    const disabled = await manager.setInstanceEnabled(created.pluginInstanceId, false);
+    expect(disabled.enabled).toBe(false);
+    expect(manager.isInstanceActive(created.pluginInstanceId)).toBe(false);
+    expect(cleanups).toBe(1);
+    await manager.close();
+
+    const restored = new Manager({
+      instances,
+      proposals,
+      loadPackage,
+      onProposal() {},
+    });
+    await restored.start();
+    expect(activations).toBe(1);
+    expect(restored.isInstanceActive(created.pluginInstanceId)).toBe(false);
+    await restored.close();
+  });
+
+  test("fresh reloads each Package once and isolates activation failures", async () => {
+    const root = testRoot();
+    const { instances, proposals } = stores(root);
+    for (const pluginInstanceId of ["reqloop_a", "reqloop_b"]) {
+      instances.create({
+        pluginInstanceId,
+        pluginId: "qiankun/reqloop",
+        packageVersion: "1.2.0",
+      });
+    }
+    const loads: Array<boolean | undefined> = [];
+    let generation = 0;
+    const manager = new Manager({
+      instances,
+      proposals,
+      async loadPackage(_pluginId, _version, options) {
+        loads.push(options?.fresh);
+        generation += 1;
+        const currentGeneration = generation;
+        return reqloopPackage((context) => {
+          if (
+            currentGeneration === 2 &&
+            context.instance.pluginInstanceId === "reqloop_a"
+          ) {
+            throw new Error("fresh activation failed");
+          }
+        });
+      },
+      onProposal() {},
+    });
+    await manager.start();
+
+    const result = await manager.reload();
+
+    expect(loads).toEqual([undefined, true]);
+    expect(result.activated).toEqual(["reqloop_b"]);
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0]?.pluginInstanceId).toBe("reqloop_a");
+    expect(manager.isInstanceActive("reqloop_a")).toBe(false);
+    expect(manager.isInstanceActive("reqloop_b")).toBe(true);
+    expect(instances.get("reqloop_a").enabled).toBe(true);
+    await manager.close();
+  });
+
+  test("rolls explicit enable failure back to disabled", async () => {
+    const root = testRoot();
+    const { instances, proposals } = stores(root);
+    const manager = new Manager({
+      instances,
+      proposals,
+      async loadPackage() {
+        return {
+          pluginId: "wrong/plugin",
+          version: "1.2.0",
+          activate() {},
+        };
+      },
+      onProposal() {},
+    });
+
+    await expect(
+      manager.createInstance({
+        pluginInstanceId: "reqloop_default",
+        pluginId: "qiankun/reqloop",
+        packageVersion: "1.2.0",
+      }),
+    ).rejects.toThrow(
+      "loaded Package identity wrong/plugin@1.2.0 does not match qiankun/reqloop@1.2.0",
+    );
+    expect(instances.get("reqloop_default").enabled).toBe(false);
+    expect(manager.isInstanceActive("reqloop_default")).toBe(false);
+    await manager.close();
+  });
 });
