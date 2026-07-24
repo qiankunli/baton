@@ -647,6 +647,7 @@ export class BatonChatProtocol implements ChatProtocol {
 
   private createPluginManager(): Manager {
     return new Manager({
+      session: this.session,
       proposals: new ProposalStore({ session: this.session }),
       loadPackage: (pluginId, version, options) =>
         this.marketplace.load(pluginId, version, options),

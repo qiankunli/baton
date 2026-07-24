@@ -1,11 +1,16 @@
 import type { PluginResource } from "./resource.ts";
 import { PluginResourceStore } from "./resource.ts";
 import { ReconcileQueue } from "./queue.ts";
+import { reconcileResourceOwner } from "./reconcile-scope.ts";
+
+export type ReconcileResourceOwner = "plugin" | "baton";
 
 export interface ReconcileScope {
   readonly batonSessionId: string;
   readonly pluginInstanceId: string;
   readonly resourceKind: string;
+  /** 旧 key 缺省为 plugin；baton 表示只读 Builtin Resource 投影。 */
+  readonly resourceOwner?: ReconcileResourceOwner;
 }
 
 export interface ReconcileKey extends ReconcileScope {
@@ -30,11 +35,23 @@ export interface Reconciler<TSpec, TStatus> {
   reconcile(context: ReconcileContext<TSpec, TStatus>): Promise<ReconcileResult | void>;
 }
 
-export interface ReconcileProposal {
+export interface PluginResourceReconcileProposal {
   readonly key: ReconcileKey;
   readonly basedOnGeneration: number;
+  readonly basedOnRevision?: never;
   readonly text: string;
 }
+
+export interface BuiltinResourceReconcileProposal {
+  readonly key: ReconcileKey;
+  readonly basedOnGeneration?: never;
+  readonly basedOnRevision: number;
+  readonly text: string;
+}
+
+export type ReconcileProposal =
+  | PluginResourceReconcileProposal
+  | BuiltinResourceReconcileProposal;
 
 export interface ScheduledReconcile {
   readonly key: ReconcileKey;
@@ -62,9 +79,24 @@ function ownedKey(key: ReconcileKey): ReconcileKey {
     pluginInstanceId: key.pluginInstanceId,
     resourceKind: key.resourceKind,
     resourceId: key.resourceId,
+    ...(key.resourceOwner === undefined
+      ? {}
+      : { resourceOwner: key.resourceOwner }),
   };
-  for (const [name, value] of Object.entries(copy)) {
+  for (const [name, value] of Object.entries({
+    batonSessionId: copy.batonSessionId,
+    pluginInstanceId: copy.pluginInstanceId,
+    resourceKind: copy.resourceKind,
+    resourceId: copy.resourceId,
+  })) {
     if (!value.trim()) throw new Error(`reconcile key ${name} must not be empty`);
+  }
+  if (
+    copy.resourceOwner !== undefined &&
+    copy.resourceOwner !== "plugin" &&
+    copy.resourceOwner !== "baton"
+  ) {
+    throw new Error(`reconcile key resourceOwner is invalid: ${String(copy.resourceOwner)}`);
   }
   return Object.freeze(copy);
 }
@@ -241,7 +273,8 @@ export class Controller<TSpec, TStatus> {
     if (
       key.batonSessionId !== this.scope.batonSessionId ||
       key.pluginInstanceId !== this.scope.pluginInstanceId ||
-      key.resourceKind !== this.scope.resourceKind
+      key.resourceKind !== this.scope.resourceKind ||
+      reconcileResourceOwner(key) !== reconcileResourceOwner(this.scope)
     ) {
       throw new Error(
         `reconcile key is outside controller scope: ${key.batonSessionId}/${key.pluginInstanceId}/${key.resourceKind}/${key.resourceId}`,

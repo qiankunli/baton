@@ -2,6 +2,10 @@ import type {
   ReconcileKey,
   ReconcileScope,
 } from "./controller.ts";
+import {
+  reconcileResourceOwner,
+  sameReconcileScope,
+} from "./reconcile-scope.ts";
 
 interface QueuedReconcile {
   key: ReconcileKey;
@@ -68,6 +72,7 @@ export function reconcileKeyId(key: ReconcileKey): string {
     key.pluginInstanceId,
     key.resourceKind,
     key.resourceId,
+    reconcileResourceOwner(key),
   ]);
 }
 
@@ -79,14 +84,6 @@ function queuedReconcile(key: ReconcileKey): QueuedReconcile {
     reject = onReject;
   });
   return { key, completion, resolve, reject };
-}
-
-function sameScope(key: ReconcileKey, scope: ReconcileScope): boolean {
-  return (
-    key.batonSessionId === scope.batonSessionId &&
-    key.pluginInstanceId === scope.pluginInstanceId &&
-    key.resourceKind === scope.resourceKind
-  );
 }
 
 function timestamp(now: () => Date, label: string): number {
@@ -204,7 +201,7 @@ export class ReconcileDueQueue {
   removeScope(scope: ReconcileScope): void {
     let changed = false;
     for (const [id, entry] of this.entries) {
-      if (!sameScope(entry.key, scope)) continue;
+      if (!sameReconcileScope(entry.key, scope)) continue;
       this.entries.delete(id);
       changed = true;
     }
